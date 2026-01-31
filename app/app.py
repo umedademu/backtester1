@@ -337,6 +337,7 @@ class Step1App:
         self.queue = queue.Queue()
         self.worker = None
         self.chart_worker = None
+        self.chart_data = None
 
         today_jst = datetime.now(JST).date()
         self.start_date = today_jst
@@ -350,47 +351,36 @@ class Step1App:
         self.view_end_var = tk.StringVar(value=self.view_end_date.isoformat())
         self.exclude_weekends_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="準備完了")
+        self.chart_info_var = tk.StringVar(value="")
 
         self._build_ui()
         self._poll_queue()
 
     def _build_ui(self):
-        frame = ttk.Frame(self.root, padding=12)
-        frame.grid(row=0, column=0, sticky="nsew")
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
+        self.root.rowconfigure(1, weight=0)
 
-        header = ttk.Frame(frame)
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="取得期間（JST）").grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(
-            header, text="土日を除外（初期オン）", variable=self.exclude_weekends_var
-        ).grid(row=0, column=1, sticky="e")
+        notebook = ttk.Notebook(self.root)
+        notebook.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
 
-        row = ttk.Frame(frame)
-        row.grid(row=1, column=0, sticky="ew")
-        row.columnconfigure(1, weight=1)
+        chart_tab = ttk.Frame(notebook, padding=12)
+        download_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(chart_tab, text="チャート")
+        notebook.add(download_tab, text="ダウンロード")
 
-        ttk.Label(row, text="開始日（JST）").grid(row=0, column=0, sticky="w")
-        start_entry = ttk.Entry(row, textvariable=self.start_var, width=12, state="readonly")
-        start_entry.grid(row=0, column=1, padx=6)
-        ttk.Button(row, text="選択", command=self._pick_start).grid(row=0, column=2)
+        status_bar = ttk.Frame(self.root)
+        status_bar.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        status_bar.columnconfigure(0, weight=1)
+        ttk.Label(status_bar, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
 
-        ttk.Label(row, text="終了日（JST）").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        end_entry = ttk.Entry(row, textvariable=self.end_var, width=12, state="readonly")
-        end_entry.grid(row=1, column=1, padx=6, pady=(6, 0))
-        ttk.Button(row, text="選択", command=self._pick_end).grid(row=1, column=2, pady=(6, 0))
+        chart_tab.columnconfigure(0, weight=1)
+        chart_tab.rowconfigure(4, weight=1)
 
-        self.run_button = ttk.Button(frame, text="ダウンロード", command=self._start_download)
-        self.run_button.grid(row=2, column=0, sticky="w", pady=(8, 6))
+        ttk.Label(chart_tab, text="表示期間（JST）").grid(row=0, column=0, sticky="w")
 
-        ttk.Separator(frame, orient="horizontal").grid(row=3, column=0, sticky="ew", pady=(6, 6))
-
-        ttk.Label(frame, text="表示期間（JST）").grid(row=4, column=0, sticky="w")
-
-        view_row = ttk.Frame(frame)
-        view_row.grid(row=5, column=0, sticky="ew")
+        view_row = ttk.Frame(chart_tab)
+        view_row.grid(row=1, column=0, sticky="ew")
         view_row.columnconfigure(1, weight=1)
 
         ttk.Label(view_row, text="開始日（JST）").grid(row=0, column=0, sticky="w")
@@ -411,14 +401,49 @@ class Step1App:
             row=1, column=2, pady=(6, 0)
         )
 
-        self.chart_button = ttk.Button(frame, text="表示", command=self._show_chart)
-        self.chart_button.grid(row=6, column=0, sticky="w", pady=(8, 6))
+        self.chart_button = ttk.Button(chart_tab, text="表示", command=self._show_chart)
+        self.chart_button.grid(row=2, column=0, sticky="w", pady=(8, 6))
 
-        ttk.Label(frame, textvariable=self.status_var).grid(row=7, column=0, sticky="w")
+        ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
+            row=3, column=0, sticky="w"
+        )
 
-        self.log = tk.Text(frame, height=14, width=80)
-        self.log.grid(row=8, column=0, sticky="nsew", pady=(6, 0))
-        frame.rowconfigure(8, weight=1)
+        self.chart_canvas = tk.Canvas(chart_tab, bg="white")
+        self.chart_canvas.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
+        self.chart_canvas.bind("<Configure>", self._on_canvas_resize)
+
+        download_tab.columnconfigure(0, weight=1)
+        download_tab.rowconfigure(4, weight=1)
+
+        header = ttk.Frame(download_tab)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="取得期間（JST）").grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(
+            header, text="土日を除外（初期オン）", variable=self.exclude_weekends_var
+        ).grid(row=0, column=1, sticky="e")
+
+        row = ttk.Frame(download_tab)
+        row.grid(row=1, column=0, sticky="ew")
+        row.columnconfigure(1, weight=1)
+
+        ttk.Label(row, text="開始日（JST）").grid(row=0, column=0, sticky="w")
+        start_entry = ttk.Entry(row, textvariable=self.start_var, width=12, state="readonly")
+        start_entry.grid(row=0, column=1, padx=6)
+        ttk.Button(row, text="選択", command=self._pick_start).grid(row=0, column=2)
+
+        ttk.Label(row, text="終了日（JST）").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        end_entry = ttk.Entry(row, textvariable=self.end_var, width=12, state="readonly")
+        end_entry.grid(row=1, column=1, padx=6, pady=(6, 0))
+        ttk.Button(row, text="選択", command=self._pick_end).grid(row=1, column=2, pady=(6, 0))
+
+        self.run_button = ttk.Button(download_tab, text="ダウンロード", command=self._start_download)
+        self.run_button.grid(row=2, column=0, sticky="w", pady=(8, 6))
+
+        ttk.Label(download_tab, text="実行ログ").grid(row=3, column=0, sticky="w")
+
+        self.log = tk.Text(download_tab, height=14, width=80)
+        self.log.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
 
     def _pick_start(self):
         CalendarPopup(self.root, self.start_date, self._set_start)
@@ -590,43 +615,73 @@ class Step1App:
                 elif kind == "chart_error":
                     messagebox.showerror("エラー", payload)
                 elif kind == "chart_data":
-                    self._open_chart_window(payload)
+                    self._render_chart(payload)
         except queue.Empty:
             pass
         self.root.after(200, self._poll_queue)
 
-    def _open_chart_window(self, payload):
+    def _render_chart(self, payload):
         points = payload["points"]
         start = payload["start"]
         end = payload["end"]
         missing_count = payload["missing_count"]
 
         all_prices = [p for _, p in points]
-        points = downsample_points(points, 5000)
-        prices = [p for _, p in points]
+        if not all_prices:
+            self.chart_info_var.set("表示できるデータがありません。")
+            return
         min_all = min(all_prices)
         max_all = max(all_prices)
+        downsampled = downsample_points(points, 5000)
+
+        self.chart_data = {
+            "points": downsampled,
+            "count": len(all_prices),
+            "min": min_all,
+            "max": max_all,
+            "start": start,
+            "end": end,
+            "missing": missing_count,
+        }
+        self._draw_chart()
+
+    def _on_canvas_resize(self, _event):
+        if self.chart_data:
+            self._draw_chart()
+
+    def _draw_chart(self):
+        data = self.chart_data
+        if not data:
+            return
+
+        points = data["points"]
+        min_all = data["min"]
+        max_all = data["max"]
+        start = data["start"]
+        end = data["end"]
+        missing_count = data["missing"]
+
+        info_text = (
+            f"表示期間: {start.isoformat()}〜{end.isoformat()}  "
+            f"件数: {data['count']}  最小: {min_all:.3f}  最大: {max_all:.3f}"
+        )
+        if missing_count:
+            info_text += f"  不足CSV: {missing_count}件"
+        self.chart_info_var.set(info_text)
+
+        canvas = self.chart_canvas
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 200)
+        height = max(canvas.winfo_height(), 200)
+        pad = 30
+
+        prices = [p for _, p in points]
         min_p = min(prices)
         max_p = max(prices)
         if min_p == max_p:
             min_p -= 0.01
             max_p += 0.01
 
-        top = tk.Toplevel(self.root)
-        top.title(f"ティックチャート {start.isoformat()}〜{end.isoformat()}")
-
-        info_text = f"件数: {len(all_prices)}  最小: {min_all:.3f}  最大: {max_all:.3f}"
-        if missing_count:
-            info_text += f"  不足CSV: {missing_count}件"
-        info = ttk.Label(top, text=info_text)
-        info.pack(anchor="w", padx=8, pady=(8, 2))
-
-        canvas = tk.Canvas(top, width=900, height=400, bg="white")
-        canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-
-        width = 900
-        height = 400
-        pad = 30
         n = len(points)
         if n >= 2:
             x_step = (width - pad * 2) / (n - 1)

@@ -342,6 +342,7 @@ class Step1App:
         self.chart_data = None
         self.drag_start_x = None
         self.drag_start_view = None
+        self.cancel_event = threading.Event()
 
         today_jst = datetime.now(JST).date()
         self.start_date = today_jst
@@ -448,6 +449,10 @@ class Step1App:
 
         self.run_button = ttk.Button(download_tab, text="ダウンロード", command=self._start_download)
         self.run_button.grid(row=2, column=0, sticky="w", pady=(8, 6))
+        self.cancel_button = ttk.Button(
+            download_tab, text="キャンセル", command=self._cancel_download, state="disabled"
+        )
+        self.cancel_button.grid(row=2, column=0, sticky="w", padx=(110, 0), pady=(8, 6))
 
         ttk.Label(download_tab, text="実行ログ").grid(row=3, column=0, sticky="w")
 
@@ -490,6 +495,8 @@ class Step1App:
             messagebox.showerror("エラー", "終了日は開始日より後にしてください。")
             return
         self.run_button.config(state="disabled")
+        self.cancel_button.config(state="normal")
+        self.cancel_event.clear()
         self.status_var.set("準備中...")
         self.log.delete("1.0", tk.END)
         exclude_weekends = self.exclude_weekends_var.get()
@@ -499,6 +506,13 @@ class Step1App:
             daemon=True,
         )
         self.worker.start()
+
+    def _cancel_download(self):
+        if self.worker and self.worker.is_alive():
+            self.cancel_event.set()
+            self.queue.put(("log", "[INFO] キャンセル要求を受け付けました"))
+        else:
+            self.cancel_button.config(state="disabled")
 
     def _show_chart(self):
         if self.chart_worker and self.chart_worker.is_alive():
@@ -541,7 +555,13 @@ class Step1App:
 
         index = 0
         for jst_day, day_hours in day_groups.items():
+            if self.cancel_event.is_set():
+                self.queue.put(("cancelled", None))
+                return
             for dt_utc in day_hours:
+                if self.cancel_event.is_set():
+                    self.queue.put(("cancelled", None))
+                    return
                 index += 1
                 if is_excluded_hour(dt_utc, exclude_weekends):
                     jst_dt = dt_utc.astimezone(JST)
@@ -594,6 +614,9 @@ class Step1App:
                 except Exception as e:
                     self.queue.put(("log", f"[{index}/{total}] エラー {e}"))
 
+            if self.cancel_event.is_set():
+                self.queue.put(("cancelled", None))
+                return
             self.queue.put(("status", f"CSV作成中...（{jst_day.isoformat()}）"))
             self._build_csv_for_day(jst_day, day_hours, exclude_weekends)
 
@@ -619,12 +642,17 @@ class Step1App:
                     self.status_var.set(payload)
                 elif kind == "done":
                     self.run_button.config(state="normal")
+                    self.cancel_button.config(state="disabled")
                 elif kind == "chart_done":
                     self.chart_button.config(state="normal")
                 elif kind == "chart_error":
                     messagebox.showerror("エラー", payload)
                 elif kind == "chart_data":
                     self._render_chart(payload)
+                elif kind == "cancelled":
+                    self.status_var.set("キャンセルしました")
+                    self.run_button.config(state="normal")
+                    self.cancel_button.config(state="disabled")
         except queue.Empty:
             pass
         self.root.after(200, self._poll_queue)

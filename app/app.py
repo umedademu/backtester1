@@ -4,6 +4,7 @@ import lzma
 import queue
 import struct
 import threading
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -357,6 +358,7 @@ class Step1App:
         self.exclude_weekends_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="準備完了")
         self.chart_info_var = tk.StringVar(value="")
+        self.x_axis_mode_var = tk.StringVar(value="time")
 
         self._build_ui()
         self._poll_queue()
@@ -406,8 +408,28 @@ class Step1App:
             row=1, column=2, pady=(6, 0)
         )
 
-        self.chart_button = ttk.Button(chart_tab, text="表示", command=self._show_chart)
-        self.chart_button.grid(row=2, column=0, sticky="w", pady=(8, 6))
+        chart_controls = ttk.Frame(chart_tab)
+        chart_controls.grid(row=2, column=0, sticky="ew", pady=(8, 6))
+        chart_controls.columnconfigure(3, weight=1)
+
+        self.chart_button = ttk.Button(chart_controls, text="表示", command=self._show_chart)
+        self.chart_button.grid(row=0, column=0, sticky="w")
+
+        ttk.Label(chart_controls, text="横軸").grid(row=0, column=1, padx=(12, 4), sticky="w")
+        ttk.Radiobutton(
+            chart_controls,
+            text="時間",
+            variable=self.x_axis_mode_var,
+            value="time",
+            command=self._on_axis_mode_change,
+        ).grid(row=0, column=2, sticky="w")
+        ttk.Radiobutton(
+            chart_controls,
+            text="本数",
+            variable=self.x_axis_mode_var,
+            value="tick",
+            command=self._on_axis_mode_change,
+        ).grid(row=0, column=3, sticky="w")
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=3, column=0, sticky="w"
@@ -668,15 +690,45 @@ class Step1App:
             return
 
         points = sorted(points, key=lambda x: x[0])
+        times = [ts for ts, _ in points]
         self.chart_data = {
             "all_points": points,
+            "times": times,
             "view_start": 0,
             "view_end": len(points) - 1,
             "count": len(points),
             "start": start,
             "end": end,
             "missing": missing_count,
+            "mode": self.x_axis_mode_var.get(),
+            "view_start_time": times[0],
+            "view_end_time": times[-1],
         }
+        self._draw_chart()
+
+    def _on_axis_mode_change(self):
+        if not self.chart_data:
+            return
+        data = self.chart_data
+        mode = self.x_axis_mode_var.get()
+        data["mode"] = mode
+        times = data.get("times", [])
+        if not times:
+            return
+        if mode == "time":
+            view_start = data.get("view_start", 0)
+            view_end = data.get("view_end", len(times) - 1)
+            data["view_start_time"] = times[view_start]
+            data["view_end_time"] = times[view_end]
+        else:
+            start_time = data.get("view_start_time", times[0])
+            end_time = data.get("view_end_time", times[-1])
+            start_idx = bisect_left(times, start_time)
+            end_idx = bisect_right(times, end_time) - 1
+            start_idx = max(0, min(start_idx, len(times) - 1))
+            end_idx = max(start_idx, min(end_idx, len(times) - 1))
+            data["view_start"] = start_idx
+            data["view_end"] = end_idx
         self._draw_chart()
 
     def _get_plot_area(self):
@@ -702,19 +754,7 @@ class Step1App:
             return
 
         data = self.chart_data
-        total = len(data["all_points"])
-        view_start = data["view_start"]
-        view_end = data["view_end"]
-        visible = view_end - view_start + 1
-        if visible <= 2:
-            return
-
-        min_visible = 50
-        if direction > 0:
-            new_visible = max(min_visible, int(visible * 0.8))
-        else:
-            new_visible = min(total, int(visible * 1.25))
-
+        mode = data.get("mode", "time")
         width, _height, left, _top, right, _bottom, plot_width, _plot_height = (
             self._get_plot_area()
         )
@@ -727,21 +767,70 @@ class Step1App:
         else:
             ratio = 0.5
 
-        anchor = view_start + int(ratio * (visible - 1))
-        new_start = anchor - int(ratio * (new_visible - 1))
-        new_start = max(0, min(new_start, total - new_visible))
-        data["view_start"] = new_start
-        data["view_end"] = new_start + new_visible - 1
+        if mode == "tick":
+            total = len(data["all_points"])
+            view_start = data["view_start"]
+            view_end = data["view_end"]
+            visible = view_end - view_start + 1
+            if visible <= 2:
+                return
+
+            min_visible = 50
+            if direction > 0:
+                new_visible = max(min_visible, int(visible * 0.8))
+            else:
+                new_visible = min(total, int(visible * 1.25))
+
+            anchor = view_start + int(ratio * (visible - 1))
+            new_start = anchor - int(ratio * (new_visible - 1))
+            new_start = max(0, min(new_start, total - new_visible))
+            data["view_start"] = new_start
+            data["view_end"] = new_start + new_visible - 1
+        else:
+            start_time = data["view_start_time"]
+            end_time = data["view_end_time"]
+            span = end_time - start_time
+            if span.total_seconds() <= 0:
+                return
+
+            if direction > 0:
+                new_span = span * 0.8
+            else:
+                new_span = span * 1.25
+
+            min_span = timedelta(minutes=1)
+            if new_span < min_span:
+                new_span = min_span
+
+            anchor_time = start_time + span * ratio
+            new_start = anchor_time - new_span * ratio
+            new_end = new_start + new_span
+
+            min_time = data["times"][0]
+            max_time = data["times"][-1]
+            if new_start < min_time:
+                new_start = min_time
+                new_end = new_start + new_span
+            if new_end > max_time:
+                new_end = max_time
+                new_start = new_end - new_span
+            if new_start < min_time:
+                new_start = min_time
+
+            data["view_start_time"] = new_start
+            data["view_end_time"] = new_end
+
         self._draw_chart()
 
     def _on_drag_start(self, event):
         if not self.chart_data:
             return
         self.drag_start_x = event.x
-        self.drag_start_view = (
-            self.chart_data["view_start"],
-            self.chart_data["view_end"],
-        )
+        data = self.chart_data
+        if data.get("mode", "time") == "tick":
+            self.drag_start_view = (data["view_start"], data["view_end"])
+        else:
+            self.drag_start_view = (data["view_start_time"], data["view_end_time"])
 
     def _on_drag_move(self, event):
         if not self.chart_data or self.drag_start_x is None or not self.drag_start_view:
@@ -751,14 +840,34 @@ class Step1App:
         )
         if plot_width <= 1:
             return
-        view_start, view_end = self.drag_start_view
-        visible = view_end - view_start + 1
+        data = self.chart_data
         dx = event.x - self.drag_start_x
-        shift = int(-dx / plot_width * visible)
-        total = len(self.chart_data["all_points"])
-        new_start = max(0, min(view_start + shift, total - visible))
-        self.chart_data["view_start"] = new_start
-        self.chart_data["view_end"] = new_start + visible - 1
+        if data.get("mode", "time") == "tick":
+            view_start, view_end = self.drag_start_view
+            visible = view_end - view_start + 1
+            shift = int(-dx / plot_width * visible)
+            total = len(data["all_points"])
+            new_start = max(0, min(view_start + shift, total - visible))
+            data["view_start"] = new_start
+            data["view_end"] = new_start + visible - 1
+        else:
+            view_start, view_end = self.drag_start_view
+            span = view_end - view_start
+            shift = -dx / plot_width
+            new_start = view_start + span * shift
+            new_end = view_end + span * shift
+            min_time = data["times"][0]
+            max_time = data["times"][-1]
+            if new_start < min_time:
+                new_start = min_time
+                new_end = new_start + span
+            if new_end > max_time:
+                new_end = max_time
+                new_start = new_end - span
+            if new_start < min_time:
+                new_start = min_time
+            data["view_start_time"] = new_start
+            data["view_end_time"] = new_end
         self._draw_chart()
 
     def _on_canvas_resize(self, _event):
@@ -769,15 +878,29 @@ class Step1App:
         data = self.chart_data
         if not data:
             return
-
         points_all = data["all_points"]
-        view_start = data["view_start"]
-        view_end = data["view_end"]
+        times = data["times"]
+        mode = data.get("mode", "time")
         start = data["start"]
         end = data["end"]
         missing_count = data["missing"]
 
-        view_points = points_all[view_start : view_end + 1]
+        if mode == "tick":
+            view_start = data["view_start"]
+            view_end = data["view_end"]
+            view_points = points_all[view_start : view_end + 1]
+            view_start_time = times[view_start]
+            view_end_time = times[view_end]
+        else:
+            view_start_time = data["view_start_time"]
+            view_end_time = data["view_end_time"]
+            start_idx = bisect_left(times, view_start_time)
+            end_idx = bisect_right(times, view_end_time) - 1
+            if end_idx < start_idx:
+                self.chart_info_var.set("表示できるデータがありません。")
+                return
+            view_points = points_all[start_idx : end_idx + 1]
+
         if not view_points:
             self.chart_info_var.set("表示できるデータがありません。")
             return
@@ -795,6 +918,7 @@ class Step1App:
             f"表示中: {len(view_points)}  "
             f"最小: {min_p:.3f}  最大: {max_p:.3f}"
         )
+        info_text += "  横軸: 時間" if mode == "time" else "  横軸: 本数"
         if missing_count:
             info_text += f"  不足CSV: {missing_count}件"
         self.chart_info_var.set(info_text)
@@ -815,8 +939,12 @@ class Step1App:
 
         sampled = downsample_points(view_points, 5000)
         coords = []
-        for idx, (_ts, price) in sampled:
-            x = left + idx / (n - 1) * plot_width
+        span_seconds = (view_end_time - view_start_time).total_seconds()
+        for idx, (ts, price) in sampled:
+            if mode == "time" and span_seconds > 0:
+                x = left + (ts - view_start_time).total_seconds() / span_seconds * plot_width
+            else:
+                x = left + idx / (n - 1) * plot_width
             y = height - bottom - (price - min_p) / (max_p - min_p) * plot_height
             coords.extend([x, y])
 
@@ -838,10 +966,15 @@ class Step1App:
 
         time_ticks = 5
         for i in range(time_ticks + 1):
-            idx = int((n - 1) * i / time_ticks)
-            ts = view_points[idx][0]
+            ratio = i / time_ticks if time_ticks > 0 else 0
+            if mode == "time" and span_seconds > 0:
+                ts = view_start_time + (view_end_time - view_start_time) * ratio
+                x = left + ratio * plot_width
+            else:
+                idx = int((n - 1) * ratio)
+                ts = view_points[idx][0]
+                x = left + idx / (n - 1) * plot_width
             label = ts.strftime("%m/%d %H:%M")
-            x = left + idx / (n - 1) * plot_width
             canvas.create_line(x, height - bottom, x, height - bottom + 4, fill="#333333")
             canvas.create_text(
                 x,

@@ -273,6 +273,28 @@ def build_minute_candles(points):
     return candles
 
 
+def build_minute_ma(candles, period):
+    if period <= 0 or not candles:
+        return [], [], []
+    times = []
+    ma_values = [None] * len(candles)
+    closes = [c[4] for c in candles]
+    running = 0.0
+    for i, candle in enumerate(candles):
+        running += closes[i]
+        if i >= period:
+            running -= closes[i - period]
+        if i >= period - 1:
+            ma_values[i] = running / period
+        times.append(candle[0])
+    series = [
+        (times[i], ma_values[i])
+        for i in range(len(times))
+        if ma_values[i] is not None
+    ]
+    return times, ma_values, series
+
+
 def find_spike_signal(points, times, start_idx, window, spike, retrace_rate):
     t0, p0 = points[start_idx]
     end_time = t0 + window
@@ -336,6 +358,10 @@ def run_backtest(points, params):
             "trades": [],
             "summary": summarize_trades([]),
             "equity_curve": [],
+            "ma_series": [],
+            "ma_enabled": params.get("ma_enabled", False),
+            "ma_period": params.get("ma_period", 0),
+            "ma_deviation_rate": params.get("ma_deviation_rate", 0.0),
         }
 
     points_sorted = sorted(points, key=lambda x: x[0])
@@ -346,6 +372,16 @@ def run_backtest(points, params):
     spread = params["spread_pips"] * PIP_SIZE
     stop = params["stop_pips"] * PIP_SIZE
     take = params["take_pips"] * PIP_SIZE
+    ma_enabled = params.get("ma_enabled", False)
+    ma_period = max(1, int(params.get("ma_period", 0)))
+    ma_deviation = params.get("ma_deviation_rate", 0.0)
+
+    candle_times = []
+    ma_values = []
+    ma_series = []
+    if ma_enabled:
+        candles = build_minute_candles(points_sorted)
+        candle_times, ma_values, ma_series = build_minute_ma(candles, ma_period)
 
     trades = []
     equity_curve = [(times[0], 0.0)]
@@ -364,6 +400,26 @@ def run_backtest(points, params):
         entry_idx, side = signal
         entry_time, entry_bid = points_sorted[entry_idx]
         entry_price = entry_bid + spread if side == "long" else entry_bid
+
+        if ma_enabled:
+            if not candle_times:
+                i = entry_idx + 1
+                continue
+            candle_idx = bisect_right(candle_times, entry_time) - 1
+            if candle_idx < 0 or candle_idx >= len(ma_values):
+                i = entry_idx + 1
+                continue
+            ma_value = ma_values[candle_idx]
+            if ma_value is None or ma_value <= 0:
+                i = entry_idx + 1
+                continue
+            if side == "long":
+                deviation = (ma_value - entry_price) / ma_value
+            else:
+                deviation = (entry_price - ma_value) / ma_value
+            if deviation < ma_deviation:
+                i = entry_idx + 1
+                continue
 
         if side == "long":
             stop_price = entry_price - stop
@@ -437,6 +493,10 @@ def run_backtest(points, params):
         "trades": trades,
         "summary": summarize_trades(trades),
         "equity_curve": equity_curve,
+        "ma_series": ma_series,
+        "ma_enabled": ma_enabled,
+        "ma_period": ma_period,
+        "ma_deviation_rate": ma_deviation,
     }
 
 
@@ -552,6 +612,10 @@ class Step1App:
         self.chart_info_var = tk.StringVar(value="")
         self.x_axis_mode_var = tk.StringVar(value="time")
         self.chart_type_var = tk.StringVar(value="tick")
+        self.hide_chart_var = tk.BooleanVar(value=False)
+        self.ma_filter_var = tk.BooleanVar(value=True)
+        self.ma_period_var = tk.StringVar(value="200")
+        self.ma_deviation_var = tk.StringVar(value="0.01")
         self.spike_window_var = tk.StringVar(value="500")
         self.spike_pips_var = tk.StringVar(value="1.0")
         self.retrace_var = tk.StringVar(value="90")
@@ -656,6 +720,14 @@ class Step1App:
         )
         self.chart_candle_radio.grid(row=1, column=3, sticky="w")
 
+        self.hide_chart_check = ttk.Checkbutton(
+            chart_controls,
+            text="チャート非表示",
+            variable=self.hide_chart_var,
+            command=self._on_chart_visibility_change,
+        )
+        self.hide_chart_check.grid(row=0, column=4, padx=(12, 0), sticky="w")
+
         settings = ttk.LabelFrame(chart_tab, text="バックテスト条件")
         settings.grid(row=3, column=0, sticky="ew", pady=(8, 6))
 
@@ -684,6 +756,24 @@ class Step1App:
         ttk.Entry(settings, textvariable=self.take_pips_var, width=8).grid(
             row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
+
+        self.ma_check = ttk.Checkbutton(
+            settings,
+            text="移動平均フィルター",
+            variable=self.ma_filter_var,
+            command=self._on_ma_filter_toggle,
+        )
+        self.ma_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="期間").grid(row=2, column=2, sticky="w", pady=(6, 0))
+        self.ma_period_entry = ttk.Entry(
+            settings, textvariable=self.ma_period_var, width=8
+        )
+        self.ma_period_entry.grid(row=2, column=3, padx=(4, 12), pady=(6, 0), sticky="w")
+        ttk.Label(settings, text="乖離率（％）").grid(row=2, column=4, sticky="w", pady=(6, 0))
+        self.ma_deviation_entry = ttk.Entry(
+            settings, textvariable=self.ma_deviation_var, width=8
+        )
+        self.ma_deviation_entry.grid(row=2, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
@@ -746,6 +836,8 @@ class Step1App:
         self.pnl_canvas.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
         self.pnl_canvas.bind("<Configure>", self._on_pnl_resize)
 
+        self._on_ma_filter_toggle()
+
     def _pick_start(self):
         CalendarPopup(self.root, self.start_date, self._set_start)
 
@@ -787,6 +879,9 @@ class Step1App:
             spread_pips = self._parse_number(self.spread_var.get())
             stop_pips = self._parse_number(self.stop_pips_var.get())
             take_pips = self._parse_number(self.take_pips_var.get())
+            ma_enabled = self.ma_filter_var.get()
+            ma_period = self._parse_number(self.ma_period_var.get())
+            ma_deviation_pct = self._parse_number(self.ma_deviation_var.get())
         except ValueError:
             messagebox.showerror("エラー", "数値の入力が正しくありません。")
             return None
@@ -810,6 +905,13 @@ class Step1App:
             messagebox.showerror("エラー", "利確幅は0より大きくしてください。")
             return None
 
+        if ma_period < 2:
+            messagebox.showerror("エラー", "移動平均の期間は2以上にしてください。")
+            return None
+        if ma_deviation_pct < 0:
+            messagebox.showerror("エラー", "乖離率は0以上にしてください。")
+            return None
+
         return {
             "window_ms": window_ms,
             "spike_pips": spike_pips,
@@ -817,6 +919,9 @@ class Step1App:
             "spread_pips": spread_pips,
             "stop_pips": stop_pips,
             "take_pips": take_pips,
+            "ma_enabled": ma_enabled,
+            "ma_period": int(ma_period),
+            "ma_deviation_rate": ma_deviation_pct / 100.0,
         }
 
     def _start_download(self):
@@ -1044,6 +1149,8 @@ class Step1App:
             "view_start_time": times[0],
             "view_end_time": times[-1],
             "trades": [],
+            "ma_series": [],
+            "ma_enabled": False,
         }
         self._draw_chart()
 
@@ -1077,6 +1184,8 @@ class Step1App:
         self.backtest_ready = True
         if self.chart_data is not None:
             self.chart_data["trades"] = payload.get("trades") or []
+            self.chart_data["ma_series"] = payload.get("ma_series") or []
+            self.chart_data["ma_enabled"] = payload.get("ma_enabled", False)
             self._draw_chart()
         self._draw_pnl_chart()
 
@@ -1120,6 +1229,23 @@ class Step1App:
         if self.chart_data:
             self.chart_data["mode"] = self.x_axis_mode_var.get()
             self._draw_chart()
+
+    def _on_ma_filter_toggle(self):
+        enabled = self.ma_filter_var.get()
+        state = "normal" if enabled else "disabled"
+        self.ma_period_entry.config(state=state)
+        self.ma_deviation_entry.config(state=state)
+        if self.chart_data:
+            self._draw_chart()
+
+    def _on_chart_visibility_change(self):
+        if self.hide_chart_var.get():
+            self.chart_info_var.set("チャート: 非表示")
+            self.chart_canvas.grid_remove()
+        else:
+            self.chart_canvas.grid()
+            if self.chart_data:
+                self._draw_chart()
 
     def _get_plot_area(self, canvas=None):
         canvas = canvas or self.chart_canvas
@@ -1267,6 +1393,9 @@ class Step1App:
     def _draw_chart(self):
         data = self.chart_data
         if not data:
+            return
+        if self.hide_chart_var.get():
+            self.chart_info_var.set("チャート: 非表示")
             return
         points_all = data["all_points"]
         times = data["times"]
@@ -1446,6 +1575,36 @@ class Step1App:
 
             if coords:
                 canvas.create_line(coords, fill="#1f77b4", width=1)
+
+        ma_series = data.get("ma_series") or []
+        if self.ma_filter_var.get() and ma_series:
+            ma_coords = []
+            if mode == "time":
+                if span_seconds > 0:
+                    for ts, ma_value in ma_series:
+                        if ts < view_start_time or ts > view_end_time:
+                            continue
+                        x = (
+                            left
+                            + (ts - view_start_time).total_seconds()
+                            / span_seconds
+                            * plot_width
+                        )
+                        y = price_to_y(ma_value)
+                        ma_coords.extend([x, y])
+            else:
+                for ts, ma_value in ma_series:
+                    idx = bisect_left(times, ts)
+                    if idx < view_start_idx or idx > view_end_idx:
+                        continue
+                    if n <= 1:
+                        continue
+                    x = left + (idx - view_start_idx) / (n - 1) * plot_width
+                    y = price_to_y(ma_value)
+                    ma_coords.extend([x, y])
+
+            if ma_coords:
+                canvas.create_line(ma_coords, fill="#ff7f0e", width=1)
 
         trades = data.get("trades") or []
         if trades:

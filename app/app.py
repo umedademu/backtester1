@@ -998,6 +998,7 @@ class Step1App:
             "mode": self.x_axis_mode_var.get(),
             "view_start_time": times[0],
             "view_end_time": times[-1],
+            "trades": [],
         }
         self._draw_chart()
 
@@ -1029,6 +1030,9 @@ class Step1App:
 
         self.pnl_data = payload.get("equity_curve") or []
         self.backtest_ready = True
+        if self.chart_data is not None:
+            self.chart_data["trades"] = payload.get("trades") or []
+            self._draw_chart()
         self._draw_pnl_chart()
 
     def _on_axis_mode_change(self):
@@ -1216,6 +1220,8 @@ class Step1App:
             view_points = points_all[view_start : view_end + 1]
             view_start_time = times[view_start]
             view_end_time = times[view_end]
+            view_start_idx = view_start
+            view_end_idx = view_end
         else:
             view_start_time = data["view_start_time"]
             view_end_time = data["view_end_time"]
@@ -1225,6 +1231,8 @@ class Step1App:
                 self.chart_info_var.set("表示できるデータがありません。")
                 return
             view_points = points_all[start_idx : end_idx + 1]
+            view_start_idx = start_idx
+            view_end_idx = end_idx
 
         if not view_points:
             self.chart_info_var.set("表示できるデータがありません。")
@@ -1275,6 +1283,95 @@ class Step1App:
 
         if coords:
             canvas.create_line(coords, fill="#1f77b4", width=1)
+
+        trades = data.get("trades") or []
+        if trades:
+            def ensure_time(value):
+                if isinstance(value, datetime):
+                    return value
+                if isinstance(value, str):
+                    try:
+                        return datetime.fromisoformat(value)
+                    except ValueError:
+                        return None
+                return None
+
+            def time_to_x(ts):
+                if mode == "time":
+                    if ts < view_start_time or ts > view_end_time:
+                        return None
+                    if span_seconds <= 0:
+                        return None
+                    return (
+                        left
+                        + (ts - view_start_time).total_seconds()
+                        / span_seconds
+                        * plot_width
+                    )
+                idx = bisect_left(times, ts)
+                if idx < view_start_idx or idx > view_end_idx:
+                    return None
+                if n <= 1:
+                    return None
+                return left + (idx - view_start_idx) / (n - 1) * plot_width
+
+            def price_to_y(price):
+                return (
+                    height
+                    - bottom
+                    - (price - min_p) / (max_p - min_p) * plot_height
+                )
+
+            def draw_triangle(x, y, size, direction, color):
+                if direction == "up":
+                    points = [x, y - size, x - size, y + size, x + size, y + size]
+                else:
+                    points = [x, y + size, x - size, y - size, x + size, y - size]
+                canvas.create_polygon(points, fill=color, outline=color)
+
+            size = 6
+            for trade in trades:
+                entry_time = ensure_time(trade.get("entry_time"))
+                exit_time = ensure_time(trade.get("exit_time"))
+                entry_price = trade.get("entry_price")
+                exit_price = trade.get("exit_price")
+                side = trade.get("side")
+
+                if (
+                    entry_time is None
+                    or exit_time is None
+                    or entry_price is None
+                    or exit_price is None
+                ):
+                    continue
+
+                entry_x = time_to_x(entry_time)
+                exit_x = time_to_x(exit_time)
+                if entry_x is None or exit_x is None:
+                    continue
+
+                entry_y = price_to_y(entry_price)
+                exit_y = price_to_y(exit_price)
+
+                if side == "short":
+                    color = "#d62728"
+                    entry_dir = "down"
+                    exit_dir = "up"
+                else:
+                    color = "#2ca02c"
+                    entry_dir = "up"
+                    exit_dir = "down"
+
+                canvas.create_line(
+                    entry_x,
+                    entry_y,
+                    exit_x,
+                    exit_y,
+                    fill=color,
+                    dash=(4, 3),
+                )
+                draw_triangle(entry_x, entry_y, size, entry_dir, color)
+                draw_triangle(exit_x, exit_y, size, exit_dir, color)
 
         ticks = 5
         for i in range(ticks + 1):

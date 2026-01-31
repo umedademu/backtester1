@@ -249,6 +249,30 @@ def downsample_points(points, max_points):
     return sampled
 
 
+def build_minute_candles(points):
+    candles = []
+    current_minute = None
+    open_p = high_p = low_p = close_p = None
+
+    for ts, price in points:
+        minute = ts.replace(second=0, microsecond=0)
+        if current_minute is None or minute != current_minute:
+            if current_minute is not None:
+                candles.append((current_minute, open_p, high_p, low_p, close_p))
+            current_minute = minute
+            open_p = high_p = low_p = close_p = price
+        else:
+            if price > high_p:
+                high_p = price
+            if price < low_p:
+                low_p = price
+            close_p = price
+
+    if current_minute is not None:
+        candles.append((current_minute, open_p, high_p, low_p, close_p))
+    return candles
+
+
 def find_spike_signal(points, times, start_idx, window, spike, retrace_rate):
     t0, p0 = points[start_idx]
     end_time = t0 + window
@@ -527,6 +551,7 @@ class Step1App:
         self.status_var = tk.StringVar(value="準備完了")
         self.chart_info_var = tk.StringVar(value="")
         self.x_axis_mode_var = tk.StringVar(value="time")
+        self.chart_type_var = tk.StringVar(value="tick")
         self.spike_window_var = tk.StringVar(value="500")
         self.spike_pips_var = tk.StringVar(value="1.0")
         self.retrace_var = tk.StringVar(value="90")
@@ -596,20 +621,40 @@ class Step1App:
         self.chart_button.grid(row=0, column=0, sticky="w")
 
         ttk.Label(chart_controls, text="横軸").grid(row=0, column=1, padx=(12, 4), sticky="w")
-        ttk.Radiobutton(
+        self.axis_time_radio = ttk.Radiobutton(
             chart_controls,
             text="時間",
             variable=self.x_axis_mode_var,
             value="time",
             command=self._on_axis_mode_change,
-        ).grid(row=0, column=2, sticky="w")
-        ttk.Radiobutton(
+        )
+        self.axis_time_radio.grid(row=0, column=2, sticky="w")
+        self.axis_tick_radio = ttk.Radiobutton(
             chart_controls,
             text="本数",
             variable=self.x_axis_mode_var,
             value="tick",
             command=self._on_axis_mode_change,
-        ).grid(row=0, column=3, sticky="w")
+        )
+        self.axis_tick_radio.grid(row=0, column=3, sticky="w")
+
+        ttk.Label(chart_controls, text="表示").grid(row=1, column=1, padx=(12, 4), sticky="w")
+        self.chart_tick_radio = ttk.Radiobutton(
+            chart_controls,
+            text="ティック",
+            variable=self.chart_type_var,
+            value="tick",
+            command=self._on_chart_type_change,
+        )
+        self.chart_tick_radio.grid(row=1, column=2, sticky="w")
+        self.chart_candle_radio = ttk.Radiobutton(
+            chart_controls,
+            text="1分足",
+            variable=self.chart_type_var,
+            value="candle",
+            command=self._on_chart_type_change,
+        )
+        self.chart_candle_radio.grid(row=1, column=3, sticky="w")
 
         settings = ttk.LabelFrame(chart_tab, text="バックテスト条件")
         settings.grid(row=3, column=0, sticky="ew", pady=(8, 6))
@@ -1038,6 +1083,11 @@ class Step1App:
     def _on_axis_mode_change(self):
         if not self.chart_data:
             return
+        if self.chart_type_var.get() == "candle":
+            self.x_axis_mode_var.set("time")
+            self.chart_data["mode"] = "time"
+            self._draw_chart()
+            return
         data = self.chart_data
         mode = self.x_axis_mode_var.get()
         data["mode"] = mode
@@ -1059,6 +1109,17 @@ class Step1App:
             data["view_start"] = start_idx
             data["view_end"] = end_idx
         self._draw_chart()
+
+    def _on_chart_type_change(self):
+        chart_type = self.chart_type_var.get()
+        if chart_type == "candle":
+            self.x_axis_mode_var.set("time")
+            self.axis_tick_radio.config(state="disabled")
+        else:
+            self.axis_tick_radio.config(state="normal")
+        if self.chart_data:
+            self.chart_data["mode"] = self.x_axis_mode_var.get()
+            self._draw_chart()
 
     def _get_plot_area(self, canvas=None):
         canvas = canvas or self.chart_canvas
@@ -1210,6 +1271,10 @@ class Step1App:
         points_all = data["all_points"]
         times = data["times"]
         mode = data.get("mode", "time")
+        chart_type = self.chart_type_var.get() if hasattr(self, "chart_type_var") else "tick"
+        if chart_type == "candle":
+            mode = "time"
+            data["mode"] = "time"
         start = data["start"]
         end = data["end"]
         missing_count = data["missing"]
@@ -1252,19 +1317,54 @@ class Step1App:
             )
             return
 
-        prices_full = [p for _, p in view_points]
-        min_p = min(prices_full)
-        max_p = max(prices_full)
+        candles = None
+        if chart_type == "candle":
+            candles = build_minute_candles(view_points)
+            if not candles:
+                self.chart_info_var.set("表示範囲にデータがありません。")
+                canvas = self.chart_canvas
+                canvas.delete("all")
+                width, height, left, top, right, bottom, _plot_width, _plot_height = (
+                    self._get_plot_area()
+                )
+                canvas.create_rectangle(
+                    left, top, width - right, height - bottom, outline="#888888"
+                )
+                canvas.create_text(
+                    width // 2,
+                    height // 2,
+                    text="表示範囲にデータがありません。",
+                    fill="#666666",
+                )
+                return
+
+            highs = [h for _t, _o, h, _l, _c in candles]
+            lows = [l for _t, _o, _h, l, _c in candles]
+            min_p = min(lows)
+            max_p = max(highs)
+        else:
+            prices_full = [p for _, p in view_points]
+            min_p = min(prices_full)
+            max_p = max(prices_full)
+
         if min_p == max_p:
             min_p -= 0.01
             max_p += 0.01
 
-        info_text = (
-            f"表示期間: {start.isoformat()}〜{end.isoformat()}  "
-            f"件数: {data['count']}  "
-            f"表示中: {len(view_points)}  "
-            f"最小: {min_p:.3f}  最大: {max_p:.3f}"
-        )
+        if chart_type == "candle":
+            info_text = (
+                f"表示期間: {start.isoformat()}〜{end.isoformat()}  "
+                f"件数: {data['count']}  "
+                f"表示中: {len(candles)}本  "
+                f"最小: {min_p:.3f}  最大: {max_p:.3f}"
+            )
+        else:
+            info_text = (
+                f"表示期間: {start.isoformat()}〜{end.isoformat()}  "
+                f"件数: {data['count']}  "
+                f"表示中: {len(view_points)}  "
+                f"最小: {min_p:.3f}  最大: {max_p:.3f}"
+            )
         info_text += "  横軸: 時間" if mode == "time" else "  横軸: 本数"
         if missing_count:
             info_text += f"  不足CSV: {missing_count}件"
@@ -1280,23 +1380,72 @@ class Step1App:
             left, top, width - right, height - bottom, outline="#888888"
         )
 
-        n = len(view_points)
-        if n < 2:
-            return
-
-        sampled = downsample_points(view_points, 5000)
-        coords = []
         span_seconds = (view_end_time - view_start_time).total_seconds()
-        for idx, (ts, price) in sampled:
-            if mode == "time" and span_seconds > 0:
-                x = left + (ts - view_start_time).total_seconds() / span_seconds * plot_width
-            else:
-                x = left + idx / (n - 1) * plot_width
-            y = height - bottom - (price - min_p) / (max_p - min_p) * plot_height
-            coords.extend([x, y])
+        n = len(view_points)
 
-        if coords:
-            canvas.create_line(coords, fill="#1f77b4", width=1)
+        def price_to_y(price):
+            return (
+                height
+                - bottom
+                - (price - min_p) / (max_p - min_p) * plot_height
+            )
+
+        if chart_type == "candle":
+            if span_seconds <= 0:
+                return
+            minute_width = 60 / span_seconds * plot_width
+            half_width = max(1.0, minute_width * 0.35)
+            for ts, open_p, high_p, low_p, close_p in candles:
+                if ts < view_start_time or ts > view_end_time:
+                    continue
+                x = left + (ts - view_start_time).total_seconds() / span_seconds * plot_width
+                y_high = price_to_y(high_p)
+                y_low = price_to_y(low_p)
+                y_open = price_to_y(open_p)
+                y_close = price_to_y(close_p)
+
+                if close_p >= open_p:
+                    color = "#2ca02c"
+                else:
+                    color = "#d62728"
+
+                canvas.create_line(x, y_high, x, y_low, fill=color)
+
+                top_y = min(y_open, y_close)
+                bottom_y = max(y_open, y_close)
+                if abs(bottom_y - top_y) < 1:
+                    canvas.create_line(
+                        x - half_width,
+                        top_y,
+                        x + half_width,
+                        top_y,
+                        fill=color,
+                        width=2,
+                    )
+                else:
+                    canvas.create_rectangle(
+                        x - half_width,
+                        top_y,
+                        x + half_width,
+                        bottom_y,
+                        fill=color,
+                        outline=color,
+                    )
+        else:
+            if n < 2:
+                return
+            sampled = downsample_points(view_points, 5000)
+            coords = []
+            for idx, (ts, price) in sampled:
+                if mode == "time" and span_seconds > 0:
+                    x = left + (ts - view_start_time).total_seconds() / span_seconds * plot_width
+                else:
+                    x = left + idx / (n - 1) * plot_width
+                y = price_to_y(price)
+                coords.extend([x, y])
+
+            if coords:
+                canvas.create_line(coords, fill="#1f77b4", width=1)
 
         trades = data.get("trades") or []
         if trades:
@@ -1328,13 +1477,6 @@ class Step1App:
                 if n <= 1:
                     return None
                 return left + (idx - view_start_idx) / (n - 1) * plot_width
-
-            def price_to_y(price):
-                return (
-                    height
-                    - bottom
-                    - (price - min_p) / (max_p - min_p) * plot_height
-                )
 
             def draw_triangle(x, y, size, direction, color):
                 if direction == "up":

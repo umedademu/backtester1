@@ -113,6 +113,52 @@ def iter_ticks(path: Path, hour_start_utc: datetime):
         )
 
 
+def load_ticks_from_csv(start_jst: date, end_jst: date):
+    start_dt = datetime.combine(start_jst, time(0, 0), JST)
+    end_dt = datetime.combine(end_jst, time(23, 59, 59), JST)
+    points = []
+    missing = []
+    day = start_jst
+    while day <= end_jst:
+        path = day_to_csv_path(day)
+        if (not path.exists()) or path.stat().st_size == 0:
+            missing.append(path)
+        else:
+            try:
+                with path.open("r", newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        ts_str = row.get("timestamp_jst")
+                        bid_str = row.get("bid")
+                        if not ts_str or not bid_str:
+                            continue
+                        try:
+                            ts = datetime.fromisoformat(ts_str)
+                        except ValueError:
+                            continue
+                        if ts < start_dt or ts > end_dt:
+                            continue
+                        try:
+                            bid = float(bid_str)
+                        except ValueError:
+                            continue
+                        points.append((ts, bid))
+            except Exception:
+                missing.append(path)
+        day += timedelta(days=1)
+    return points, missing
+
+
+def downsample_points(points, max_points):
+    if len(points) <= max_points:
+        return points
+    step = max(1, len(points) // max_points)
+    sampled = points[::step]
+    if sampled and sampled[-1] != points[-1]:
+        sampled.append(points[-1])
+    return sampled
+
+
 class CalendarPopup:
     def __init__(self, parent, initial_date: date, on_select):
         self.parent = parent
@@ -204,13 +250,18 @@ class Step1App:
         self.root.title("ティックデータ取得（STEP1）")
         self.queue = queue.Queue()
         self.worker = None
+        self.chart_worker = None
 
         today_jst = datetime.now(JST).date()
         self.start_date = today_jst
         self.end_date = today_jst
+        self.view_start_date = today_jst
+        self.view_end_date = today_jst
 
         self.start_var = tk.StringVar(value=self.start_date.isoformat())
         self.end_var = tk.StringVar(value=self.end_date.isoformat())
+        self.view_start_var = tk.StringVar(value=self.view_start_date.isoformat())
+        self.view_end_var = tk.StringVar(value=self.view_end_date.isoformat())
         self.status_var = tk.StringVar(value="準備完了")
 
         self._build_ui()
@@ -222,8 +273,10 @@ class Step1App:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
+        ttk.Label(frame, text="取得期間（JST）").grid(row=0, column=0, sticky="w")
+
         row = ttk.Frame(frame)
-        row.grid(row=0, column=0, sticky="ew")
+        row.grid(row=1, column=0, sticky="ew")
         row.columnconfigure(1, weight=1)
 
         ttk.Label(row, text="開始日（JST）").grid(row=0, column=0, sticky="w")
@@ -237,13 +290,42 @@ class Step1App:
         ttk.Button(row, text="選択", command=self._pick_end).grid(row=1, column=2, pady=(6, 0))
 
         self.run_button = ttk.Button(frame, text="ダウンロード", command=self._start_download)
-        self.run_button.grid(row=1, column=0, sticky="w", pady=(10, 6))
+        self.run_button.grid(row=2, column=0, sticky="w", pady=(8, 6))
 
-        ttk.Label(frame, textvariable=self.status_var).grid(row=2, column=0, sticky="w")
+        ttk.Separator(frame, orient="horizontal").grid(row=3, column=0, sticky="ew", pady=(6, 6))
+
+        ttk.Label(frame, text="表示期間（JST）").grid(row=4, column=0, sticky="w")
+
+        view_row = ttk.Frame(frame)
+        view_row.grid(row=5, column=0, sticky="ew")
+        view_row.columnconfigure(1, weight=1)
+
+        ttk.Label(view_row, text="開始日（JST）").grid(row=0, column=0, sticky="w")
+        view_start_entry = ttk.Entry(
+            view_row, textvariable=self.view_start_var, width=12, state="readonly"
+        )
+        view_start_entry.grid(row=0, column=1, padx=6)
+        ttk.Button(view_row, text="選択", command=self._pick_view_start).grid(
+            row=0, column=2
+        )
+
+        ttk.Label(view_row, text="終了日（JST）").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        view_end_entry = ttk.Entry(
+            view_row, textvariable=self.view_end_var, width=12, state="readonly"
+        )
+        view_end_entry.grid(row=1, column=1, padx=6, pady=(6, 0))
+        ttk.Button(view_row, text="選択", command=self._pick_view_end).grid(
+            row=1, column=2, pady=(6, 0)
+        )
+
+        self.chart_button = ttk.Button(frame, text="表示", command=self._show_chart)
+        self.chart_button.grid(row=6, column=0, sticky="w", pady=(8, 6))
+
+        ttk.Label(frame, textvariable=self.status_var).grid(row=7, column=0, sticky="w")
 
         self.log = tk.Text(frame, height=14, width=80)
-        self.log.grid(row=3, column=0, sticky="nsew", pady=(6, 0))
-        frame.rowconfigure(3, weight=1)
+        self.log.grid(row=8, column=0, sticky="nsew", pady=(6, 0))
+        frame.rowconfigure(8, weight=1)
 
     def _pick_start(self):
         CalendarPopup(self.root, self.start_date, self._set_start)
@@ -259,6 +341,20 @@ class Step1App:
         self.end_date = picked
         self.end_var.set(picked.isoformat())
 
+    def _pick_view_start(self):
+        CalendarPopup(self.root, self.view_start_date, self._set_view_start)
+
+    def _pick_view_end(self):
+        CalendarPopup(self.root, self.view_end_date, self._set_view_end)
+
+    def _set_view_start(self, picked: date):
+        self.view_start_date = picked
+        self.view_start_var.set(picked.isoformat())
+
+    def _set_view_end(self, picked: date):
+        self.view_end_date = picked
+        self.view_end_var.set(picked.isoformat())
+
     def _start_download(self):
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("お知らせ", "ダウンロード中です。")
@@ -273,6 +369,39 @@ class Step1App:
             target=self._download_worker, args=(self.start_date, self.end_date), daemon=True
         )
         self.worker.start()
+
+    def _show_chart(self):
+        if self.chart_worker and self.chart_worker.is_alive():
+            messagebox.showinfo("お知らせ", "表示処理中です。")
+            return
+        if self.view_end_date < self.view_start_date:
+            messagebox.showerror("エラー", "終了日は開始日より後にしてください。")
+            return
+        self.chart_button.config(state="disabled")
+        self.status_var.set("表示準備中...")
+        self.chart_worker = threading.Thread(
+            target=self._chart_worker,
+            args=(self.view_start_date, self.view_end_date),
+            daemon=True,
+        )
+        self.chart_worker.start()
+
+    def _chart_worker(self, start: date, end: date):
+        points, missing = load_ticks_from_csv(start, end)
+        if missing:
+            self.queue.put(("log", f"[表示] CSV不足 {len(missing)}件"))
+        if not points:
+            self.queue.put(("chart_error", "表示できるデータがありません。"))
+            self.queue.put(("chart_done", None))
+            return
+        payload = {
+            "start": start,
+            "end": end,
+            "points": points,
+            "missing_count": len(missing),
+        }
+        self.queue.put(("chart_data", payload))
+        self.queue.put(("chart_done", None))
 
     def _download_worker(self, start: date, end: date):
         hours = to_utc_hour_range(start, end)
@@ -374,9 +503,63 @@ class Step1App:
                     self.status_var.set(payload)
                 elif kind == "done":
                     self.run_button.config(state="normal")
+                elif kind == "chart_done":
+                    self.chart_button.config(state="normal")
+                elif kind == "chart_error":
+                    messagebox.showerror("エラー", payload)
+                elif kind == "chart_data":
+                    self._open_chart_window(payload)
         except queue.Empty:
             pass
         self.root.after(200, self._poll_queue)
+
+    def _open_chart_window(self, payload):
+        points = payload["points"]
+        start = payload["start"]
+        end = payload["end"]
+        missing_count = payload["missing_count"]
+
+        all_prices = [p for _, p in points]
+        points = downsample_points(points, 5000)
+        prices = [p for _, p in points]
+        min_all = min(all_prices)
+        max_all = max(all_prices)
+        min_p = min(prices)
+        max_p = max(prices)
+        if min_p == max_p:
+            min_p -= 0.01
+            max_p += 0.01
+
+        top = tk.Toplevel(self.root)
+        top.title(f"ティックチャート {start.isoformat()}〜{end.isoformat()}")
+
+        info_text = f"件数: {len(all_prices)}  最小: {min_all:.3f}  最大: {max_all:.3f}"
+        if missing_count:
+            info_text += f"  不足CSV: {missing_count}件"
+        info = ttk.Label(top, text=info_text)
+        info.pack(anchor="w", padx=8, pady=(8, 2))
+
+        canvas = tk.Canvas(top, width=900, height=400, bg="white")
+        canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        width = 900
+        height = 400
+        pad = 30
+        n = len(points)
+        if n >= 2:
+            x_step = (width - pad * 2) / (n - 1)
+        else:
+            x_step = 1
+
+        coords = []
+        for i, (_, price) in enumerate(points):
+            x = pad + i * x_step
+            y = height - pad - (price - min_p) / (max_p - min_p) * (height - pad * 2)
+            coords.extend([x, y])
+
+        canvas.create_rectangle(pad, pad, width - pad, height - pad, outline="#888888")
+        if coords:
+            canvas.create_line(coords, fill="#1f77b4", width=1)
 
 
 def main():

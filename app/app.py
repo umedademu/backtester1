@@ -1228,14 +1228,28 @@ class Step1App:
             start_idx = bisect_left(times, view_start_time)
             end_idx = bisect_right(times, view_end_time) - 1
             if end_idx < start_idx:
-                self.chart_info_var.set("表示できるデータがありません。")
-                return
-            view_points = points_all[start_idx : end_idx + 1]
+                view_points = []
+            else:
+                view_points = points_all[start_idx : end_idx + 1]
             view_start_idx = start_idx
             view_end_idx = end_idx
 
         if not view_points:
-            self.chart_info_var.set("表示できるデータがありません。")
+            self.chart_info_var.set("表示範囲にデータがありません。")
+            canvas = self.chart_canvas
+            canvas.delete("all")
+            width, height, left, top, right, bottom, _plot_width, _plot_height = (
+                self._get_plot_area()
+            )
+            canvas.create_rectangle(
+                left, top, width - right, height - bottom, outline="#888888"
+            )
+            canvas.create_text(
+                width // 2,
+                height // 2,
+                text="表示範囲にデータがありません。",
+                fill="#666666",
+            )
             return
 
         prices_full = [p for _, p in view_points]

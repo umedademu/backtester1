@@ -237,11 +237,13 @@ def load_ticks_from_csv(start_jst: date, end_jst: date):
 
 def downsample_points(points, max_points):
     if len(points) <= max_points:
-        return points
+        return list(enumerate(points))
     step = max(1, len(points) // max_points)
-    sampled = points[::step]
-    if sampled and sampled[-1] != points[-1]:
-        sampled.append(points[-1])
+    sampled = []
+    for idx in range(0, len(points), step):
+        sampled.append((idx, points[idx]))
+    if sampled and sampled[-1][0] != len(points) - 1:
+        sampled.append((len(points) - 1, points[-1]))
     return sampled
 
 
@@ -338,6 +340,8 @@ class Step1App:
         self.worker = None
         self.chart_worker = None
         self.chart_data = None
+        self.drag_start_x = None
+        self.drag_start_view = None
 
         today_jst = datetime.now(JST).date()
         self.start_date = today_jst
@@ -411,6 +415,11 @@ class Step1App:
         self.chart_canvas = tk.Canvas(chart_tab, bg="white")
         self.chart_canvas.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
         self.chart_canvas.bind("<Configure>", self._on_canvas_resize)
+        self.chart_canvas.bind("<MouseWheel>", self._on_mouse_wheel)
+        self.chart_canvas.bind("<Button-4>", self._on_mouse_wheel)
+        self.chart_canvas.bind("<Button-5>", self._on_mouse_wheel)
+        self.chart_canvas.bind("<ButtonPress-1>", self._on_drag_start)
+        self.chart_canvas.bind("<B1-Motion>", self._on_drag_move)
 
         download_tab.columnconfigure(0, weight=1)
         download_tab.rowconfigure(4, weight=1)
@@ -626,23 +635,102 @@ class Step1App:
         end = payload["end"]
         missing_count = payload["missing_count"]
 
-        all_prices = [p for _, p in points]
-        if not all_prices:
+        if not points:
             self.chart_info_var.set("表示できるデータがありません。")
             return
-        min_all = min(all_prices)
-        max_all = max(all_prices)
-        downsampled = downsample_points(points, 5000)
 
+        points = sorted(points, key=lambda x: x[0])
         self.chart_data = {
-            "points": downsampled,
-            "count": len(all_prices),
-            "min": min_all,
-            "max": max_all,
+            "all_points": points,
+            "view_start": 0,
+            "view_end": len(points) - 1,
+            "count": len(points),
             "start": start,
             "end": end,
             "missing": missing_count,
         }
+        self._draw_chart()
+
+    def _get_plot_area(self):
+        canvas = self.chart_canvas
+        width = max(canvas.winfo_width(), 200)
+        height = max(canvas.winfo_height(), 200)
+        left = 10
+        right = 70
+        top = 10
+        bottom = 30
+        plot_width = max(1, width - left - right)
+        plot_height = max(1, height - top - bottom)
+        return width, height, left, top, right, bottom, plot_width, plot_height
+
+    def _on_mouse_wheel(self, event):
+        if not self.chart_data:
+            return
+        if hasattr(event, "delta") and event.delta:
+            direction = 1 if event.delta > 0 else -1
+        elif hasattr(event, "num"):
+            direction = 1 if event.num == 4 else -1
+        else:
+            return
+
+        data = self.chart_data
+        total = len(data["all_points"])
+        view_start = data["view_start"]
+        view_end = data["view_end"]
+        visible = view_end - view_start + 1
+        if visible <= 2:
+            return
+
+        min_visible = 50
+        if direction > 0:
+            new_visible = max(min_visible, int(visible * 0.8))
+        else:
+            new_visible = min(total, int(visible * 1.25))
+
+        width, _height, left, _top, right, _bottom, plot_width, _plot_height = (
+            self._get_plot_area()
+        )
+        if plot_width <= 1:
+            return
+
+        if left <= event.x <= width - right:
+            ratio = (event.x - left) / plot_width
+            ratio = min(max(ratio, 0.0), 1.0)
+        else:
+            ratio = 0.5
+
+        anchor = view_start + int(ratio * (visible - 1))
+        new_start = anchor - int(ratio * (new_visible - 1))
+        new_start = max(0, min(new_start, total - new_visible))
+        data["view_start"] = new_start
+        data["view_end"] = new_start + new_visible - 1
+        self._draw_chart()
+
+    def _on_drag_start(self, event):
+        if not self.chart_data:
+            return
+        self.drag_start_x = event.x
+        self.drag_start_view = (
+            self.chart_data["view_start"],
+            self.chart_data["view_end"],
+        )
+
+    def _on_drag_move(self, event):
+        if not self.chart_data or self.drag_start_x is None or not self.drag_start_view:
+            return
+        width, _height, left, _top, right, _bottom, plot_width, _plot_height = (
+            self._get_plot_area()
+        )
+        if plot_width <= 1:
+            return
+        view_start, view_end = self.drag_start_view
+        visible = view_end - view_start + 1
+        dx = event.x - self.drag_start_x
+        shift = int(-dx / plot_width * visible)
+        total = len(self.chart_data["all_points"])
+        new_start = max(0, min(view_start + shift, total - visible))
+        self.chart_data["view_start"] = new_start
+        self.chart_data["view_end"] = new_start + visible - 1
         self._draw_chart()
 
     def _on_canvas_resize(self, _event):
@@ -654,16 +742,30 @@ class Step1App:
         if not data:
             return
 
-        points = data["points"]
-        min_all = data["min"]
-        max_all = data["max"]
+        points_all = data["all_points"]
+        view_start = data["view_start"]
+        view_end = data["view_end"]
         start = data["start"]
         end = data["end"]
         missing_count = data["missing"]
 
+        view_points = points_all[view_start : view_end + 1]
+        if not view_points:
+            self.chart_info_var.set("表示できるデータがありません。")
+            return
+
+        prices_full = [p for _, p in view_points]
+        min_p = min(prices_full)
+        max_p = max(prices_full)
+        if min_p == max_p:
+            min_p -= 0.01
+            max_p += 0.01
+
         info_text = (
             f"表示期間: {start.isoformat()}〜{end.isoformat()}  "
-            f"件数: {data['count']}  最小: {min_all:.3f}  最大: {max_all:.3f}"
+            f"件数: {data['count']}  "
+            f"表示中: {len(view_points)}  "
+            f"最小: {min_p:.3f}  最大: {max_p:.3f}"
         )
         if missing_count:
             info_text += f"  不足CSV: {missing_count}件"
@@ -671,32 +773,55 @@ class Step1App:
 
         canvas = self.chart_canvas
         canvas.delete("all")
-        width = max(canvas.winfo_width(), 200)
-        height = max(canvas.winfo_height(), 200)
-        pad = 30
+        width, height, left, top, right, bottom, plot_width, plot_height = (
+            self._get_plot_area()
+        )
 
-        prices = [p for _, p in points]
-        min_p = min(prices)
-        max_p = max(prices)
-        if min_p == max_p:
-            min_p -= 0.01
-            max_p += 0.01
+        canvas.create_rectangle(
+            left, top, width - right, height - bottom, outline="#888888"
+        )
 
-        n = len(points)
-        if n >= 2:
-            x_step = (width - pad * 2) / (n - 1)
-        else:
-            x_step = 1
+        n = len(view_points)
+        if n < 2:
+            return
 
+        sampled = downsample_points(view_points, 5000)
         coords = []
-        for i, (_, price) in enumerate(points):
-            x = pad + i * x_step
-            y = height - pad - (price - min_p) / (max_p - min_p) * (height - pad * 2)
+        for idx, (_ts, price) in sampled:
+            x = left + idx / (n - 1) * plot_width
+            y = height - bottom - (price - min_p) / (max_p - min_p) * plot_height
             coords.extend([x, y])
 
-        canvas.create_rectangle(pad, pad, width - pad, height - pad, outline="#888888")
         if coords:
             canvas.create_line(coords, fill="#1f77b4", width=1)
+
+        ticks = 5
+        for i in range(ticks + 1):
+            y = top + plot_height * i / ticks
+            value = max_p - (max_p - min_p) * i / ticks
+            canvas.create_line(width - right, y, width - right + 4, y, fill="#333333")
+            canvas.create_text(
+                width - right + 6,
+                y,
+                text=f"{value:.3f}",
+                anchor="w",
+                fill="#333333",
+            )
+
+        time_ticks = 5
+        for i in range(time_ticks + 1):
+            idx = int((n - 1) * i / time_ticks)
+            ts = view_points[idx][0]
+            label = ts.strftime("%m/%d %H:%M")
+            x = left + idx / (n - 1) * plot_width
+            canvas.create_line(x, height - bottom, x, height - bottom + 4, fill="#333333")
+            canvas.create_text(
+                x,
+                height - bottom + 6,
+                text=label,
+                anchor="n",
+                fill="#333333",
+            )
 
 
 def main():

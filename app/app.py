@@ -405,92 +405,98 @@ class Step1App:
 
     def _download_worker(self, start: date, end: date):
         hours = to_utc_hour_range(start, end)
+        day_groups = group_hours_by_jst_day(hours)
         total = len(hours)
         self.queue.put(("status", f"ダウンロード中...（{total}件）"))
 
-        for idx, dt_utc in enumerate(hours, start=1):
-            url = hour_to_url(dt_utc)
-            path = hour_to_path(dt_utc)
-            path.parent.mkdir(parents=True, exist_ok=True)
-
-            if path.exists():
-                if path.stat().st_size == 0:
-                    try:
-                        path.unlink()
-                    except Exception as e:
-                        self.queue.put(("log", f"[{idx}/{total}] 削除失敗 {path} {e}"))
-                        continue
-                else:
-                    self.queue.put(("log", f"[{idx}/{total}] スキップ {path}"))
-                    continue
-
-            try:
-                data = b""
-                for _ in range(2):
-                    with urlopen(url, timeout=30) as resp:
-                        data = resp.read()
-                    if data:
-                        break
-                if not data:
-                    if path.exists():
-                        path.unlink()
-                    self.queue.put(("log", f"[{idx}/{total}] 0バイト {url}"))
-                    continue
-                path.write_bytes(data)
-                if path.stat().st_size == 0:
-                    path.unlink()
-                    self.queue.put(("log", f"[{idx}/{total}] 0バイト {url}"))
-                    continue
-                self.queue.put(("log", f"[{idx}/{total}] 成功 {path}"))
-            except HTTPError as e:
-                self.queue.put(("log", f"[{idx}/{total}] HTTP {e.code} {url}"))
-            except URLError as e:
-                self.queue.put(("log", f"[{idx}/{total}] URLエラー {e.reason}"))
-            except Exception as e:
-                self.queue.put(("log", f"[{idx}/{total}] エラー {e}"))
-
-        day_groups = group_hours_by_jst_day(hours)
-        self.queue.put(("status", f"CSV作成中...（{len(day_groups)}日）"))
-
+        index = 0
         for jst_day, day_hours in day_groups.items():
-            csv_path = day_to_csv_path(jst_day)
-            if csv_path.exists() and csv_path.stat().st_size > 0:
-                self.queue.put(("log", f"[CSV] スキップ {csv_path}"))
-                continue
-
-            missing = []
             for dt_utc in day_hours:
-                src = hour_to_path(dt_utc)
-                if (not src.exists()) or src.stat().st_size == 0:
-                    missing.append(src)
-            if missing:
-                self.queue.put(
-                    ("log", f"[CSV] スキップ {jst_day.isoformat()} 不足 {len(missing)}件")
-                )
-                continue
+                index += 1
+                url = hour_to_url(dt_utc)
+                path = hour_to_path(dt_utc)
+                path.parent.mkdir(parents=True, exist_ok=True)
 
-            csv_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                with csv_path.open("w", newline="", encoding="utf-8") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(
-                        ["timestamp_jst", "bid", "ask", "bid_volume", "ask_volume"]
-                    )
-                    for dt_utc in day_hours:
-                        src = hour_to_path(dt_utc)
-                        for row in iter_ticks(src, dt_utc):
-                            writer.writerow(row)
-                self.queue.put(("log", f"[CSV] 成功 {csv_path}"))
-            except Exception as e:
+                if path.exists():
+                    if path.stat().st_size == 0:
+                        try:
+                            path.unlink()
+                        except Exception as e:
+                            self.queue.put(
+                                ("log", f"[{index}/{total}] 削除失敗 {path} {e}")
+                            )
+                            continue
+                    else:
+                        self.queue.put(("log", f"[{index}/{total}] スキップ {path}"))
+                        continue
+
                 try:
-                    if csv_path.exists():
-                        csv_path.unlink()
-                except Exception:
-                    pass
-                self.queue.put(("log", f"[CSV] エラー {jst_day.isoformat()} {e}"))
+                    data = b""
+                    for _ in range(2):
+                        with urlopen(url, timeout=30) as resp:
+                            data = resp.read()
+                        if data:
+                            break
+                    if not data:
+                        if path.exists():
+                            path.unlink()
+                        self.queue.put(("log", f"[{index}/{total}] 0バイト {url}"))
+                        continue
+                    path.write_bytes(data)
+                    if path.stat().st_size == 0:
+                        path.unlink()
+                        self.queue.put(("log", f"[{index}/{total}] 0バイト {url}"))
+                        continue
+                    self.queue.put(("log", f"[{index}/{total}] 成功 {path}"))
+                except HTTPError as e:
+                    self.queue.put(("log", f"[{index}/{total}] HTTP {e.code} {url}"))
+                except URLError as e:
+                    self.queue.put(("log", f"[{index}/{total}] URLエラー {e.reason}"))
+                except Exception as e:
+                    self.queue.put(("log", f"[{index}/{total}] エラー {e}"))
+
+            self.queue.put(("status", f"CSV作成中...（{jst_day.isoformat()}）"))
+            self._build_csv_for_day(jst_day, day_hours)
 
         self.queue.put(("status", "完了"))
         self.queue.put(("done", None))
+
+    def _build_csv_for_day(self, jst_day, day_hours):
+        csv_path = day_to_csv_path(jst_day)
+        if csv_path.exists() and csv_path.stat().st_size > 0:
+            self.queue.put(("log", f"[CSV] スキップ {csv_path}"))
+            return
+
+        missing = []
+        for dt_utc in day_hours:
+            src = hour_to_path(dt_utc)
+            if (not src.exists()) or src.stat().st_size == 0:
+                missing.append(src)
+        if missing:
+            self.queue.put(
+                ("log", f"[CSV] スキップ {jst_day.isoformat()} 不足 {len(missing)}件")
+            )
+            return
+
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with csv_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    ["timestamp_jst", "bid", "ask", "bid_volume", "ask_volume"]
+                )
+                for dt_utc in day_hours:
+                    src = hour_to_path(dt_utc)
+                    for row in iter_ticks(src, dt_utc):
+                        writer.writerow(row)
+            self.queue.put(("log", f"[CSV] 成功 {csv_path}"))
+        except Exception as e:
+            try:
+                if csv_path.exists():
+                    csv_path.unlink()
+            except Exception:
+                pass
+            self.queue.put(("log", f"[CSV] エラー {jst_day.isoformat()} {e}"))
 
     def _poll_queue(self):
         try:

@@ -24,6 +24,7 @@ from tkinter import messagebox, ttk
 
 PAIR = "USDJPY"
 BASE_URL = "https://datafeed.dukascopy.com/datafeed"
+PIP_SIZE = 0.01
 
 
 def project_root() -> Path:
@@ -248,6 +249,173 @@ def downsample_points(points, max_points):
     return sampled
 
 
+def find_spike_signal(points, times, start_idx, window, spike, retrace_rate):
+    t0, p0 = points[start_idx]
+    end_time = t0 + window
+    end_idx = bisect_right(times, end_time)
+    if end_idx <= start_idx + 1:
+        return None
+
+    min_price = p0
+    max_price = p0
+    min_idx = start_idx
+    max_idx = start_idx
+
+    for j in range(start_idx + 1, end_idx):
+        price = points[j][1]
+
+        if price < min_price:
+            min_price = price
+            min_idx = j
+
+        drop = p0 - min_price
+        if drop >= spike and j >= min_idx:
+            retrace_level = min_price + drop * retrace_rate
+            if price >= retrace_level:
+                return j, "long"
+
+        if price > max_price:
+            max_price = price
+            max_idx = j
+
+        rise = max_price - p0
+        if rise >= spike and j >= max_idx:
+            retrace_level = max_price - rise * retrace_rate
+            if price <= retrace_level:
+                return j, "short"
+
+    return None
+
+
+def summarize_trades(trades):
+    total = len(trades)
+    wins = sum(1 for t in trades if t["pips"] > 0)
+    losses = sum(1 for t in trades if t["pips"] < 0)
+    draws = total - wins - losses
+    total_pips = sum(t["pips"] for t in trades)
+    avg_pips = total_pips / total if total else 0.0
+    win_rate = wins / total * 100 if total else 0.0
+    return {
+        "total": total,
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "total_pips": total_pips,
+        "avg_pips": avg_pips,
+        "win_rate": win_rate,
+    }
+
+
+def run_backtest(points, params):
+    if not points:
+        return {
+            "trades": [],
+            "summary": summarize_trades([]),
+            "equity_curve": [],
+        }
+
+    points_sorted = sorted(points, key=lambda x: x[0])
+    times = [ts for ts, _ in points_sorted]
+    window = timedelta(milliseconds=params["window_ms"])
+    spike = params["spike_pips"] * PIP_SIZE
+    retrace_rate = params["retrace_rate"]
+    spread = params["spread_pips"] * PIP_SIZE
+    stop = params["stop_pips"] * PIP_SIZE
+    take = params["take_pips"] * PIP_SIZE
+
+    trades = []
+    equity_curve = [(times[0], 0.0)]
+    cumulative = 0.0
+
+    i = 0
+    n = len(points_sorted)
+    while i < n - 1:
+        signal = find_spike_signal(
+            points_sorted, times, i, window, spike, retrace_rate
+        )
+        if not signal:
+            i += 1
+            continue
+
+        entry_idx, side = signal
+        entry_time, entry_bid = points_sorted[entry_idx]
+        entry_price = entry_bid + spread if side == "long" else entry_bid
+
+        if side == "long":
+            stop_price = entry_price - stop
+            take_price = entry_price + take
+        else:
+            stop_price = entry_price + stop
+            take_price = entry_price - take
+
+        exit_idx = None
+        exit_price = None
+        exit_reason = None
+        j = entry_idx + 1
+        while j < n:
+            _t, bid = points_sorted[j]
+            ask = bid + spread
+            if side == "long":
+                if bid <= stop_price:
+                    exit_idx = j
+                    exit_price = bid
+                    exit_reason = "損切"
+                    break
+                if bid >= take_price:
+                    exit_idx = j
+                    exit_price = bid
+                    exit_reason = "利確"
+                    break
+            else:
+                if ask >= stop_price:
+                    exit_idx = j
+                    exit_price = ask
+                    exit_reason = "損切"
+                    break
+                if ask <= take_price:
+                    exit_idx = j
+                    exit_price = ask
+                    exit_reason = "利確"
+                    break
+            j += 1
+
+        if exit_idx is None:
+            exit_idx = n - 1
+            _t, last_bid = points_sorted[-1]
+            exit_price = last_bid + spread if side == "short" else last_bid
+            exit_reason = "終了"
+
+        if side == "long":
+            pips = (exit_price - entry_price) / PIP_SIZE
+        else:
+            pips = (entry_price - exit_price) / PIP_SIZE
+
+        trades.append(
+            {
+                "side": side,
+                "entry_time": entry_time,
+                "entry_price": entry_price,
+                "exit_time": points_sorted[exit_idx][0],
+                "exit_price": exit_price,
+                "pips": pips,
+                "reason": exit_reason,
+            }
+        )
+
+        cumulative += pips
+        equity_curve.append((points_sorted[exit_idx][0], cumulative))
+        i = exit_idx + 1
+
+    if equity_curve and equity_curve[-1][0] != times[-1]:
+        equity_curve.append((times[-1], cumulative))
+
+    return {
+        "trades": trades,
+        "summary": summarize_trades(trades),
+        "equity_curve": equity_curve,
+    }
+
+
 class CalendarPopup:
     def __init__(self, parent, initial_date: date, on_select):
         self.parent = parent
@@ -359,6 +527,16 @@ class Step1App:
         self.status_var = tk.StringVar(value="準備完了")
         self.chart_info_var = tk.StringVar(value="")
         self.x_axis_mode_var = tk.StringVar(value="time")
+        self.spike_window_var = tk.StringVar(value="500")
+        self.spike_pips_var = tk.StringVar(value="1.0")
+        self.retrace_var = tk.StringVar(value="90")
+        self.spread_var = tk.StringVar(value="1.0")
+        self.stop_pips_var = tk.StringVar(value="5.0")
+        self.take_pips_var = tk.StringVar(value="5.0")
+        self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
+        self.pnl_info_var = tk.StringVar(value="損益: 未実行")
+        self.pnl_data = None
+        self.backtest_ready = False
 
         self._build_ui()
         self._poll_queue()
@@ -373,8 +551,10 @@ class Step1App:
 
         chart_tab = ttk.Frame(notebook, padding=12)
         download_tab = ttk.Frame(notebook, padding=12)
+        pnl_tab = ttk.Frame(notebook, padding=12)
         notebook.add(chart_tab, text="チャート")
         notebook.add(download_tab, text="ダウンロード")
+        notebook.add(pnl_tab, text="損益")
 
         status_bar = ttk.Frame(self.root)
         status_bar.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
@@ -382,7 +562,7 @@ class Step1App:
         ttk.Label(status_bar, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
 
         chart_tab.columnconfigure(0, weight=1)
-        chart_tab.rowconfigure(4, weight=1)
+        chart_tab.rowconfigure(6, weight=1)
 
         ttk.Label(chart_tab, text="表示期間（JST）").grid(row=0, column=0, sticky="w")
 
@@ -431,12 +611,44 @@ class Step1App:
             command=self._on_axis_mode_change,
         ).grid(row=0, column=3, sticky="w")
 
+        settings = ttk.LabelFrame(chart_tab, text="バックテスト条件")
+        settings.grid(row=3, column=0, sticky="ew", pady=(8, 6))
+
+        ttk.Label(settings, text="スパイク時間（ミリ秒）").grid(row=0, column=0, sticky="w")
+        ttk.Entry(settings, textvariable=self.spike_window_var, width=8).grid(
+            row=0, column=1, padx=(4, 12), sticky="w"
+        )
+        ttk.Label(settings, text="スパイク幅（ピップス）").grid(row=0, column=2, sticky="w")
+        ttk.Entry(settings, textvariable=self.spike_pips_var, width=8).grid(
+            row=0, column=3, padx=(4, 12), sticky="w"
+        )
+        ttk.Label(settings, text="最小戻し率（％）").grid(row=0, column=4, sticky="w")
+        ttk.Entry(settings, textvariable=self.retrace_var, width=8).grid(
+            row=0, column=5, padx=(4, 0), sticky="w"
+        )
+
+        ttk.Label(settings, text="スプレッド（ピップス）").grid(row=1, column=0, sticky="w")
+        ttk.Entry(settings, textvariable=self.spread_var, width=8).grid(
+            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="損切幅（ピップス）").grid(row=1, column=2, sticky="w", pady=(6, 0))
+        ttk.Entry(settings, textvariable=self.stop_pips_var, width=8).grid(
+            row=1, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="利確幅（ピップス）").grid(row=1, column=4, sticky="w", pady=(6, 0))
+        ttk.Entry(settings, textvariable=self.take_pips_var, width=8).grid(
+            row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
-            row=3, column=0, sticky="w"
+            row=4, column=0, sticky="w"
+        )
+        ttk.Label(chart_tab, textvariable=self.backtest_info_var).grid(
+            row=5, column=0, sticky="w"
         )
 
         self.chart_canvas = tk.Canvas(chart_tab, bg="white")
-        self.chart_canvas.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
+        self.chart_canvas.grid(row=6, column=0, sticky="nsew", pady=(6, 0))
         self.chart_canvas.bind("<Configure>", self._on_canvas_resize)
         self.chart_canvas.bind("<MouseWheel>", self._on_mouse_wheel)
         self.chart_canvas.bind("<Button-4>", self._on_mouse_wheel)
@@ -481,6 +693,14 @@ class Step1App:
         self.log = tk.Text(download_tab, height=14, width=80)
         self.log.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
 
+        pnl_tab.columnconfigure(0, weight=1)
+        pnl_tab.rowconfigure(1, weight=1)
+
+        ttk.Label(pnl_tab, textvariable=self.pnl_info_var).grid(row=0, column=0, sticky="w")
+        self.pnl_canvas = tk.Canvas(pnl_tab, bg="white")
+        self.pnl_canvas.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        self.pnl_canvas.bind("<Configure>", self._on_pnl_resize)
+
     def _pick_start(self):
         CalendarPopup(self.root, self.start_date, self._set_start)
 
@@ -508,6 +728,51 @@ class Step1App:
     def _set_view_end(self, picked: date):
         self.view_end_date = picked
         self.view_end_var.set(picked.isoformat())
+
+    def _parse_number(self, value: str) -> float:
+        cleaned = value.strip().replace(",", ".").replace("，", ".")
+        filtered = "".join(ch for ch in cleaned if ch.isdigit() or ch in ".-")
+        return float(filtered)
+
+    def _get_backtest_params(self):
+        try:
+            window_ms = self._parse_number(self.spike_window_var.get())
+            spike_pips = self._parse_number(self.spike_pips_var.get())
+            retrace_pct = self._parse_number(self.retrace_var.get())
+            spread_pips = self._parse_number(self.spread_var.get())
+            stop_pips = self._parse_number(self.stop_pips_var.get())
+            take_pips = self._parse_number(self.take_pips_var.get())
+        except ValueError:
+            messagebox.showerror("エラー", "数値の入力が正しくありません。")
+            return None
+
+        if window_ms <= 0:
+            messagebox.showerror("エラー", "スパイク時間は0より大きくしてください。")
+            return None
+        if spike_pips <= 0:
+            messagebox.showerror("エラー", "スパイク幅は0より大きくしてください。")
+            return None
+        if retrace_pct < 0 or retrace_pct > 100:
+            messagebox.showerror("エラー", "最小戻し率は0〜100の範囲にしてください。")
+            return None
+        if spread_pips < 0:
+            messagebox.showerror("エラー", "スプレッドは0以上にしてください。")
+            return None
+        if stop_pips <= 0:
+            messagebox.showerror("エラー", "損切幅は0より大きくしてください。")
+            return None
+        if take_pips <= 0:
+            messagebox.showerror("エラー", "利確幅は0より大きくしてください。")
+            return None
+
+        return {
+            "window_ms": window_ms,
+            "spike_pips": spike_pips,
+            "retrace_rate": retrace_pct / 100.0,
+            "spread_pips": spread_pips,
+            "stop_pips": stop_pips,
+            "take_pips": take_pips,
+        }
 
     def _start_download(self):
         if self.worker and self.worker.is_alive():
@@ -543,16 +808,24 @@ class Step1App:
         if self.view_end_date < self.view_start_date:
             messagebox.showerror("エラー", "終了日は開始日より後にしてください。")
             return
+        params = self._get_backtest_params()
+        if not params:
+            return
         self.chart_button.config(state="disabled")
         self.status_var.set("表示準備中...")
+        self.backtest_info_var.set("バックテスト: 計算中...")
+        self.pnl_info_var.set("損益: 計算中...")
+        self.backtest_ready = False
+        self.pnl_data = None
+        self._draw_pnl_chart()
         self.chart_worker = threading.Thread(
             target=self._chart_worker,
-            args=(self.view_start_date, self.view_end_date),
+            args=(self.view_start_date, self.view_end_date, params),
             daemon=True,
         )
         self.chart_worker.start()
 
-    def _chart_worker(self, start: date, end: date):
+    def _chart_worker(self, start: date, end: date, params):
         points, missing = load_ticks_from_csv(start, end)
         if missing:
             self.queue.put(("log", f"[表示] CSV不足 {len(missing)}件"))
@@ -560,13 +833,21 @@ class Step1App:
             self.queue.put(("chart_error", "表示できるデータがありません。"))
             self.queue.put(("chart_done", None))
             return
+        points_sorted = sorted(points, key=lambda x: x[0])
         payload = {
             "start": start,
             "end": end,
-            "points": points,
+            "points": points_sorted,
             "missing_count": len(missing),
         }
         self.queue.put(("chart_data", payload))
+        self.queue.put(("status", "バックテスト中..."))
+        try:
+            backtest = run_backtest(points_sorted, params)
+            self.queue.put(("backtest_data", backtest))
+        except Exception as e:
+            self.queue.put(("backtest_error", str(e)))
+        self.queue.put(("status", "表示完了"))
         self.queue.put(("chart_done", None))
 
     def _download_worker(self, start: date, end: date, exclude_weekends: bool):
@@ -669,8 +950,22 @@ class Step1App:
                     self.chart_button.config(state="normal")
                 elif kind == "chart_error":
                     messagebox.showerror("エラー", payload)
+                    self.backtest_info_var.set("バックテスト: データなし")
+                    self.pnl_info_var.set("損益: データなし")
+                    self.backtest_ready = False
+                    self.pnl_data = None
+                    self._draw_pnl_chart()
                 elif kind == "chart_data":
                     self._render_chart(payload)
+                elif kind == "backtest_data":
+                    self._render_backtest(payload)
+                elif kind == "backtest_error":
+                    messagebox.showerror("エラー", f"バックテストで問題が起きました: {payload}")
+                    self.backtest_info_var.set("バックテスト: エラー")
+                    self.pnl_info_var.set("損益: エラー")
+                    self.backtest_ready = False
+                    self.pnl_data = None
+                    self._draw_pnl_chart()
                 elif kind == "cancelled":
                     self.status_var.set("キャンセルしました")
                     self.run_button.config(state="normal")
@@ -706,6 +1001,36 @@ class Step1App:
         }
         self._draw_chart()
 
+    def _render_backtest(self, payload):
+        summary = payload.get("summary", {})
+        total = summary.get("total", 0)
+        wins = summary.get("wins", 0)
+        losses = summary.get("losses", 0)
+        draws = summary.get("draws", 0)
+        total_pips = summary.get("total_pips", 0.0)
+        avg_pips = summary.get("avg_pips", 0.0)
+        win_rate = summary.get("win_rate", 0.0)
+
+        if total == 0:
+            self.backtest_info_var.set("バックテスト: 取引0件")
+            self.pnl_info_var.set("損益: 取引0件")
+        else:
+            draw_text = f" 引き分け{draws}件" if draws else ""
+            self.backtest_info_var.set(
+                f"バックテスト: 取引{total}件 勝ち{wins}件 負け{losses}件"
+                f"{draw_text} 勝率{win_rate:.1f}% 合計損益{total_pips:.1f}ピップス"
+                f" 平均損益{avg_pips:.2f}ピップス"
+            )
+            draw_text_short = f" / 引き分け{draws}" if draws else ""
+            self.pnl_info_var.set(
+                f"合計損益: {total_pips:.1f}ピップス 取引: {total}件"
+                f"（勝ち{wins} / 負け{losses}{draw_text_short}）"
+            )
+
+        self.pnl_data = payload.get("equity_curve") or []
+        self.backtest_ready = True
+        self._draw_pnl_chart()
+
     def _on_axis_mode_change(self):
         if not self.chart_data:
             return
@@ -731,8 +1056,8 @@ class Step1App:
             data["view_end"] = end_idx
         self._draw_chart()
 
-    def _get_plot_area(self):
-        canvas = self.chart_canvas
+    def _get_plot_area(self, canvas=None):
+        canvas = canvas or self.chart_canvas
         width = max(canvas.winfo_width(), 200)
         height = max(canvas.winfo_height(), 200)
         left = 10
@@ -974,6 +1299,95 @@ class Step1App:
                 idx = int((n - 1) * ratio)
                 ts = view_points[idx][0]
                 x = left + idx / (n - 1) * plot_width
+            label = ts.strftime("%m/%d %H:%M")
+            canvas.create_line(x, height - bottom, x, height - bottom + 4, fill="#333333")
+            canvas.create_text(
+                x,
+                height - bottom + 6,
+                text=label,
+                anchor="n",
+                fill="#333333",
+            )
+
+    def _on_pnl_resize(self, _event):
+        self._draw_pnl_chart()
+
+    def _draw_pnl_chart(self):
+        if not hasattr(self, "pnl_canvas"):
+            return
+        canvas = self.pnl_canvas
+        canvas.delete("all")
+
+        if not self.backtest_ready:
+            message = self.pnl_info_var.get() or "まだ計算していません。"
+            canvas.create_text(
+                canvas.winfo_width() // 2,
+                canvas.winfo_height() // 2,
+                text=message,
+                fill="#666666",
+            )
+            return
+
+        if not self.pnl_data or len(self.pnl_data) < 2:
+            canvas.create_text(
+                canvas.winfo_width() // 2,
+                canvas.winfo_height() // 2,
+                text="取引がありません。",
+                fill="#666666",
+            )
+            return
+
+        times = [ts for ts, _v in self.pnl_data]
+        values = [v for _ts, v in self.pnl_data]
+
+        min_v = min(values)
+        max_v = max(values)
+        if min_v == max_v:
+            min_v -= 1.0
+            max_v += 1.0
+
+        width, height, left, top, right, bottom, plot_width, plot_height = (
+            self._get_plot_area(canvas)
+        )
+        canvas.create_rectangle(
+            left, top, width - right, height - bottom, outline="#888888"
+        )
+
+        span_seconds = (times[-1] - times[0]).total_seconds()
+        coords = []
+        for ts, value in self.pnl_data:
+            if span_seconds > 0:
+                x = left + (ts - times[0]).total_seconds() / span_seconds * plot_width
+            else:
+                x = left + plot_width / 2
+            y = height - bottom - (value - min_v) / (max_v - min_v) * plot_height
+            coords.extend([x, y])
+
+        if coords:
+            canvas.create_line(coords, fill="#d62728", width=1)
+
+        ticks = 5
+        for i in range(ticks + 1):
+            y = top + plot_height * i / ticks
+            value = max_v - (max_v - min_v) * i / ticks
+            canvas.create_line(width - right, y, width - right + 4, y, fill="#333333")
+            canvas.create_text(
+                width - right + 6,
+                y,
+                text=f"{value:.1f}",
+                anchor="w",
+                fill="#333333",
+            )
+
+        time_ticks = 5
+        for i in range(time_ticks + 1):
+            ratio = i / time_ticks if time_ticks > 0 else 0
+            if span_seconds > 0:
+                ts = times[0] + (times[-1] - times[0]) * ratio
+                x = left + ratio * plot_width
+            else:
+                ts = times[0]
+                x = left + plot_width / 2
             label = ts.strftime("%m/%d %H:%M")
             canvas.create_line(x, height - bottom, x, height - bottom + 4, fill="#333333")
             canvas.create_text(

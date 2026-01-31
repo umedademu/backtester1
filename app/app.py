@@ -12,8 +12,10 @@ from urllib.request import urlopen
 try:
     from zoneinfo import ZoneInfo
     JST = ZoneInfo("Asia/Tokyo")
+    NEW_YORK = ZoneInfo("America/New_York")
 except Exception:
     JST = timezone(timedelta(hours=9))
+    NEW_YORK = None
 
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -86,6 +88,90 @@ def group_hours_by_jst_day(hours):
     for items in grouped.values():
         items.sort()
     return grouped
+
+
+def weekend_boundary_hour_jst(dt_utc: datetime) -> int:
+    if NEW_YORK is None:
+        return 7
+    ny = dt_utc.astimezone(NEW_YORK)
+    if ny.dst() and ny.dst() != timedelta(0):
+        return 6
+    return 7
+
+
+def is_weekend_closed(dt_utc: datetime) -> bool:
+    jst = dt_utc.astimezone(JST)
+    boundary = weekend_boundary_hour_jst(dt_utc)
+    weekday = jst.weekday()
+    if weekday == 5 and jst.hour >= boundary:
+        return True
+    if weekday == 6:
+        return True
+    if weekday == 0 and jst.hour < boundary:
+        return True
+    return False
+
+
+def is_excluded_hour(dt_utc: datetime, exclude_weekends: bool) -> bool:
+    if not exclude_weekends:
+        return False
+    return is_weekend_closed(dt_utc)
+
+
+def build_csv_for_day(jst_day: date, day_hours, exclude_weekends: bool, log_fn=None):
+    def log(message: str):
+        if log_fn:
+            log_fn(message)
+
+    allowed_hours = [
+        dt_utc for dt_utc in day_hours if not is_excluded_hour(dt_utc, exclude_weekends)
+    ]
+    if not allowed_hours:
+        log(f"[CSV] 対象外 {jst_day.isoformat()}")
+        return False
+
+    csv_path = day_to_csv_path(jst_day)
+    if csv_path.exists() and csv_path.stat().st_size > 0:
+        log(f"[CSV] スキップ {csv_path}")
+        return True
+
+    available_hours = []
+    missing = []
+    for dt_utc in allowed_hours:
+        src = hour_to_path(dt_utc)
+        if src.exists() and src.stat().st_size > 0:
+            available_hours.append(dt_utc)
+        else:
+            missing.append(src)
+
+    if not available_hours:
+        log(f"[CSV] スキップ {jst_day.isoformat()} 取得0件")
+        return False
+
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["timestamp_jst", "bid", "ask", "bid_volume", "ask_volume"])
+            for dt_utc in available_hours:
+                src = hour_to_path(dt_utc)
+                for row in iter_ticks(src, dt_utc):
+                    writer.writerow(row)
+        if missing:
+            log(
+                f"[CSV] 不足あり {jst_day.isoformat()} 不足 {len(missing)}件 作成"
+            )
+        else:
+            log(f"[CSV] 成功 {csv_path}")
+        return True
+    except Exception as e:
+        try:
+            if csv_path.exists():
+                csv_path.unlink()
+        except Exception:
+            pass
+        log(f"[CSV] エラー {jst_day.isoformat()} {e}")
+        return False
 
 
 def iter_ticks(path: Path, hour_start_utc: datetime):
@@ -262,6 +348,7 @@ class Step1App:
         self.end_var = tk.StringVar(value=self.end_date.isoformat())
         self.view_start_var = tk.StringVar(value=self.view_start_date.isoformat())
         self.view_end_var = tk.StringVar(value=self.view_end_date.isoformat())
+        self.exclude_weekends_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="準備完了")
 
         self._build_ui()
@@ -273,7 +360,13 @@ class Step1App:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        ttk.Label(frame, text="取得期間（JST）").grid(row=0, column=0, sticky="w")
+        header = ttk.Frame(frame)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="取得期間（JST）").grid(row=0, column=0, sticky="w")
+        ttk.Checkbutton(
+            header, text="土日を除外（初期オン）", variable=self.exclude_weekends_var
+        ).grid(row=0, column=1, sticky="e")
 
         row = ttk.Frame(frame)
         row.grid(row=1, column=0, sticky="ew")
@@ -365,8 +458,11 @@ class Step1App:
         self.run_button.config(state="disabled")
         self.status_var.set("準備中...")
         self.log.delete("1.0", tk.END)
+        exclude_weekends = self.exclude_weekends_var.get()
         self.worker = threading.Thread(
-            target=self._download_worker, args=(self.start_date, self.end_date), daemon=True
+            target=self._download_worker,
+            args=(self.start_date, self.end_date, exclude_weekends),
+            daemon=True,
         )
         self.worker.start()
 
@@ -403,7 +499,7 @@ class Step1App:
         self.queue.put(("chart_data", payload))
         self.queue.put(("chart_done", None))
 
-    def _download_worker(self, start: date, end: date):
+    def _download_worker(self, start: date, end: date, exclude_weekends: bool):
         hours = to_utc_hour_range(start, end)
         day_groups = group_hours_by_jst_day(hours)
         total = len(hours)
@@ -413,6 +509,15 @@ class Step1App:
         for jst_day, day_hours in day_groups.items():
             for dt_utc in day_hours:
                 index += 1
+                if is_excluded_hour(dt_utc, exclude_weekends):
+                    jst_dt = dt_utc.astimezone(JST)
+                    self.queue.put(
+                        (
+                            "log",
+                            f"[{index}/{total}] 対象外 {jst_dt.strftime('%Y-%m-%d %H')}時",
+                        )
+                    )
+                    continue
                 url = hour_to_url(dt_utc)
                 path = hour_to_path(dt_utc)
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -456,47 +561,18 @@ class Step1App:
                     self.queue.put(("log", f"[{index}/{total}] エラー {e}"))
 
             self.queue.put(("status", f"CSV作成中...（{jst_day.isoformat()}）"))
-            self._build_csv_for_day(jst_day, day_hours)
+            self._build_csv_for_day(jst_day, day_hours, exclude_weekends)
 
         self.queue.put(("status", "完了"))
         self.queue.put(("done", None))
 
-    def _build_csv_for_day(self, jst_day, day_hours):
-        csv_path = day_to_csv_path(jst_day)
-        if csv_path.exists() and csv_path.stat().st_size > 0:
-            self.queue.put(("log", f"[CSV] スキップ {csv_path}"))
-            return
-
-        missing = []
-        for dt_utc in day_hours:
-            src = hour_to_path(dt_utc)
-            if (not src.exists()) or src.stat().st_size == 0:
-                missing.append(src)
-        if missing:
-            self.queue.put(
-                ("log", f"[CSV] スキップ {jst_day.isoformat()} 不足 {len(missing)}件")
-            )
-            return
-
-        csv_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with csv_path.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(
-                    ["timestamp_jst", "bid", "ask", "bid_volume", "ask_volume"]
-                )
-                for dt_utc in day_hours:
-                    src = hour_to_path(dt_utc)
-                    for row in iter_ticks(src, dt_utc):
-                        writer.writerow(row)
-            self.queue.put(("log", f"[CSV] 成功 {csv_path}"))
-        except Exception as e:
-            try:
-                if csv_path.exists():
-                    csv_path.unlink()
-            except Exception:
-                pass
-            self.queue.put(("log", f"[CSV] エラー {jst_day.isoformat()} {e}"))
+    def _build_csv_for_day(self, jst_day, day_hours, exclude_weekends: bool):
+        build_csv_for_day(
+            jst_day,
+            day_hours,
+            exclude_weekends,
+            log_fn=lambda msg: self.queue.put(("log", msg)),
+        )
 
     def _poll_queue(self):
         try:

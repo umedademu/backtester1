@@ -318,7 +318,12 @@ def find_spike_signal(points, times, start_idx, window, spike, retrace_rate):
         if drop >= spike and j >= min_idx:
             retrace_level = min_price + drop * retrace_rate
             if price >= retrace_level:
-                return j, "long"
+                return {
+                    "entry_idx": j,
+                    "side": "long",
+                    "extreme_idx": min_idx,
+                    "extreme_price": min_price,
+                }
 
         if price > max_price:
             max_price = price
@@ -328,7 +333,12 @@ def find_spike_signal(points, times, start_idx, window, spike, retrace_rate):
         if rise >= spike and j >= max_idx:
             retrace_level = max_price - rise * retrace_rate
             if price <= retrace_level:
-                return j, "short"
+                return {
+                    "entry_idx": j,
+                    "side": "short",
+                    "extreme_idx": max_idx,
+                    "extreme_price": max_price,
+                }
 
     return None
 
@@ -375,6 +385,8 @@ def run_backtest(points, params):
     ma_enabled = params.get("ma_enabled", False)
     ma_period = max(1, int(params.get("ma_period", 0)))
     ma_deviation = params.get("ma_deviation_rate", 0.0)
+    extreme_hold_ms = params.get("extreme_hold_ms", 0.0)
+    extreme_distance = params.get("extreme_distance_pips", 0.0) * PIP_SIZE
 
     candle_times = []
     ma_values = []
@@ -397,9 +409,28 @@ def run_backtest(points, params):
             i += 1
             continue
 
-        entry_idx, side = signal
+        entry_idx = signal["entry_idx"]
+        side = signal["side"]
+        extreme_idx = signal["extreme_idx"]
+        extreme_price = signal["extreme_price"]
         entry_time, entry_bid = points_sorted[entry_idx]
         entry_price = entry_bid + spread if side == "long" else entry_bid
+        extreme_time = points_sorted[extreme_idx][0]
+
+        if extreme_hold_ms > 0:
+            hold_limit = extreme_time + timedelta(milliseconds=extreme_hold_ms)
+            if entry_time < hold_limit:
+                i = entry_idx + 1
+                continue
+
+        if extreme_distance > 0:
+            if side == "long":
+                distance = entry_price - extreme_price
+            else:
+                distance = extreme_price - entry_price
+            if distance > extreme_distance:
+                i = entry_idx + 1
+                continue
 
         if ma_enabled:
             if not candle_times:
@@ -616,6 +647,8 @@ class Step1App:
         self.ma_filter_var = tk.BooleanVar(value=True)
         self.ma_period_var = tk.StringVar(value="200")
         self.ma_deviation_var = tk.StringVar(value="0.01")
+        self.extreme_hold_ms_var = tk.StringVar(value="0")
+        self.extreme_distance_pips_var = tk.StringVar(value="0")
         self.spike_window_var = tk.StringVar(value="500")
         self.spike_pips_var = tk.StringVar(value="1.0")
         self.retrace_var = tk.StringVar(value="90")
@@ -775,6 +808,15 @@ class Step1App:
         )
         self.ma_deviation_entry.grid(row=2, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
 
+        ttk.Label(settings, text="天底維持ms").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(settings, textvariable=self.extreme_hold_ms_var, width=8).grid(
+            row=3, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="天底距離pips").grid(row=3, column=2, sticky="w", pady=(6, 0))
+        ttk.Entry(settings, textvariable=self.extreme_distance_pips_var, width=8).grid(
+            row=3, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
         )
@@ -882,6 +924,8 @@ class Step1App:
             ma_enabled = self.ma_filter_var.get()
             ma_period = self._parse_number(self.ma_period_var.get())
             ma_deviation_pct = self._parse_number(self.ma_deviation_var.get())
+            extreme_hold_ms = self._parse_number(self.extreme_hold_ms_var.get())
+            extreme_distance_pips = self._parse_number(self.extreme_distance_pips_var.get())
         except ValueError:
             messagebox.showerror("エラー", "数値の入力が正しくありません。")
             return None
@@ -911,6 +955,12 @@ class Step1App:
         if ma_deviation_pct < 0:
             messagebox.showerror("エラー", "乖離率は0以上にしてください。")
             return None
+        if extreme_hold_ms < 0:
+            messagebox.showerror("エラー", "天底維持msは0以上にしてください。")
+            return None
+        if extreme_distance_pips < 0:
+            messagebox.showerror("エラー", "天底距離pipsは0以上にしてください。")
+            return None
 
         return {
             "window_ms": window_ms,
@@ -922,6 +972,8 @@ class Step1App:
             "ma_enabled": ma_enabled,
             "ma_period": int(ma_period),
             "ma_deviation_rate": ma_deviation_pct / 100.0,
+            "extreme_hold_ms": extreme_hold_ms,
+            "extreme_distance_pips": extreme_distance_pips,
         }
 
     def _start_download(self):

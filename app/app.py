@@ -388,6 +388,8 @@ def run_backtest(points, params):
     extreme_enabled = params.get("extreme_enabled", False)
     extreme_hold_ms = params.get("extreme_hold_ms", 0.0)
     extreme_distance = params.get("extreme_distance_pips", 0.0) * PIP_SIZE
+    exclude_enabled = params.get("exclude_enabled", False)
+    exclude_hours = params.get("exclude_hours", set())
 
     candle_times = []
     ma_values = []
@@ -441,6 +443,10 @@ def run_backtest(points, params):
 
         entry_time, entry_bid = points_sorted[entry_idx]
         entry_price = entry_bid + spread if side == "long" else entry_bid
+
+        if exclude_enabled and entry_time.hour in exclude_hours:
+            i = entry_idx + 1
+            continue
 
         if extreme_enabled and extreme_distance > 0:
             if side == "long":
@@ -669,6 +675,9 @@ class Step1App:
         self.extreme_filter_var = tk.BooleanVar(value=False)
         self.extreme_hold_ms_var = tk.StringVar(value="0")
         self.extreme_distance_pips_var = tk.StringVar(value="0")
+        self.backtest_exclude_var = tk.BooleanVar(value=False)
+        self.backtest_exclude_hours_vars = [tk.BooleanVar(value=False) for _ in range(24)]
+        self.backtest_exclude_label_var = tk.StringVar(value="除外時間: なし")
         self.spike_window_var = tk.StringVar(value="500")
         self.spike_pips_var = tk.StringVar(value="1.0")
         self.retrace_var = tk.StringVar(value="90")
@@ -828,27 +837,44 @@ class Step1App:
         )
         self.ma_deviation_entry.grid(row=2, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
 
-        ttk.Label(settings, text="天底維持ms").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        self.extreme_hold_entry = ttk.Entry(
-            settings, textvariable=self.extreme_hold_ms_var, width=8
-        )
-        self.extreme_hold_entry.grid(
-            row=3, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
-        )
-        ttk.Label(settings, text="天底距離pips").grid(row=3, column=2, sticky="w", pady=(6, 0))
-        self.extreme_distance_entry = ttk.Entry(
-            settings, textvariable=self.extreme_distance_pips_var, width=8
-        )
-        self.extreme_distance_entry.grid(
-            row=3, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
-        )
         self.extreme_check = ttk.Checkbutton(
             settings,
             text="天底フィルター",
             variable=self.extreme_filter_var,
             command=self._on_extreme_filter_toggle,
         )
-        self.extreme_check.grid(row=3, column=4, columnspan=2, sticky="w", pady=(6, 0))
+        self.extreme_check.grid(row=3, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="天底維持ms").grid(row=3, column=1, sticky="w", pady=(6, 0))
+        self.extreme_hold_entry = ttk.Entry(
+            settings, textvariable=self.extreme_hold_ms_var, width=8
+        )
+        self.extreme_hold_entry.grid(
+            row=3, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="天底距離pips").grid(row=3, column=3, sticky="w", pady=(6, 0))
+        self.extreme_distance_entry = ttk.Entry(
+            settings, textvariable=self.extreme_distance_pips_var, width=8
+        )
+        self.extreme_distance_entry.grid(
+            row=3, column=4, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+
+        self.backtest_exclude_check = ttk.Checkbutton(
+            settings,
+            text="時間帯除外",
+            variable=self.backtest_exclude_var,
+            command=self._on_backtest_exclude_toggle,
+        )
+        self.backtest_exclude_check.grid(row=4, column=0, sticky="w", pady=(6, 0))
+        self.backtest_exclude_button = ttk.Button(
+            settings, text="時間帯設定", command=self._open_backtest_exclude_hours
+        )
+        self.backtest_exclude_button.grid(
+            row=4, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, textvariable=self.backtest_exclude_label_var).grid(
+            row=4, column=2, columnspan=4, sticky="w", pady=(6, 0)
+        )
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
@@ -913,6 +939,7 @@ class Step1App:
 
         self._on_ma_filter_toggle()
         self._on_extreme_filter_toggle()
+        self._on_backtest_exclude_toggle()
 
     def _pick_start(self):
         CalendarPopup(self.root, self.start_date, self._set_start)
@@ -967,6 +994,8 @@ class Step1App:
             else:
                 extreme_hold_ms = 0.0
                 extreme_distance_pips = 0.0
+            exclude_enabled = self.backtest_exclude_var.get()
+            exclude_hours = self._get_backtest_exclude_hours() if exclude_enabled else set()
         except ValueError:
             messagebox.showerror("エラー", "数値の入力が正しくありません。")
             return None
@@ -1016,6 +1045,8 @@ class Step1App:
             "extreme_enabled": extreme_enabled,
             "extreme_hold_ms": extreme_hold_ms,
             "extreme_distance_pips": extreme_distance_pips,
+            "exclude_enabled": exclude_enabled,
+            "exclude_hours": exclude_hours,
         }
 
     def _start_download(self):
@@ -1343,6 +1374,55 @@ class Step1App:
         state = "normal" if enabled else "disabled"
         self.extreme_hold_entry.config(state=state)
         self.extreme_distance_entry.config(state=state)
+
+    def _get_backtest_exclude_hours(self):
+        return {i for i, var in enumerate(self.backtest_exclude_hours_vars) if var.get()}
+
+    def _update_backtest_exclude_label(self):
+        hours = sorted(self._get_backtest_exclude_hours())
+        if not hours:
+            self.backtest_exclude_label_var.set("除外時間: なし")
+            return
+        label = ",".join(f"{hour:02d}" for hour in hours)
+        self.backtest_exclude_label_var.set(f"除外時間: {label}")
+
+    def _open_backtest_exclude_hours(self):
+        top = tk.Toplevel(self.root)
+        top.title("除外する時間帯（JST）")
+        top.resizable(False, False)
+
+        frame = ttk.Frame(top, padding=8)
+        frame.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(frame, text="除外する時間帯にチェック（JST）").grid(
+            row=0, column=0, columnspan=6, sticky="w", pady=(0, 6)
+        )
+
+        for hour in range(24):
+            r = 1 + hour // 6
+            c = hour % 6
+            ttk.Checkbutton(
+                frame,
+                text=f"{hour:02d}時",
+                variable=self.backtest_exclude_hours_vars[hour],
+            ).grid(row=r, column=c, padx=4, pady=2, sticky="w")
+
+        def close_dialog():
+            self._update_backtest_exclude_label()
+            top.destroy()
+
+        ttk.Button(frame, text="閉じる", command=close_dialog).grid(
+            row=5, column=0, columnspan=6, pady=(6, 0)
+        )
+        top.protocol("WM_DELETE_WINDOW", close_dialog)
+
+    def _on_backtest_exclude_toggle(self):
+        enabled = self.backtest_exclude_var.get()
+        state = "normal" if enabled else "disabled"
+        self.backtest_exclude_button.config(state=state)
+        if enabled:
+            self._update_backtest_exclude_label()
+        else:
+            self.backtest_exclude_label_var.set("除外時間: なし")
 
     def _on_chart_visibility_change(self):
         if self.hide_chart_var.get():

@@ -385,6 +385,7 @@ def run_backtest(points, params):
     ma_enabled = params.get("ma_enabled", False)
     ma_period = max(1, int(params.get("ma_period", 0)))
     ma_deviation = params.get("ma_deviation_rate", 0.0)
+    extreme_enabled = params.get("extreme_enabled", False)
     extreme_hold_ms = params.get("extreme_hold_ms", 0.0)
     extreme_distance = params.get("extreme_distance_pips", 0.0) * PIP_SIZE
 
@@ -413,17 +414,35 @@ def run_backtest(points, params):
         side = signal["side"]
         extreme_idx = signal["extreme_idx"]
         extreme_price = signal["extreme_price"]
-        entry_time, entry_bid = points_sorted[entry_idx]
-        entry_price = entry_bid + spread if side == "long" else entry_bid
         extreme_time = points_sorted[extreme_idx][0]
 
-        if extreme_hold_ms > 0:
+        if extreme_enabled and extreme_hold_ms > 0:
             hold_limit = extreme_time + timedelta(milliseconds=extreme_hold_ms)
-            if entry_time < hold_limit:
+            hold_idx = bisect_left(times, hold_limit, extreme_idx, n)
+            if hold_idx >= n:
                 i = entry_idx + 1
                 continue
+            breached = False
+            for k in range(extreme_idx + 1, hold_idx + 1):
+                price_k = points_sorted[k][1]
+                if side == "long":
+                    if price_k < extreme_price:
+                        breached = True
+                        break
+                else:
+                    if price_k > extreme_price:
+                        breached = True
+                        break
+            if breached:
+                i = entry_idx + 1
+                continue
+            if hold_idx > entry_idx:
+                entry_idx = hold_idx
 
-        if extreme_distance > 0:
+        entry_time, entry_bid = points_sorted[entry_idx]
+        entry_price = entry_bid + spread if side == "long" else entry_bid
+
+        if extreme_enabled and extreme_distance > 0:
             if side == "long":
                 distance = entry_price - extreme_price
             else:
@@ -647,6 +666,7 @@ class Step1App:
         self.ma_filter_var = tk.BooleanVar(value=True)
         self.ma_period_var = tk.StringVar(value="200")
         self.ma_deviation_var = tk.StringVar(value="0.01")
+        self.extreme_filter_var = tk.BooleanVar(value=False)
         self.extreme_hold_ms_var = tk.StringVar(value="0")
         self.extreme_distance_pips_var = tk.StringVar(value="0")
         self.spike_window_var = tk.StringVar(value="500")
@@ -809,13 +829,26 @@ class Step1App:
         self.ma_deviation_entry.grid(row=2, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
 
         ttk.Label(settings, text="天底維持ms").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(settings, textvariable=self.extreme_hold_ms_var, width=8).grid(
+        self.extreme_hold_entry = ttk.Entry(
+            settings, textvariable=self.extreme_hold_ms_var, width=8
+        )
+        self.extreme_hold_entry.grid(
             row=3, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
         )
         ttk.Label(settings, text="天底距離pips").grid(row=3, column=2, sticky="w", pady=(6, 0))
-        ttk.Entry(settings, textvariable=self.extreme_distance_pips_var, width=8).grid(
+        self.extreme_distance_entry = ttk.Entry(
+            settings, textvariable=self.extreme_distance_pips_var, width=8
+        )
+        self.extreme_distance_entry.grid(
             row=3, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
         )
+        self.extreme_check = ttk.Checkbutton(
+            settings,
+            text="天底フィルター",
+            variable=self.extreme_filter_var,
+            command=self._on_extreme_filter_toggle,
+        )
+        self.extreme_check.grid(row=3, column=4, columnspan=2, sticky="w", pady=(6, 0))
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
@@ -879,6 +912,7 @@ class Step1App:
         self.pnl_canvas.bind("<Configure>", self._on_pnl_resize)
 
         self._on_ma_filter_toggle()
+        self._on_extreme_filter_toggle()
 
     def _pick_start(self):
         CalendarPopup(self.root, self.start_date, self._set_start)
@@ -924,8 +958,15 @@ class Step1App:
             ma_enabled = self.ma_filter_var.get()
             ma_period = self._parse_number(self.ma_period_var.get())
             ma_deviation_pct = self._parse_number(self.ma_deviation_var.get())
-            extreme_hold_ms = self._parse_number(self.extreme_hold_ms_var.get())
-            extreme_distance_pips = self._parse_number(self.extreme_distance_pips_var.get())
+            extreme_enabled = self.extreme_filter_var.get()
+            if extreme_enabled:
+                extreme_hold_ms = self._parse_number(self.extreme_hold_ms_var.get())
+                extreme_distance_pips = self._parse_number(
+                    self.extreme_distance_pips_var.get()
+                )
+            else:
+                extreme_hold_ms = 0.0
+                extreme_distance_pips = 0.0
         except ValueError:
             messagebox.showerror("エラー", "数値の入力が正しくありません。")
             return None
@@ -972,6 +1013,7 @@ class Step1App:
             "ma_enabled": ma_enabled,
             "ma_period": int(ma_period),
             "ma_deviation_rate": ma_deviation_pct / 100.0,
+            "extreme_enabled": extreme_enabled,
             "extreme_hold_ms": extreme_hold_ms,
             "extreme_distance_pips": extreme_distance_pips,
         }
@@ -1188,18 +1230,24 @@ class Step1App:
 
         points = sorted(points, key=lambda x: x[0])
         times = [ts for ts, _ in points]
+        view_end_time = times[-1]
+        view_start_time = view_end_time - timedelta(hours=6)
+        if view_start_time < times[0]:
+            view_start_time = times[0]
+        view_start_idx = bisect_left(times, view_start_time)
+        view_end_idx = len(points) - 1
         self.chart_data = {
             "all_points": points,
             "times": times,
-            "view_start": 0,
-            "view_end": len(points) - 1,
+            "view_start": view_start_idx,
+            "view_end": view_end_idx,
             "count": len(points),
             "start": start,
             "end": end,
             "missing": missing_count,
             "mode": self.x_axis_mode_var.get(),
-            "view_start_time": times[0],
-            "view_end_time": times[-1],
+            "view_start_time": view_start_time,
+            "view_end_time": view_end_time,
             "trades": [],
             "ma_series": [],
             "ma_enabled": False,
@@ -1289,6 +1337,12 @@ class Step1App:
         self.ma_deviation_entry.config(state=state)
         if self.chart_data:
             self._draw_chart()
+
+    def _on_extreme_filter_toggle(self):
+        enabled = self.extreme_filter_var.get()
+        state = "normal" if enabled else "disabled"
+        self.extreme_hold_entry.config(state=state)
+        self.extreme_distance_entry.config(state=state)
 
     def _on_chart_visibility_change(self):
         if self.hide_chart_var.get():

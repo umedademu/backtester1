@@ -295,6 +295,246 @@ def build_minute_ma(candles, period):
     return times, ma_values, series
 
 
+def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5):
+    if not candles:
+        return []
+
+    threshold = zigzag_pips * PIP_SIZE
+    min_bars = max(1, int(min_bars))
+
+    points = []
+
+    def has_long_wick(candle, kind):
+        _ts, open_p, high, low, close = candle
+        upper = high - max(open_p, close)
+        lower = min(open_p, close) - low
+        if kind == "resistance":
+            return upper >= threshold
+        return lower >= threshold
+
+    candidate_high = candles[0][2]
+    candidate_low = candles[0][3]
+    candidate_high_idx = 0
+    candidate_low_idx = 0
+
+    direction = None
+    extreme_price = None
+    extreme_idx = None
+    last_confirm_idx = None
+
+    for idx in range(1, len(candles)):
+        _ts, _o, high, low, _close = candles[idx]
+
+        if direction is None:
+            if high > candidate_high:
+                candidate_high = high
+                candidate_high_idx = idx
+            if low < candidate_low:
+                candidate_low = low
+                candidate_low_idx = idx
+
+            if candidate_high - candidate_low >= threshold:
+                if (
+                    abs(candidate_high_idx - candidate_low_idx) >= min_bars
+                    or has_long_wick(
+                        candles[candidate_low_idx]
+                        if candidate_high_idx > candidate_low_idx
+                        else candles[candidate_high_idx],
+                        "support" if candidate_high_idx > candidate_low_idx else "resistance",
+                    )
+                ):
+                    if candidate_high_idx > candidate_low_idx:
+                        points.append((candles[idx][0], candidate_low))
+                        direction = "up"
+                        extreme_price = candidate_high
+                        extreme_idx = candidate_high_idx
+                    else:
+                        points.append((candles[idx][0], candidate_high))
+                        direction = "down"
+                        extreme_price = candidate_low
+                        extreme_idx = candidate_low_idx
+                    last_confirm_idx = idx
+        elif direction == "up":
+            if high > extreme_price:
+                extreme_price = high
+                extreme_idx = idx
+            if extreme_price - low >= threshold:
+                if (
+                    last_confirm_idx is None
+                    or idx - last_confirm_idx >= min_bars
+                    or has_long_wick(candles[extreme_idx], "resistance")
+                ):
+                    points.append((candles[idx][0], extreme_price))
+                    direction = "down"
+                    extreme_price = low
+                    extreme_idx = idx
+                    last_confirm_idx = idx
+        else:
+            if low < extreme_price:
+                extreme_price = low
+                extreme_idx = idx
+            if high - extreme_price >= threshold:
+                if (
+                    last_confirm_idx is None
+                    or idx - last_confirm_idx >= min_bars
+                    or has_long_wick(candles[extreme_idx], "support")
+                ):
+                    points.append((candles[idx][0], extreme_price))
+                    direction = "up"
+                    extreme_price = high
+                    extreme_idx = idx
+                    last_confirm_idx = idx
+
+    if extreme_idx is not None:
+        last_time = candles[-1][0]
+        if not points or points[-1][0] != last_time:
+            points.append((last_time, extreme_price))
+
+    return points
+
+
+def build_zigzag_sr_segments(candles, zigzag_pips=5.0, break_pips=1.0, min_bars=5):
+    if not candles:
+        return []
+
+    threshold = zigzag_pips * PIP_SIZE
+    break_threshold = break_pips * PIP_SIZE
+    min_bars = max(1, int(min_bars))
+
+    segments = []
+    active = []
+
+    def has_long_wick(candle, kind):
+        _ts, open_p, high, low, close = candle
+        upper = high - max(open_p, close)
+        lower = min(open_p, close) - low
+        if kind == "resistance":
+            return upper >= threshold
+        return lower >= threshold
+
+    def add_segment(level, end_idx):
+        segments.append(
+            {
+                "price": level["price"],
+                "kind": level["kind"],
+                "start_time": level["start_time"],
+                "end_time": candles[end_idx][0],
+            }
+        )
+
+    def add_level(kind, price, confirm_idx):
+        active.append(
+            {
+                "kind": kind,
+                "price": price,
+                "start_time": candles[confirm_idx][0],
+                "start_index": confirm_idx,
+            }
+        )
+
+    candidate_high = candles[0][2]
+    candidate_low = candles[0][3]
+    candidate_high_idx = 0
+    candidate_low_idx = 0
+
+    direction = None
+    extreme_price = None
+    extreme_idx = None
+    last_confirm_idx = None
+
+    for idx in range(1, len(candles)):
+        _ts, _o, high, low, close = candles[idx]
+
+        if direction is None:
+            if high > candidate_high:
+                candidate_high = high
+                candidate_high_idx = idx
+            if low < candidate_low:
+                candidate_low = low
+                candidate_low_idx = idx
+
+            if candidate_high - candidate_low >= threshold:
+                if (
+                    abs(candidate_high_idx - candidate_low_idx) >= min_bars
+                    or has_long_wick(
+                        candles[candidate_low_idx]
+                        if candidate_high_idx > candidate_low_idx
+                        else candles[candidate_high_idx],
+                        "support" if candidate_high_idx > candidate_low_idx else "resistance",
+                    )
+                ):
+                    if candidate_high_idx > candidate_low_idx:
+                        add_level("support", candidate_low, idx)
+                        direction = "up"
+                        extreme_price = candidate_high
+                        extreme_idx = candidate_high_idx
+                    else:
+                        add_level("resistance", candidate_high, idx)
+                        direction = "down"
+                        extreme_price = candidate_low
+                        extreme_idx = candidate_low_idx
+                    last_confirm_idx = idx
+        elif direction == "up":
+            if high > extreme_price:
+                extreme_price = high
+                extreme_idx = idx
+            if extreme_price - low >= threshold:
+                if (
+                    last_confirm_idx is None
+                    or idx - last_confirm_idx >= min_bars
+                    or has_long_wick(candles[extreme_idx], "resistance")
+                ):
+                    add_level("resistance", extreme_price, idx)
+                    direction = "down"
+                    extreme_price = low
+                    extreme_idx = idx
+                    last_confirm_idx = idx
+        else:
+            if low < extreme_price:
+                extreme_price = low
+                extreme_idx = idx
+            if high - extreme_price >= threshold:
+                if (
+                    last_confirm_idx is None
+                    or idx - last_confirm_idx >= min_bars
+                    or has_long_wick(candles[extreme_idx], "support")
+                ):
+                    add_level("support", extreme_price, idx)
+                    direction = "up"
+                    extreme_price = high
+                    extreme_idx = idx
+                    last_confirm_idx = idx
+
+        if active:
+            for li, level in enumerate(active):
+                if idx <= level["start_index"]:
+                    continue
+                if level["kind"] == "support":
+                    if low < level["price"] - break_threshold:
+                        add_segment(level, idx)
+                        level["price"] = low
+                        level["start_time"] = candles[idx][0]
+                        level["start_index"] = idx
+                else:
+                    if high > level["price"] + break_threshold:
+                        add_segment(level, idx)
+                        level["price"] = high
+                        level["start_time"] = candles[idx][0]
+                        level["start_index"] = idx
+
+    last_idx = len(candles) - 1
+    for level in active:
+        segments.append(
+            {
+                "price": level["price"],
+                "kind": level["kind"],
+                "start_time": level["start_time"],
+                "end_time": candles[last_idx][0],
+            }
+        )
+    return segments
+
+
 def find_spike_signal(points, times, start_idx, window, spike, retrace_rate):
     t0, p0 = points[start_idx]
     end_time = t0 + window
@@ -672,6 +912,8 @@ class Step1App:
         self.ma_filter_var = tk.BooleanVar(value=True)
         self.ma_period_var = tk.StringVar(value="200")
         self.ma_deviation_var = tk.StringVar(value="0.01")
+        self.zigzag_show_var = tk.BooleanVar(value=False)
+        self.cursor_info_var = tk.StringVar(value="")
         self.extreme_filter_var = tk.BooleanVar(value=False)
         self.extreme_hold_ms_var = tk.StringVar(value="0")
         self.extreme_distance_pips_var = tk.StringVar(value="0")
@@ -684,6 +926,9 @@ class Step1App:
         self.spread_var = tk.StringVar(value="1.0")
         self.stop_pips_var = tk.StringVar(value="5.0")
         self.take_pips_var = tk.StringVar(value="5.0")
+        self.sr_zigzag_pips_var = tk.StringVar(value="10.0")
+        self.sr_break_pips_var = tk.StringVar(value="0.01")
+        self.sr_min_bars_var = tk.StringVar(value="10")
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
         self.pnl_data = None
@@ -713,7 +958,7 @@ class Step1App:
         ttk.Label(status_bar, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
 
         chart_tab.columnconfigure(0, weight=1)
-        chart_tab.rowconfigure(6, weight=1)
+        chart_tab.rowconfigure(8, weight=1)
 
         ttk.Label(chart_tab, text="表示期間（JST）").grid(row=0, column=0, sticky="w")
 
@@ -789,6 +1034,14 @@ class Step1App:
             command=self._on_chart_visibility_change,
         )
         self.hide_chart_check.grid(row=0, column=4, padx=(12, 0), sticky="w")
+
+        self.zigzag_check = ttk.Checkbutton(
+            chart_controls,
+            text="ジグザグ表示",
+            variable=self.zigzag_show_var,
+            command=self._on_zigzag_toggle,
+        )
+        self.zigzag_check.grid(row=1, column=4, padx=(12, 0), sticky="w")
 
         settings = ttk.LabelFrame(chart_tab, text="バックテスト条件")
         settings.grid(row=3, column=0, sticky="ew", pady=(8, 6))
@@ -876,21 +1129,46 @@ class Step1App:
             row=4, column=2, columnspan=4, sticky="w", pady=(6, 0)
         )
 
+        sr_settings = ttk.LabelFrame(chart_tab, text="水平線条件")
+        sr_settings.grid(row=4, column=0, sticky="ew", pady=(6, 6))
+
+        ttk.Label(sr_settings, text="ジグザグ幅（ピップス）").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Entry(sr_settings, textvariable=self.sr_zigzag_pips_var, width=8).grid(
+            row=0, column=1, padx=(4, 12), sticky="w"
+        )
+        ttk.Label(sr_settings, text="ブレイク幅（ピップス）").grid(
+            row=0, column=2, sticky="w"
+        )
+        ttk.Entry(sr_settings, textvariable=self.sr_break_pips_var, width=8).grid(
+            row=0, column=3, padx=(4, 0), sticky="w"
+        )
+        ttk.Label(sr_settings, text="最小本数").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(sr_settings, textvariable=self.sr_min_bars_var, width=8).grid(
+            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
-            row=4, column=0, sticky="w"
+            row=5, column=0, sticky="w"
         )
         ttk.Label(chart_tab, textvariable=self.backtest_info_var).grid(
-            row=5, column=0, sticky="w"
+            row=6, column=0, sticky="w"
+        )
+        ttk.Label(chart_tab, textvariable=self.cursor_info_var).grid(
+            row=7, column=0, sticky="w"
         )
 
         self.chart_canvas = tk.Canvas(chart_tab, bg="white")
-        self.chart_canvas.grid(row=6, column=0, sticky="nsew", pady=(6, 0))
+        self.chart_canvas.grid(row=8, column=0, sticky="nsew", pady=(6, 0))
         self.chart_canvas.bind("<Configure>", self._on_canvas_resize)
         self.chart_canvas.bind("<MouseWheel>", self._on_mouse_wheel)
         self.chart_canvas.bind("<Button-4>", self._on_mouse_wheel)
         self.chart_canvas.bind("<Button-5>", self._on_mouse_wheel)
         self.chart_canvas.bind("<ButtonPress-1>", self._on_drag_start)
         self.chart_canvas.bind("<B1-Motion>", self._on_drag_move)
+        self.chart_canvas.bind("<Motion>", self._on_mouse_move)
+        self.chart_canvas.bind("<Leave>", self._on_mouse_leave)
 
         download_tab.columnconfigure(0, weight=1)
         download_tab.rowconfigure(4, weight=1)
@@ -1049,6 +1327,31 @@ class Step1App:
             "exclude_hours": exclude_hours,
         }
 
+    def _get_sr_params(self):
+        try:
+            zigzag_pips = self._parse_number(self.sr_zigzag_pips_var.get())
+            break_pips = self._parse_number(self.sr_break_pips_var.get())
+            min_bars = int(self._parse_number(self.sr_min_bars_var.get()))
+        except ValueError:
+            messagebox.showerror("エラー", "水平線の数値入力が正しくありません。")
+            return None
+
+        if zigzag_pips <= 0:
+            messagebox.showerror("エラー", "ジグザグ幅は0より大きくしてください。")
+            return None
+        if break_pips < 0:
+            messagebox.showerror("エラー", "ブレイク幅は0以上にしてください。")
+            return None
+        if min_bars < 1:
+            messagebox.showerror("エラー", "最小本数は1以上にしてください。")
+            return None
+
+        return {
+            "zigzag_pips": zigzag_pips,
+            "break_pips": break_pips,
+            "min_bars": min_bars,
+        }
+
     def _start_download(self):
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("お知らせ", "ダウンロード中です。")
@@ -1084,7 +1387,8 @@ class Step1App:
             messagebox.showerror("エラー", "終了日は開始日より後にしてください。")
             return
         params = self._get_backtest_params()
-        if not params:
+        sr_params = self._get_sr_params()
+        if not params or not sr_params:
             return
         self.chart_button.config(state="disabled")
         self.status_var.set("表示準備中...")
@@ -1095,12 +1399,12 @@ class Step1App:
         self._draw_pnl_chart()
         self.chart_worker = threading.Thread(
             target=self._chart_worker,
-            args=(self.view_start_date, self.view_end_date, params),
+            args=(self.view_start_date, self.view_end_date, params, sr_params),
             daemon=True,
         )
         self.chart_worker.start()
 
-    def _chart_worker(self, start: date, end: date, params):
+    def _chart_worker(self, start: date, end: date, params, sr_params):
         points, missing = load_ticks_from_csv(start, end)
         if missing:
             self.queue.put(("log", f"[表示] CSV不足 {len(missing)}件"))
@@ -1109,11 +1413,20 @@ class Step1App:
             self.queue.put(("chart_done", None))
             return
         points_sorted = sorted(points, key=lambda x: x[0])
+        candles = build_minute_candles(points_sorted)
+        sr_segments = build_zigzag_sr_segments(candles, **(sr_params or {}))
+        zigzag_points = build_zigzag_points(
+            candles,
+            zigzag_pips=(sr_params or {}).get("zigzag_pips", 5.0),
+            min_bars=(sr_params or {}).get("min_bars", 5),
+        )
         payload = {
             "start": start,
             "end": end,
             "points": points_sorted,
             "missing_count": len(missing),
+            "sr_segments": sr_segments,
+            "zigzag_points": zigzag_points,
         }
         self.queue.put(("chart_data", payload))
         self.queue.put(("status", "バックテスト中..."))
@@ -1254,6 +1567,8 @@ class Step1App:
         start = payload["start"]
         end = payload["end"]
         missing_count = payload["missing_count"]
+        sr_segments = payload.get("sr_segments") or []
+        zigzag_points = payload.get("zigzag_points") or []
 
         if not points:
             self.chart_info_var.set("表示できるデータがありません。")
@@ -1282,6 +1597,8 @@ class Step1App:
             "trades": [],
             "ma_series": [],
             "ma_enabled": False,
+            "sr_segments": sr_segments,
+            "zigzag_points": zigzag_points,
         }
         self._draw_chart()
 
@@ -1366,6 +1683,10 @@ class Step1App:
         state = "normal" if enabled else "disabled"
         self.ma_period_entry.config(state=state)
         self.ma_deviation_entry.config(state=state)
+        if self.chart_data:
+            self._draw_chart()
+
+    def _on_zigzag_toggle(self):
         if self.chart_data:
             self._draw_chart()
 
@@ -1576,6 +1897,103 @@ class Step1App:
         if self.chart_data:
             self._draw_chart()
 
+    def _on_mouse_leave(self, _event):
+        self.cursor_info_var.set("")
+
+    def _on_mouse_move(self, event):
+        data = self.chart_data
+        if not data or self.hide_chart_var.get():
+            return
+        width, height, left, top, right, bottom, plot_width, _plot_height = (
+            self._get_plot_area()
+        )
+        if plot_width <= 0:
+            return
+        if (
+            event.x < left
+            or event.x > width - right
+            or event.y < top
+            or event.y > height - bottom
+        ):
+            self.cursor_info_var.set("")
+            return
+
+        chart_type = (
+            self.chart_type_var.get() if hasattr(self, "chart_type_var") else "tick"
+        )
+        if chart_type == "candle":
+            candles = data.get("view_candles") or []
+            candle_times = data.get("view_candle_times") or []
+            if not candles or not candle_times:
+                return
+            span_seconds = (
+                data["view_end_time"] - data["view_start_time"]
+            ).total_seconds()
+            if span_seconds <= 0:
+                return
+            ratio = (event.x - left) / plot_width
+            ratio = min(max(ratio, 0.0), 1.0)
+            target_time = data["view_start_time"] + (
+                data["view_end_time"] - data["view_start_time"]
+            ) * ratio
+            idx = bisect_left(candle_times, target_time)
+            if idx >= len(candle_times):
+                idx = len(candle_times) - 1
+            elif idx > 0:
+                prev = candle_times[idx - 1]
+                if abs((target_time - prev).total_seconds()) < abs(
+                    (candle_times[idx] - target_time).total_seconds()
+                ):
+                    idx -= 1
+            ts, open_p, high_p, low_p, close_p = candles[idx]
+            self.cursor_info_var.set(
+                f"カーソル: {ts.strftime('%m/%d %H:%M')} "
+                f"始値{open_p:.3f} 高値{high_p:.3f} "
+                f"安値{low_p:.3f} 終値{close_p:.3f}"
+            )
+            return
+
+        mode = data.get("mode", "time")
+        if mode == "time":
+            span_seconds = (
+                data["view_end_time"] - data["view_start_time"]
+            ).total_seconds()
+            if span_seconds <= 0:
+                return
+            ratio = (event.x - left) / plot_width
+            ratio = min(max(ratio, 0.0), 1.0)
+            target_time = data["view_start_time"] + (
+                data["view_end_time"] - data["view_start_time"]
+            ) * ratio
+            times = data.get("times") or []
+            if not times:
+                return
+            idx = bisect_left(times, target_time)
+            if idx >= len(times):
+                idx = len(times) - 1
+            elif idx > 0:
+                prev = times[idx - 1]
+                if abs((target_time - prev).total_seconds()) < abs(
+                    (times[idx] - target_time).total_seconds()
+                ):
+                    idx -= 1
+        else:
+            view_start = data.get("view_start", 0)
+            view_end = data.get("view_end", 0)
+            visible = max(1, view_end - view_start + 1)
+            ratio = (event.x - left) / plot_width
+            ratio = min(max(ratio, 0.0), 1.0)
+            idx = view_start + int(round(ratio * (visible - 1)))
+            idx = max(view_start, min(idx, view_end))
+
+        points = data.get("all_points") or []
+        if not points:
+            return
+        ts, price = points[idx]
+        self.cursor_info_var.set(
+            f"カーソル: {ts.strftime('%m/%d %H:%M:%S')} 価格{price:.3f}"
+        )
+
     def _draw_chart(self):
         data = self.chart_data
         if not data:
@@ -1635,6 +2053,8 @@ class Step1App:
         candles = None
         if chart_type == "candle":
             candles = build_minute_candles(view_points)
+            data["view_candles"] = candles
+            data["view_candle_times"] = [c[0] for c in candles]
             if not candles:
                 self.chart_info_var.set("表示範囲にデータがありません。")
                 canvas = self.chart_canvas
@@ -1791,6 +2211,58 @@ class Step1App:
 
             if ma_coords:
                 canvas.create_line(ma_coords, fill="#ff7f0e", width=1)
+
+        zigzag_points = data.get("zigzag_points") or []
+        if self.zigzag_show_var.get() and chart_type == "candle" and zigzag_points:
+            zz_coords = []
+            if span_seconds > 0:
+                for ts, price in zigzag_points:
+                    if ts < view_start_time or ts > view_end_time:
+                        continue
+                    x = (
+                        left
+                        + (ts - view_start_time).total_seconds()
+                        / span_seconds
+                        * plot_width
+                    )
+                    y = price_to_y(price)
+                    zz_coords.extend([x, y])
+            if zz_coords:
+                canvas.create_line(zz_coords, fill="#7f7f7f", width=1)
+
+        sr_segments = data.get("sr_segments") or []
+        if chart_type == "candle" and sr_segments and span_seconds > 0:
+            for seg in sr_segments:
+                start_ts = seg.get("start_time")
+                end_ts = seg.get("end_time")
+                price = seg.get("price")
+                kind = seg.get("kind")
+                if (
+                    start_ts is None
+                    or end_ts is None
+                    or price is None
+                    or kind is None
+                ):
+                    continue
+                if end_ts < view_start_time or start_ts > view_end_time:
+                    continue
+                draw_start = start_ts if start_ts > view_start_time else view_start_time
+                draw_end = end_ts if end_ts < view_end_time else view_end_time
+                x1 = (
+                    left
+                    + (draw_start - view_start_time).total_seconds()
+                    / span_seconds
+                    * plot_width
+                )
+                x2 = (
+                    left
+                    + (draw_end - view_start_time).total_seconds()
+                    / span_seconds
+                    * plot_width
+                )
+                y = price_to_y(price)
+                color = "#2ca02c" if kind == "support" else "#d62728"
+                canvas.create_line(x1, y, x2, y, fill=color, width=1, dash=(3, 3))
 
         trades = data.get("trades") or []
         if trades:

@@ -258,8 +258,13 @@ def build_timeframe_candles(points, interval_minutes=1):
     open_p = high_p = low_p = close_p = None
 
     for ts, price in points:
-        minute = (ts.minute // interval_minutes) * interval_minutes
-        bucket_time = ts.replace(minute=minute, second=0, microsecond=0)
+        total_minutes = ts.hour * 60 + ts.minute
+        bucket_minutes = (total_minutes // interval_minutes) * interval_minutes
+        bucket_hour = bucket_minutes // 60
+        bucket_minute = bucket_minutes % 60
+        bucket_time = ts.replace(
+            hour=bucket_hour, minute=bucket_minute, second=0, microsecond=0
+        )
         if current_time is None or bucket_time != current_time:
             if current_time is not None:
                 candles.append((current_time, open_p, high_p, low_p, close_p))
@@ -647,6 +652,202 @@ def find_spike_signal(points, times, start_idx, window, spike, retrace_rate):
     return None
 
 
+def build_reentry_lines(candles, sr_params, range_params, target_type):
+    if not candles:
+        return []
+    sr_params = sr_params or {}
+    range_params = range_params or {}
+
+    lines = []
+    if target_type in ("sr", "both"):
+        segments = build_zigzag_sr_segments(candles, **sr_params)
+        for seg in segments:
+            price = seg.get("price")
+            kind = seg.get("kind")
+            start_time = seg.get("start_time")
+            end_time = seg.get("end_time")
+            if price is None or kind is None or start_time is None or end_time is None:
+                continue
+            lines.append(
+                {
+                    "price": price,
+                    "kind": kind,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "source": "sr",
+                }
+            )
+
+    if target_type in ("range", "both"):
+        lookback_bars = range_params.get("lookback_bars", 30)
+        range_segments = build_range_band_segments(candles, lookback_bars=lookback_bars)
+        for seg in range_segments:
+            high = seg.get("high")
+            low = seg.get("low")
+            start_time = seg.get("start_time")
+            end_time = seg.get("end_time")
+            if (
+                high is None
+                or low is None
+                or start_time is None
+                or end_time is None
+            ):
+                continue
+            lines.append(
+                {
+                    "price": high,
+                    "kind": "resistance",
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "source": "range",
+                }
+            )
+            lines.append(
+                {
+                    "price": low,
+                    "kind": "support",
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "source": "range",
+                }
+            )
+
+    lines.sort(key=lambda x: x["start_time"])
+    return lines
+
+
+def build_line_bins(lines, max_break):
+    bin_size = max(max_break, PIP_SIZE)
+    bins = {}
+    for idx, line in enumerate(lines):
+        price = line["price"]
+        bin_idx = int(price / bin_size)
+        bins.setdefault(bin_idx, []).append(idx)
+    return bin_size, bins
+
+
+def find_sr_reentry_signal(
+    points,
+    start_idx,
+    lines,
+    max_break,
+    tick_limit,
+    line_bins=None,
+    bin_size=None,
+    disabled_lines=None,
+    end_limits=None,
+    start_limits=None,
+    min_seconds=0.0,
+    max_seconds=60.0,
+):
+    if not points or not lines:
+        return None
+    if line_bins is None or bin_size is None:
+        bin_size, line_bins = build_line_bins(lines, max_break)
+    if disabled_lines is None:
+        disabled_lines = set()
+
+    n = len(points)
+    active_states = {}
+    prev_bid = points[start_idx - 1][1] if start_idx > 0 else points[start_idx][1]
+
+    for j in range(start_idx, n):
+        ts, bid = points[j]
+
+        if active_states:
+            finished = []
+            for idx, state in list(active_states.items()):
+                line = lines[idx]
+                level = line["price"]
+                kind = line["kind"]
+                start_time = state["start_time"]
+                tick_count = state["tick_count"]
+                duration = (ts - start_time).total_seconds()
+                if duration > max_seconds:
+                    finished.append(idx)
+                    continue
+                if kind == "resistance":
+                    if bid > level:
+                        if bid > level + max_break:
+                            finished.append(idx)
+                        else:
+                            state["tick_count"] = tick_count + 1
+                    elif bid < level:
+                        if duration >= min_seconds:
+                            denom = duration if duration > 0 else 0.001
+                            avg_per_min = tick_count / denom * 60.0
+                            if avg_per_min <= tick_limit:
+                                disabled_lines.add(idx)
+                                return {
+                                    "entry_idx": j,
+                                    "side": "short",
+                                    "line_price": level,
+                                    "line_kind": kind,
+                                    "line_source": line.get("source"),
+                                    "tick_count": tick_count,
+                                }
+                        finished.append(idx)
+                else:
+                    if bid < level:
+                        if bid < level - max_break:
+                            finished.append(idx)
+                        else:
+                            state["tick_count"] = tick_count + 1
+                    elif bid > level:
+                        if duration >= min_seconds:
+                            denom = duration if duration > 0 else 0.001
+                            avg_per_min = tick_count / denom * 60.0
+                            if avg_per_min <= tick_limit:
+                                disabled_lines.add(idx)
+                                return {
+                                    "entry_idx": j,
+                                    "side": "long",
+                                    "line_price": level,
+                                    "line_kind": kind,
+                                    "line_source": line.get("source"),
+                                    "tick_count": tick_count,
+                                }
+                        finished.append(idx)
+            for idx in finished:
+                active_states.pop(idx, None)
+                disabled_lines.add(idx)
+
+        low = min(prev_bid, bid) - max_break
+        high = max(prev_bid, bid) + max_break
+        low_bin = int(low / bin_size)
+        high_bin = int(high / bin_size)
+        for bin_idx in range(low_bin, high_bin + 1):
+            for idx in line_bins.get(bin_idx, []):
+                if idx in active_states or idx in disabled_lines:
+                    continue
+                line = lines[idx]
+                if ts < line["start_time"]:
+                    continue
+                if end_limits is not None and ts > end_limits[idx]:
+                    disabled_lines.add(idx)
+                    continue
+                if start_limits is not None and ts < start_limits[idx]:
+                    continue
+                level = line["price"]
+                kind = line["kind"]
+                if kind == "resistance":
+                    if prev_bid <= level and bid > level:
+                        if bid > level + max_break:
+                            disabled_lines.add(idx)
+                            continue
+                        active_states[idx] = {"start_time": ts, "tick_count": 1}
+                else:
+                    if prev_bid >= level and bid < level:
+                        if bid < level - max_break:
+                            disabled_lines.add(idx)
+                            continue
+                        active_states[idx] = {"start_time": ts, "tick_count": 1}
+
+        prev_bid = bid
+
+    return None
+
+
 def summarize_trades(trades):
     total = len(trades)
     wins = sum(1 for t in trades if t["pips"] > 0)
@@ -664,6 +865,55 @@ def summarize_trades(trades):
         "avg_pips": avg_pips,
         "win_rate": win_rate,
     }
+
+
+def simulate_exit(points, entry_idx, side, entry_price, spread, stop, take):
+    if side == "long":
+        stop_price = entry_price - stop
+        take_price = entry_price + take
+    else:
+        stop_price = entry_price + stop
+        take_price = entry_price - take
+
+    n = len(points)
+    exit_idx = None
+    exit_price = None
+    exit_reason = None
+    j = entry_idx + 1
+    while j < n:
+        _t, bid = points[j]
+        ask = bid + spread
+        if side == "long":
+            if bid <= stop_price:
+                exit_idx = j
+                exit_price = bid
+                exit_reason = "損切"
+                break
+            if bid >= take_price:
+                exit_idx = j
+                exit_price = bid
+                exit_reason = "利確"
+                break
+        else:
+            if ask >= stop_price:
+                exit_idx = j
+                exit_price = ask
+                exit_reason = "損切"
+                break
+            if ask <= take_price:
+                exit_idx = j
+                exit_price = ask
+                exit_reason = "利確"
+                break
+        j += 1
+
+    if exit_idx is None:
+        exit_idx = n - 1
+        _t, last_bid = points[-1]
+        exit_price = last_bid + spread if side == "short" else last_bid
+        exit_reason = "終了"
+
+    return exit_idx, exit_price, exit_reason
 
 
 def run_backtest(points, params):
@@ -702,149 +952,210 @@ def run_backtest(points, params):
         candles = build_minute_candles(points_sorted)
         candle_times, ma_values, ma_series = build_minute_ma(candles, ma_period)
 
+    entry_mode = params.get("entry_mode", "spike")
+
     trades = []
     equity_curve = [(times[0], 0.0)]
     cumulative = 0.0
 
     i = 0
     n = len(points_sorted)
-    while i < n - 1:
-        signal = find_spike_signal(
-            points_sorted, times, i, window, spike, retrace_rate
-        )
-        if not signal:
-            i += 1
-            continue
+    if entry_mode == "sr_reentry":
+        sr_break_pips = params.get("sr_break_pips", 5.0)
+        sr_tick_limit = int(params.get("sr_tick_limit", 10))
+        sr_wait_bars = int(params.get("sr_wait_bars", 0))
+        sr_min_seconds = float(params.get("sr_min_seconds", 0.0))
+        sr_max_seconds = float(params.get("sr_max_seconds", 60.0))
+        sr_target = params.get("sr_target", "both")
+        line_interval = max(1, int(params.get("line_interval", 1)))
+        sr_params = params.get("sr_params") or {}
+        range_params = params.get("range_params") or {}
+        line_candles = build_timeframe_candles(points_sorted, line_interval)
+        lines = build_reentry_lines(line_candles, sr_params, range_params, sr_target)
+        max_break = sr_break_pips * PIP_SIZE
+        bin_size, line_bins = build_line_bins(lines, max_break)
+        disabled_lines = set()
+        end_limits = [
+            line["end_time"] + timedelta(minutes=line_interval) for line in lines
+        ]
+        start_limits = [
+            line["start_time"] + timedelta(minutes=line_interval * sr_wait_bars)
+            for line in lines
+        ]
 
-        entry_idx = signal["entry_idx"]
-        side = signal["side"]
-        extreme_idx = signal["extreme_idx"]
-        extreme_price = signal["extreme_price"]
-        extreme_time = points_sorted[extreme_idx][0]
+        while i < n - 1:
+            signal = find_sr_reentry_signal(
+                points_sorted,
+                i,
+                lines,
+                max_break,
+                sr_tick_limit,
+                line_bins,
+                bin_size,
+                disabled_lines,
+                end_limits,
+                start_limits,
+                sr_min_seconds,
+                sr_max_seconds,
+            )
+            if not signal:
+                break
 
-        if extreme_enabled and extreme_hold_ms > 0:
-            hold_limit = extreme_time + timedelta(milliseconds=extreme_hold_ms)
-            hold_idx = bisect_left(times, hold_limit, extreme_idx, n)
-            if hold_idx >= n:
+            entry_idx = signal["entry_idx"]
+            side = signal["side"]
+            entry_time, entry_bid = points_sorted[entry_idx]
+            entry_price = entry_bid + spread if side == "long" else entry_bid
+
+            if exclude_enabled and entry_time.hour in exclude_hours:
                 i = entry_idx + 1
                 continue
-            breached = False
-            for k in range(extreme_idx + 1, hold_idx + 1):
-                price_k = points_sorted[k][1]
+
+            if ma_enabled:
+                if not candle_times:
+                    i = entry_idx + 1
+                    continue
+                candle_idx = bisect_right(candle_times, entry_time) - 1
+                if candle_idx < 0 or candle_idx >= len(ma_values):
+                    i = entry_idx + 1
+                    continue
+                ma_value = ma_values[candle_idx]
+                if ma_value is None or ma_value <= 0:
+                    i = entry_idx + 1
+                    continue
                 if side == "long":
-                    if price_k < extreme_price:
-                        breached = True
-                        break
+                    deviation = (ma_value - entry_price) / ma_value
                 else:
-                    if price_k > extreme_price:
-                        breached = True
-                        break
-            if breached:
-                i = entry_idx + 1
-                continue
-            if hold_idx > entry_idx:
-                entry_idx = hold_idx
+                    deviation = (entry_price - ma_value) / ma_value
+                if deviation < ma_deviation:
+                    i = entry_idx + 1
+                    continue
 
-        entry_time, entry_bid = points_sorted[entry_idx]
-        entry_price = entry_bid + spread if side == "long" else entry_bid
+            exit_idx, exit_price, exit_reason = simulate_exit(
+                points_sorted, entry_idx, side, entry_price, spread, stop, take
+            )
 
-        if exclude_enabled and entry_time.hour in exclude_hours:
-            i = entry_idx + 1
-            continue
-
-        if extreme_enabled and extreme_distance > 0:
             if side == "long":
-                distance = entry_price - extreme_price
+                pips = (exit_price - entry_price) / PIP_SIZE
             else:
-                distance = extreme_price - entry_price
-            if distance > extreme_distance:
+                pips = (entry_price - exit_price) / PIP_SIZE
+
+            trades.append(
+                {
+                    "side": side,
+                    "entry_time": entry_time,
+                    "entry_price": entry_price,
+                    "exit_time": points_sorted[exit_idx][0],
+                    "exit_price": exit_price,
+                    "pips": pips,
+                    "reason": exit_reason,
+                    "line_price": signal.get("line_price"),
+                    "line_kind": signal.get("line_kind"),
+                    "line_source": signal.get("line_source"),
+                    "tick_count": signal.get("tick_count"),
+                }
+            )
+
+            cumulative += pips
+            equity_curve.append((points_sorted[exit_idx][0], cumulative))
+            i = exit_idx + 1
+    else:
+        while i < n - 1:
+            signal = find_spike_signal(
+                points_sorted, times, i, window, spike, retrace_rate
+            )
+            if not signal:
+                i += 1
+                continue
+
+            entry_idx = signal["entry_idx"]
+            side = signal["side"]
+            extreme_idx = signal["extreme_idx"]
+            extreme_price = signal["extreme_price"]
+            extreme_time = points_sorted[extreme_idx][0]
+
+            if extreme_enabled and extreme_hold_ms > 0:
+                hold_limit = extreme_time + timedelta(milliseconds=extreme_hold_ms)
+                hold_idx = bisect_left(times, hold_limit, extreme_idx, n)
+                if hold_idx >= n:
+                    i = entry_idx + 1
+                    continue
+                breached = False
+                for k in range(extreme_idx + 1, hold_idx + 1):
+                    price_k = points_sorted[k][1]
+                    if side == "long":
+                        if price_k < extreme_price:
+                            breached = True
+                            break
+                    else:
+                        if price_k > extreme_price:
+                            breached = True
+                            break
+                if breached:
+                    i = entry_idx + 1
+                    continue
+                if hold_idx > entry_idx:
+                    entry_idx = hold_idx
+
+            entry_time, entry_bid = points_sorted[entry_idx]
+            entry_price = entry_bid + spread if side == "long" else entry_bid
+
+            if exclude_enabled and entry_time.hour in exclude_hours:
                 i = entry_idx + 1
                 continue
 
-        if ma_enabled:
-            if not candle_times:
-                i = entry_idx + 1
-                continue
-            candle_idx = bisect_right(candle_times, entry_time) - 1
-            if candle_idx < 0 or candle_idx >= len(ma_values):
-                i = entry_idx + 1
-                continue
-            ma_value = ma_values[candle_idx]
-            if ma_value is None or ma_value <= 0:
-                i = entry_idx + 1
-                continue
+            if extreme_enabled and extreme_distance > 0:
+                if side == "long":
+                    distance = entry_price - extreme_price
+                else:
+                    distance = extreme_price - entry_price
+                if distance > extreme_distance:
+                    i = entry_idx + 1
+                    continue
+
+            if ma_enabled:
+                if not candle_times:
+                    i = entry_idx + 1
+                    continue
+                candle_idx = bisect_right(candle_times, entry_time) - 1
+                if candle_idx < 0 or candle_idx >= len(ma_values):
+                    i = entry_idx + 1
+                    continue
+                ma_value = ma_values[candle_idx]
+                if ma_value is None or ma_value <= 0:
+                    i = entry_idx + 1
+                    continue
+                if side == "long":
+                    deviation = (ma_value - entry_price) / ma_value
+                else:
+                    deviation = (entry_price - ma_value) / ma_value
+                if deviation < ma_deviation:
+                    i = entry_idx + 1
+                    continue
+
+            exit_idx, exit_price, exit_reason = simulate_exit(
+                points_sorted, entry_idx, side, entry_price, spread, stop, take
+            )
+
             if side == "long":
-                deviation = (ma_value - entry_price) / ma_value
+                pips = (exit_price - entry_price) / PIP_SIZE
             else:
-                deviation = (entry_price - ma_value) / ma_value
-            if deviation < ma_deviation:
-                i = entry_idx + 1
-                continue
+                pips = (entry_price - exit_price) / PIP_SIZE
 
-        if side == "long":
-            stop_price = entry_price - stop
-            take_price = entry_price + take
-        else:
-            stop_price = entry_price + stop
-            take_price = entry_price - take
+            trades.append(
+                {
+                    "side": side,
+                    "entry_time": entry_time,
+                    "entry_price": entry_price,
+                    "exit_time": points_sorted[exit_idx][0],
+                    "exit_price": exit_price,
+                    "pips": pips,
+                    "reason": exit_reason,
+                }
+            )
 
-        exit_idx = None
-        exit_price = None
-        exit_reason = None
-        j = entry_idx + 1
-        while j < n:
-            _t, bid = points_sorted[j]
-            ask = bid + spread
-            if side == "long":
-                if bid <= stop_price:
-                    exit_idx = j
-                    exit_price = bid
-                    exit_reason = "損切"
-                    break
-                if bid >= take_price:
-                    exit_idx = j
-                    exit_price = bid
-                    exit_reason = "利確"
-                    break
-            else:
-                if ask >= stop_price:
-                    exit_idx = j
-                    exit_price = ask
-                    exit_reason = "損切"
-                    break
-                if ask <= take_price:
-                    exit_idx = j
-                    exit_price = ask
-                    exit_reason = "利確"
-                    break
-            j += 1
-
-        if exit_idx is None:
-            exit_idx = n - 1
-            _t, last_bid = points_sorted[-1]
-            exit_price = last_bid + spread if side == "short" else last_bid
-            exit_reason = "終了"
-
-        if side == "long":
-            pips = (exit_price - entry_price) / PIP_SIZE
-        else:
-            pips = (entry_price - exit_price) / PIP_SIZE
-
-        trades.append(
-            {
-                "side": side,
-                "entry_time": entry_time,
-                "entry_price": entry_price,
-                "exit_time": points_sorted[exit_idx][0],
-                "exit_price": exit_price,
-                "pips": pips,
-                "reason": exit_reason,
-            }
-        )
-
-        cumulative += pips
-        equity_curve.append((points_sorted[exit_idx][0], cumulative))
-        i = exit_idx + 1
+            cumulative += pips
+            equity_curve.append((points_sorted[exit_idx][0], cumulative))
+            i = exit_idx + 1
 
     if equity_curve and equity_curve[-1][0] != times[-1]:
         equity_curve.append((times[-1], cumulative))
@@ -857,6 +1168,8 @@ def run_backtest(points, params):
         "ma_enabled": ma_enabled,
         "ma_period": ma_period,
         "ma_deviation_rate": ma_deviation,
+        "entry_mode": entry_mode,
+        "sr_target": params.get("sr_target"),
     }
 
 
@@ -973,6 +1286,7 @@ class Step1App:
         self.x_axis_mode_var = tk.StringVar(value="time")
         self.chart_type_var = tk.StringVar(value="tick")
         self.candle_interval_var = tk.IntVar(value=1)
+        self.entry_mode_var = tk.StringVar(value="spike")
         self.hide_chart_var = tk.BooleanVar(value=False)
         self.ma_filter_var = tk.BooleanVar(value=True)
         self.ma_period_var = tk.StringVar(value="200")
@@ -984,8 +1298,10 @@ class Step1App:
         self.extreme_filter_var = tk.BooleanVar(value=False)
         self.extreme_hold_ms_var = tk.StringVar(value="0")
         self.extreme_distance_pips_var = tk.StringVar(value="0")
-        self.backtest_exclude_var = tk.BooleanVar(value=False)
-        self.backtest_exclude_hours_vars = [tk.BooleanVar(value=False) for _ in range(24)]
+        self.backtest_exclude_var = tk.BooleanVar(value=True)
+        self.backtest_exclude_hours_vars = [
+            tk.BooleanVar(value=5 <= i <= 10) for i in range(24)
+        ]
         self.backtest_exclude_label_var = tk.StringVar(value="除外時間: なし")
         self.spike_window_var = tk.StringVar(value="500")
         self.spike_pips_var = tk.StringVar(value="1.0")
@@ -996,6 +1312,12 @@ class Step1App:
         self.sr_zigzag_pips_var = tk.StringVar(value="10.0")
         self.sr_break_pips_var = tk.StringVar(value="0.01")
         self.sr_min_bars_var = tk.StringVar(value="10")
+        self.sr_reentry_break_pips_var = tk.StringVar(value="5.0")
+        self.sr_reentry_tick_limit_var = tk.StringVar(value="100")
+        self.sr_reentry_wait_bars_var = tk.StringVar(value="3")
+        self.sr_reentry_min_seconds_var = tk.StringVar(value="5")
+        self.sr_reentry_max_seconds_var = tk.StringVar(value="60")
+        self.sr_reentry_target_var = tk.StringVar(value="両方")
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
         self.pnl_data = None
@@ -1025,7 +1347,7 @@ class Step1App:
         ttk.Label(status_bar, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
 
         chart_tab.columnconfigure(0, weight=1)
-        chart_tab.rowconfigure(8, weight=1)
+        chart_tab.rowconfigure(9, weight=1)
 
         ttk.Label(chart_tab, text="表示期間（JST）").grid(row=0, column=0, sticky="w")
 
@@ -1277,6 +1599,22 @@ class Step1App:
             row=4, column=2, columnspan=4, sticky="w", pady=(6, 0)
         )
 
+        ttk.Label(settings, text="戦略").grid(row=5, column=0, sticky="w", pady=(6, 0))
+        self.strategy_spike_radio = ttk.Radiobutton(
+            settings,
+            text="スパイク",
+            variable=self.entry_mode_var,
+            value="spike",
+        )
+        self.strategy_spike_radio.grid(row=5, column=1, sticky="w", pady=(6, 0))
+        self.strategy_sr_radio = ttk.Radiobutton(
+            settings,
+            text="水平線戻り",
+            variable=self.entry_mode_var,
+            value="sr_reentry",
+        )
+        self.strategy_sr_radio.grid(row=5, column=2, sticky="w", pady=(6, 0))
+
         sr_settings = ttk.LabelFrame(chart_tab, text="水平線条件")
         sr_settings.grid(row=4, column=0, sticky="ew", pady=(6, 6))
 
@@ -1301,18 +1639,72 @@ class Step1App:
             row=2, column=1, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
-        ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
-            row=5, column=0, sticky="w"
+        sr_reentry_settings = ttk.LabelFrame(chart_tab, text="水平線戻り条件")
+        sr_reentry_settings.grid(row=5, column=0, sticky="ew", pady=(6, 6))
+        ttk.Label(sr_reentry_settings, text="抜け幅（pp）").grid(
+            row=0, column=0, sticky="w"
         )
-        ttk.Label(chart_tab, textvariable=self.backtest_info_var).grid(
+        ttk.Entry(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_break_pips_var,
+            width=8,
+        ).grid(row=0, column=1, padx=(4, 12), sticky="w")
+        ttk.Label(sr_reentry_settings, text="平均ティック/分 上限").grid(
+            row=0, column=2, sticky="w"
+        )
+        ttk.Entry(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_tick_limit_var,
+            width=8,
+        ).grid(row=0, column=3, padx=(4, 12), sticky="w")
+        ttk.Label(sr_reentry_settings, text="対象線").grid(
+            row=0, column=4, sticky="w"
+        )
+        self.sr_reentry_target_combo = ttk.Combobox(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_target_var,
+            values=["水平線", "補助線", "両方"],
+            width=10,
+            state="readonly",
+        )
+        self.sr_reentry_target_combo.grid(row=0, column=5, sticky="w")
+        ttk.Label(sr_reentry_settings, text="待機本数").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_wait_bars_var,
+            width=8,
+        ).grid(row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w")
+        ttk.Label(sr_reentry_settings, text="最小秒数").grid(
+            row=1, column=2, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_min_seconds_var,
+            width=8,
+        ).grid(row=1, column=3, padx=(4, 12), pady=(6, 0), sticky="w")
+        ttk.Label(sr_reentry_settings, text="対象秒数").grid(
+            row=1, column=4, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_max_seconds_var,
+            width=8,
+        ).grid(row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
+
+        ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=6, column=0, sticky="w"
         )
-        ttk.Label(chart_tab, textvariable=self.cursor_info_var).grid(
+        ttk.Label(chart_tab, textvariable=self.backtest_info_var).grid(
             row=7, column=0, sticky="w"
+        )
+        ttk.Label(chart_tab, textvariable=self.cursor_info_var).grid(
+            row=8, column=0, sticky="w"
         )
 
         self.chart_canvas = tk.Canvas(chart_tab, bg="white")
-        self.chart_canvas.grid(row=8, column=0, sticky="nsew", pady=(6, 0))
+        self.chart_canvas.grid(row=9, column=0, sticky="nsew", pady=(6, 0))
         self.chart_canvas.bind("<Configure>", self._on_canvas_resize)
         self.chart_canvas.bind("<MouseWheel>", self._on_mouse_wheel)
         self.chart_canvas.bind("<Button-4>", self._on_mouse_wheel)
@@ -1519,6 +1911,53 @@ class Step1App:
             "lookback_bars": lookback_bars,
         }
 
+    def _get_sr_reentry_params(self):
+        try:
+            break_pips = self._parse_number(self.sr_reentry_break_pips_var.get())
+            tick_limit = int(self._parse_number(self.sr_reentry_tick_limit_var.get()))
+            wait_bars = int(self._parse_number(self.sr_reentry_wait_bars_var.get()))
+            min_seconds = self._parse_number(self.sr_reentry_min_seconds_var.get())
+            max_seconds = self._parse_number(self.sr_reentry_max_seconds_var.get())
+        except ValueError:
+            messagebox.showerror("エラー", "水平線戻りの数値入力が正しくありません。")
+            return None
+
+        if break_pips <= 0:
+            messagebox.showerror("エラー", "抜け幅は0より大きくしてください。")
+            return None
+        if tick_limit < 1:
+            messagebox.showerror("エラー", "ティック数上限は1以上にしてください。")
+            return None
+        if wait_bars < 0:
+            messagebox.showerror("エラー", "待機本数は0以上にしてください。")
+            return None
+        if min_seconds < 0:
+            messagebox.showerror("エラー", "最小秒数は0以上にしてください。")
+            return None
+        if max_seconds <= 0:
+            messagebox.showerror("エラー", "対象秒数は0より大きくしてください。")
+            return None
+        if max_seconds < min_seconds:
+            messagebox.showerror("エラー", "対象秒数は最小秒数以上にしてください。")
+            return None
+
+        target_label = self.sr_reentry_target_var.get()
+        target_map = {
+            "水平線": "sr",
+            "補助線": "range",
+            "両方": "both",
+        }
+        target_kind = target_map.get(target_label, "both")
+
+        return {
+            "sr_break_pips": break_pips,
+            "sr_tick_limit": tick_limit,
+            "sr_wait_bars": wait_bars,
+            "sr_min_seconds": min_seconds,
+            "sr_max_seconds": max_seconds,
+            "sr_target": target_kind,
+        }
+
     def _start_download(self):
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("お知らせ", "ダウンロード中です。")
@@ -1558,6 +1997,21 @@ class Step1App:
         range_params = self._get_range_params()
         if not params or not sr_params or not range_params:
             return
+        entry_mode = self.entry_mode_var.get()
+        sr_reentry_params = {}
+        if entry_mode == "sr_reentry":
+            sr_reentry_params = self._get_sr_reentry_params()
+            if not sr_reentry_params:
+                return
+        try:
+            line_interval = int(self.candle_interval_var.get())
+        except Exception:
+            line_interval = 1
+        params["entry_mode"] = entry_mode
+        params["line_interval"] = max(1, line_interval)
+        params["sr_params"] = sr_params
+        params["range_params"] = range_params
+        params.update(sr_reentry_params)
         self.chart_button.config(state="disabled")
         self.status_var.set("表示準備中...")
         self.backtest_info_var.set("バックテスト: 計算中...")
@@ -1775,6 +2229,8 @@ class Step1App:
         total_pips = summary.get("total_pips", 0.0)
         avg_pips = summary.get("avg_pips", 0.0)
         win_rate = summary.get("win_rate", 0.0)
+        entry_mode = payload.get("entry_mode")
+        sr_target = payload.get("sr_target")
 
         if total == 0:
             self.backtest_info_var.set("バックテスト: 取引0件")
@@ -1791,6 +2247,18 @@ class Step1App:
                 f"合計損益: {total_pips:.1f}ピップス 取引: {total}件"
                 f"（勝ち{wins} / 負け{losses}{draw_text_short}）"
             )
+
+        if entry_mode == "sr_reentry" and sr_target == "both":
+            trades = payload.get("trades", [])
+            sr_trades = [t for t in trades if t.get("line_source") == "sr"]
+            range_trades = [t for t in trades if t.get("line_source") == "range"]
+            sr_pips = sum(t.get("pips", 0.0) for t in sr_trades)
+            range_pips = sum(t.get("pips", 0.0) for t in range_trades)
+            breakdown = (
+                f"\n内訳: 水平線 取引{len(sr_trades)}件 合計損益{sr_pips:.1f}ピップス"
+                f" / 補助線 取引{len(range_trades)}件 合計損益{range_pips:.1f}ピップス"
+            )
+            self.pnl_info_var.set(self.pnl_info_var.get() + breakdown)
 
         self.pnl_data = payload.get("equity_curve") or []
         self.backtest_ready = True

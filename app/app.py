@@ -1142,6 +1142,54 @@ class Step1App:
             command=self._on_candle_interval_change,
         )
         self.candle_15_radio.grid(row=2, column=4, sticky="w")
+        self.candle_30_radio = ttk.Radiobutton(
+            chart_controls,
+            text="30分",
+            variable=self.candle_interval_var,
+            value=30,
+            command=self._on_candle_interval_change,
+        )
+        self.candle_30_radio.grid(row=2, column=5, sticky="w")
+        self.candle_60_radio = ttk.Radiobutton(
+            chart_controls,
+            text="1時間",
+            variable=self.candle_interval_var,
+            value=60,
+            command=self._on_candle_interval_change,
+        )
+        self.candle_60_radio.grid(row=2, column=6, sticky="w")
+        self.candle_3_radio = ttk.Radiobutton(
+            chart_controls,
+            text="3分",
+            variable=self.candle_interval_var,
+            value=3,
+            command=self._on_candle_interval_change,
+        )
+        self.candle_3_radio.grid(row=3, column=2, sticky="w")
+        self.candle_120_radio = ttk.Radiobutton(
+            chart_controls,
+            text="2時間",
+            variable=self.candle_interval_var,
+            value=120,
+            command=self._on_candle_interval_change,
+        )
+        self.candle_120_radio.grid(row=3, column=3, sticky="w")
+        self.candle_240_radio = ttk.Radiobutton(
+            chart_controls,
+            text="4時間",
+            variable=self.candle_interval_var,
+            value=240,
+            command=self._on_candle_interval_change,
+        )
+        self.candle_240_radio.grid(row=3, column=4, sticky="w")
+        self.candle_1440_radio = ttk.Radiobutton(
+            chart_controls,
+            text="日足",
+            variable=self.candle_interval_var,
+            value=1440,
+            command=self._on_candle_interval_change,
+        )
+        self.candle_1440_radio.grid(row=3, column=5, sticky="w")
 
         settings = ttk.LabelFrame(chart_tab, text="バックテスト条件")
         settings.grid(row=3, column=0, sticky="ew", pady=(8, 6))

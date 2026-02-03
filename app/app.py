@@ -2235,10 +2235,55 @@ class Step1App:
 
         candles = None
         if chart_type == "candle":
-            candles = build_timeframe_candles(view_points, candle_interval)
+            candle_cache = data.get("candle_cache")
+            if candle_cache is None:
+                candle_cache = {}
+                data["candle_cache"] = candle_cache
+
+            cache_entry = candle_cache.get(candle_interval)
+            if cache_entry is None or cache_entry.get("source_len") != len(points_all):
+                full_candles = build_timeframe_candles(points_all, candle_interval)
+                sr_params = {
+                    "zigzag_pips": 5.0,
+                    "break_pips": 1.0,
+                    "min_bars": 5,
+                }
+                sr_params.update(data.get("sr_params") or {})
+                range_params = {"lookback_bars": 30}
+                range_params.update(data.get("range_params") or {})
+
+                zigzag_points = build_zigzag_points(
+                    full_candles,
+                    zigzag_pips=sr_params.get("zigzag_pips", 5.0),
+                    min_bars=sr_params.get("min_bars", 5),
+                )
+                range_segments = build_range_band_segments(
+                    full_candles,
+                    lookback_bars=range_params.get("lookback_bars", 30),
+                )
+                sr_segments = build_zigzag_sr_segments(full_candles, **sr_params)
+
+                cache_entry = {
+                    "source_len": len(points_all),
+                    "candles": full_candles,
+                    "zigzag_points": zigzag_points,
+                    "range_segments": range_segments,
+                    "sr_segments": sr_segments,
+                }
+                candle_cache[candle_interval] = cache_entry
+
+            full_candles = cache_entry.get("candles") or []
+            view_candles = [
+                c for c in full_candles if view_start_time <= c[0] <= view_end_time
+            ]
+            candles = view_candles
             data["view_candles"] = candles
             data["view_candle_times"] = [c[0] for c in candles]
             data["view_candle_interval"] = candle_interval
+            data["zigzag_points"] = cache_entry.get("zigzag_points") or []
+            data["range_segments"] = cache_entry.get("range_segments") or []
+            data["sr_segments"] = cache_entry.get("sr_segments") or []
+
             if not candles:
                 self.chart_info_var.set("表示範囲にデータがありません。")
                 canvas = self.chart_canvas
@@ -2261,29 +2306,6 @@ class Step1App:
             lows = [l for _t, _o, _h, l, _c in candles]
             min_p = min(lows)
             max_p = max(highs)
-
-            sr_params = {
-                "zigzag_pips": 5.0,
-                "break_pips": 1.0,
-                "min_bars": 5,
-            }
-            sr_params.update(data.get("sr_params") or {})
-            range_params = {"lookback_bars": 30}
-            range_params.update(data.get("range_params") or {})
-
-            zigzag_points = build_zigzag_points(
-                candles,
-                zigzag_pips=sr_params.get("zigzag_pips", 5.0),
-                min_bars=sr_params.get("min_bars", 5),
-            )
-            range_segments = build_range_band_segments(
-                candles,
-                lookback_bars=range_params.get("lookback_bars", 30),
-            )
-            sr_segments = build_zigzag_sr_segments(candles, **sr_params)
-            data["zigzag_points"] = zigzag_points
-            data["range_segments"] = range_segments
-            data["sr_segments"] = sr_segments
         else:
             prices_full = [p for _, p in view_points]
             min_p = min(prices_full)

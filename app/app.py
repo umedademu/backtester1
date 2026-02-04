@@ -808,6 +808,7 @@ def find_sr_reentry_signal(
     min_seconds=0.0,
     max_seconds=60.0,
     midpoint_pct=50.0,
+    dominance_pct=50.0,
     should_cancel=None,
 ):
     if not points or not lines:
@@ -826,6 +827,11 @@ def find_sr_reentry_signal(
         midpoint_ratio = 0.0
     elif midpoint_ratio > 1:
         midpoint_ratio = 1.0
+    dominance_ratio = dominance_pct / 100.0
+    if dominance_ratio < 0:
+        dominance_ratio = 0.0
+    elif dominance_ratio > 1:
+        dominance_ratio = 1.0
 
     n = len(points)
     active_states = {}
@@ -872,9 +878,15 @@ def find_sr_reentry_signal(
                         if duration >= min_seconds:
                             denom = duration if duration > 0 else 0.001
                             avg_per_min = tick_count / denom * 60.0
+                            total_stay = state["stay_below"] + state["stay_above"]
+                            below_ratio = (
+                                state["stay_below"] / total_stay
+                                if total_stay > 0
+                                else 0.0
+                            )
                             if (
                                 tick_min <= avg_per_min <= tick_limit
-                                and state["stay_below"] > state["stay_above"]
+                                and below_ratio >= dominance_ratio
                             ):
                                 disabled_lines.add(idx)
                                 return {
@@ -906,9 +918,15 @@ def find_sr_reentry_signal(
                         if duration >= min_seconds:
                             denom = duration if duration > 0 else 0.001
                             avg_per_min = tick_count / denom * 60.0
+                            total_stay = state["stay_below"] + state["stay_above"]
+                            above_ratio = (
+                                state["stay_above"] / total_stay
+                                if total_stay > 0
+                                else 0.0
+                            )
                             if (
                                 tick_min <= avg_per_min <= tick_limit
-                                and state["stay_above"] > state["stay_below"]
+                                and above_ratio >= dominance_ratio
                             ):
                                 disabled_lines.add(idx)
                                 return {
@@ -1199,6 +1217,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         sr_min_seconds = float(params.get("sr_min_seconds", 0.0))
         sr_max_seconds = float(params.get("sr_max_seconds", 60.0))
         sr_midpoint_pct = float(params.get("sr_midpoint_pct", 50.0))
+        sr_dominance_pct = float(params.get("sr_dominance_pct", 50.0))
         sr_target = params.get("sr_target", "both")
         line_interval = max(1, int(params.get("line_interval", 1)))
         sr_params = params.get("sr_params") or {}
@@ -1277,6 +1296,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 sr_min_seconds,
                 sr_max_seconds,
                 sr_midpoint_pct,
+                sr_dominance_pct,
                 should_cancel,
             )
             if not signal:
@@ -1630,6 +1650,7 @@ class Step1App:
         self.sr_reentry_min_seconds_var = tk.StringVar(value="5")
         self.sr_reentry_max_seconds_var = tk.StringVar(value="60")
         self.sr_reentry_midpoint_var = tk.StringVar(value="50")
+        self.sr_reentry_dominance_var = tk.StringVar(value="50")
         self.sr_reentry_target_var = tk.StringVar(value="両方")
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
@@ -1662,13 +1683,13 @@ class Step1App:
         ttk.Label(status_bar, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
 
         chart_tab.columnconfigure(0, weight=1)
-        chart_tab.rowconfigure(9, weight=1)
+        chart_tab.rowconfigure(7, weight=1)
 
         ttk.Label(chart_tab, text="表示期間（JST）").grid(row=0, column=0, sticky="w")
 
         view_row = ttk.Frame(chart_tab)
         view_row.grid(row=1, column=0, sticky="ew")
-        view_row.columnconfigure(1, weight=1)
+        view_row.columnconfigure(7, weight=1)
 
         ttk.Label(view_row, text="開始日（JST）").grid(row=0, column=0, sticky="w")
         view_start_entry = ttk.Entry(
@@ -1679,17 +1700,17 @@ class Step1App:
             row=0, column=2
         )
 
-        ttk.Label(view_row, text="終了日（JST）").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(view_row, text="終了日（JST）").grid(row=0, column=3, padx=(12, 0), sticky="w")
         view_end_entry = ttk.Entry(
             view_row, textvariable=self.view_end_var, width=12, state="readonly"
         )
-        view_end_entry.grid(row=1, column=1, padx=6, pady=(6, 0))
+        view_end_entry.grid(row=0, column=4, padx=6)
         ttk.Button(view_row, text="選択", command=self._pick_view_end).grid(
-            row=1, column=2, pady=(6, 0)
+            row=0, column=5
         )
 
         chart_controls = ttk.Frame(chart_tab)
-        chart_controls.grid(row=2, column=0, sticky="ew", pady=(8, 6))
+        chart_controls.grid(row=2, column=0, sticky="ew", pady=(4, 4))
         chart_controls.columnconfigure(4, weight=1)
 
         self.chart_button = ttk.Button(chart_controls, text="表示", command=self._show_chart)
@@ -1835,8 +1856,14 @@ class Step1App:
         )
         self.candle_1440_radio.grid(row=3, column=5, sticky="w")
 
-        settings = ttk.LabelFrame(chart_tab, text="バックテスト条件")
-        settings.grid(row=3, column=0, sticky="ew", pady=(8, 6))
+        param_area = ttk.Frame(chart_tab)
+        param_area.grid(row=3, column=0, sticky="ew", pady=(4, 4))
+        param_area.columnconfigure(0, weight=1)
+        param_area.columnconfigure(1, weight=1)
+        param_area.columnconfigure(2, weight=1)
+
+        settings = ttk.LabelFrame(param_area, text="バックテスト条件")
+        settings.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
         ttk.Label(settings, text="スパイク時間（ミリ秒）").grid(row=0, column=0, sticky="w")
         ttk.Entry(settings, textvariable=self.spike_window_var, width=8).grid(
@@ -1943,8 +1970,8 @@ class Step1App:
         )
         self.strategy_sr_radio.grid(row=5, column=2, sticky="w", pady=(6, 0))
 
-        sr_settings = ttk.LabelFrame(chart_tab, text="水平線条件")
-        sr_settings.grid(row=4, column=0, sticky="ew", pady=(6, 6))
+        sr_settings = ttk.LabelFrame(param_area, text="水平線条件")
+        sr_settings.grid(row=0, column=1, sticky="nsew", padx=(0, 6))
 
         ttk.Label(sr_settings, text="ジグザグ幅（ピップス）").grid(
             row=0, column=0, sticky="w"
@@ -1967,8 +1994,8 @@ class Step1App:
             row=2, column=1, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
-        sr_reentry_settings = ttk.LabelFrame(chart_tab, text="水平線戻り条件")
-        sr_reentry_settings.grid(row=5, column=0, sticky="ew", pady=(6, 6))
+        sr_reentry_settings = ttk.LabelFrame(param_area, text="水平線戻り条件")
+        sr_reentry_settings.grid(row=0, column=2, sticky="nsew")
         ttk.Label(sr_reentry_settings, text="抜け幅（pp）").grid(
             row=0, column=0, sticky="w"
         )
@@ -2036,19 +2063,27 @@ class Step1App:
             textvariable=self.sr_reentry_midpoint_var,
             width=8,
         ).grid(row=2, column=3, padx=(4, 12), pady=(6, 0), sticky="w")
+        ttk.Label(sr_reentry_settings, text="優勢滞在率（％）").grid(
+            row=2, column=4, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_dominance_var,
+            width=8,
+        ).grid(row=2, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
-            row=6, column=0, sticky="w"
+            row=4, column=0, sticky="w"
         )
         ttk.Label(chart_tab, textvariable=self.backtest_info_var).grid(
-            row=7, column=0, sticky="w"
+            row=5, column=0, sticky="w"
         )
         ttk.Label(chart_tab, textvariable=self.cursor_info_var).grid(
-            row=8, column=0, sticky="w"
+            row=6, column=0, sticky="w"
         )
 
         self.chart_canvas = tk.Canvas(chart_tab, bg="white")
-        self.chart_canvas.grid(row=9, column=0, sticky="nsew", pady=(6, 0))
+        self.chart_canvas.grid(row=7, column=0, sticky="nsew", pady=(4, 0))
         self.chart_canvas.bind("<Configure>", self._on_canvas_resize)
         self.chart_canvas.bind("<MouseWheel>", self._on_mouse_wheel)
         self.chart_canvas.bind("<Button-4>", self._on_mouse_wheel)
@@ -2269,6 +2304,7 @@ class Step1App:
             min_seconds = self._parse_number(self.sr_reentry_min_seconds_var.get())
             max_seconds = self._parse_number(self.sr_reentry_max_seconds_var.get())
             midpoint_pct = self._parse_number(self.sr_reentry_midpoint_var.get())
+            dominance_pct = self._parse_number(self.sr_reentry_dominance_var.get())
         except ValueError:
             messagebox.showerror("エラー", "水平線戻りの数値入力が正しくありません。")
             return None
@@ -2300,6 +2336,9 @@ class Step1App:
         if midpoint_pct < 0 or midpoint_pct > 100:
             messagebox.showerror("エラー", "滞在判定位置は0〜100の範囲にしてください。")
             return None
+        if dominance_pct < 0 or dominance_pct > 100:
+            messagebox.showerror("エラー", "優勢滞在率は0〜100の範囲にしてください。")
+            return None
 
         target_label = self.sr_reentry_target_var.get()
         target_map = {
@@ -2317,6 +2356,7 @@ class Step1App:
             "sr_min_seconds": min_seconds,
             "sr_max_seconds": max_seconds,
             "sr_midpoint_pct": midpoint_pct,
+            "sr_dominance_pct": dominance_pct,
             "sr_target": target_kind,
         }
 

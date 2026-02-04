@@ -4,6 +4,7 @@ import lzma
 import queue
 import struct
 import threading
+import time as pytime
 from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -1851,6 +1852,7 @@ class Step1App:
         self.sr_reentry_favored_tick_min_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_target_var = tk.StringVar(value="両方")
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
+        self.backtest_elapsed_var = tk.StringVar(value="計算時間: -")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
         self.trade_jump_var = tk.StringVar(value="1")
         self.trade_nav_info_var = tk.StringVar(value="取引: 0件")
@@ -1859,6 +1861,8 @@ class Step1App:
         self.backtest_ready = False
         self.analysis_cache_key = None
         self.analysis_cache = None
+        self.backtest_timer_running = False
+        self.backtest_started_at = None
 
         self._build_ui()
         self._poll_queue()
@@ -1884,7 +1888,7 @@ class Step1App:
         ttk.Label(status_bar, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
 
         chart_tab.columnconfigure(0, weight=1)
-        chart_tab.rowconfigure(7, weight=1)
+        chart_tab.rowconfigure(8, weight=1)
 
         ttk.Label(chart_tab, text="表示期間（JST）").grid(row=0, column=0, sticky="w")
 
@@ -2379,12 +2383,15 @@ class Step1App:
         ttk.Label(chart_tab, textvariable=self.backtest_info_var).grid(
             row=5, column=0, sticky="w"
         )
-        ttk.Label(chart_tab, textvariable=self.cursor_info_var).grid(
+        ttk.Label(chart_tab, textvariable=self.backtest_elapsed_var).grid(
             row=6, column=0, sticky="w"
+        )
+        ttk.Label(chart_tab, textvariable=self.cursor_info_var).grid(
+            row=7, column=0, sticky="w"
         )
 
         self.chart_canvas = tk.Canvas(chart_tab, bg="white")
-        self.chart_canvas.grid(row=7, column=0, sticky="nsew", pady=(4, 0))
+        self.chart_canvas.grid(row=8, column=0, sticky="nsew", pady=(4, 0))
         self.chart_canvas.bind("<Configure>", self._on_canvas_resize)
         self.chart_canvas.bind("<MouseWheel>", self._on_mouse_wheel)
         self.chart_canvas.bind("<Button-4>", self._on_mouse_wheel)
@@ -2754,6 +2761,32 @@ class Step1App:
         else:
             self.chart_cancel_button.config(state="disabled")
 
+    def _format_elapsed_text(self, seconds):
+        if seconds < 60:
+            return f"計算時間: {seconds:.1f}秒"
+        minutes = int(seconds // 60)
+        remain = seconds - minutes * 60
+        return f"計算時間: {minutes}分{remain:.1f}秒"
+
+    def _start_backtest_timer(self):
+        self.backtest_started_at = pytime.perf_counter()
+        self.backtest_timer_running = True
+        self.backtest_elapsed_var.set("計算時間: 0.0秒")
+
+    def _update_backtest_timer(self):
+        if not self.backtest_timer_running or self.backtest_started_at is None:
+            return
+        elapsed = pytime.perf_counter() - self.backtest_started_at
+        self.backtest_elapsed_var.set(self._format_elapsed_text(elapsed))
+
+    def _stop_backtest_timer(self):
+        if self.backtest_started_at is None:
+            self.backtest_timer_running = False
+            return
+        elapsed = pytime.perf_counter() - self.backtest_started_at
+        self.backtest_elapsed_var.set(self._format_elapsed_text(elapsed))
+        self.backtest_timer_running = False
+
     def _show_chart(self):
         if self.chart_worker and self.chart_worker.is_alive():
             messagebox.showinfo("お知らせ", "表示処理中です。")
@@ -2787,6 +2820,7 @@ class Step1App:
         self.status_var.set("表示準備中...")
         self.backtest_info_var.set("バックテスト: 計算中...")
         self.pnl_info_var.set("損益: 計算中...")
+        self._start_backtest_timer()
         self.backtest_ready = False
         self.pnl_data = None
         self._draw_pnl_chart()
@@ -2990,6 +3024,7 @@ class Step1App:
                     messagebox.showerror("エラー", payload)
                     self.backtest_info_var.set("バックテスト: データなし")
                     self.pnl_info_var.set("損益: データなし")
+                    self._stop_backtest_timer()
                     self.backtest_ready = False
                     self.pnl_data = None
                     self._draw_pnl_chart()
@@ -3002,6 +3037,7 @@ class Step1App:
                     messagebox.showerror("エラー", f"バックテストで問題が起きました: {payload}")
                     self.backtest_info_var.set("バックテスト: エラー")
                     self.pnl_info_var.set("損益: エラー")
+                    self._stop_backtest_timer()
                     self.backtest_ready = False
                     self.pnl_data = None
                     self._draw_pnl_chart()
@@ -3010,6 +3046,7 @@ class Step1App:
                     self.status_var.set("表示計算を中止しました")
                     self.backtest_info_var.set("バックテスト: 中止")
                     self.pnl_info_var.set("損益: 中止")
+                    self._stop_backtest_timer()
                     self.backtest_ready = False
                     self.pnl_data = None
                     self._draw_pnl_chart()
@@ -3020,6 +3057,7 @@ class Step1App:
                     self._clear_analysis_cache()
         except queue.Empty:
             pass
+        self._update_backtest_timer()
         self.root.after(200, self._poll_queue)
 
     def _render_chart(self, payload):
@@ -3116,6 +3154,7 @@ class Step1App:
             self._draw_chart()
         self._update_trade_nav_state()
         self._draw_pnl_chart()
+        self._stop_backtest_timer()
         self._notify_backtest_done()
 
     def _notify_backtest_done(self):

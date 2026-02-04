@@ -3385,13 +3385,11 @@ class Step1App:
         times = data["times"]
         mode = data.get("mode", "time")
         chart_type = self.chart_type_var.get() if hasattr(self, "chart_type_var") else "tick"
-        candle_interval = 1
-        if chart_type == "candle":
-            try:
-                candle_interval = int(self.candle_interval_var.get())
-            except Exception:
-                candle_interval = 1
-            candle_interval = max(1, candle_interval)
+        try:
+            candle_interval = int(self.candle_interval_var.get())
+        except Exception:
+            candle_interval = 1
+        candle_interval = max(1, candle_interval)
         if chart_type == "candle":
             mode = "time"
             data["mode"] = "time"

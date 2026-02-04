@@ -1184,6 +1184,7 @@ def simulate_exit(
     spread,
     stop,
     take,
+    fixed_exit_price=True,
     time_close_minutes=0.0,
     minute_close_info=None,
     should_cancel=None,
@@ -1218,23 +1219,23 @@ def simulate_exit(
         if side == "long":
             if bid <= stop_price:
                 exit_idx = j
-                exit_price = stop_price
+                exit_price = stop_price if fixed_exit_price else bid
                 exit_reason = "損切"
                 break
             if bid >= take_price:
                 exit_idx = j
-                exit_price = take_price
+                exit_price = take_price if fixed_exit_price else bid
                 exit_reason = "利確"
                 break
         else:
             if ask >= stop_price:
                 exit_idx = j
-                exit_price = stop_price
+                exit_price = stop_price if fixed_exit_price else ask
                 exit_reason = "損切"
                 break
             if ask <= take_price:
                 exit_idx = j
-                exit_price = take_price
+                exit_price = take_price if fixed_exit_price else ask
                 exit_reason = "利確"
                 break
         if forced_close_time is not None and _t >= forced_close_time:
@@ -1303,6 +1304,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     spread = params["spread_pips"] * PIP_SIZE
     stop = params["stop_pips"] * PIP_SIZE
     take = params["take_pips"] * PIP_SIZE
+    fixed_exit_price = bool(params.get("fixed_exit_price", True))
     time_close_minutes = float(params.get("time_close_minutes", 0.0))
     ma_enabled = params.get("ma_enabled", False)
     ma_period = max(1, int(params.get("ma_period", 0)))
@@ -1505,6 +1507,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 spread,
                 stop,
                 take,
+                fixed_exit_price,
                 time_close_minutes,
                 minute_close_info,
                 should_cancel,
@@ -1635,6 +1638,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 spread,
                 stop,
                 take,
+                fixed_exit_price,
                 time_close_minutes,
                 minute_close_info,
                 should_cancel,
@@ -1827,19 +1831,20 @@ class Step1App:
         self.stop_pips_var = tk.StringVar(value="5.0")
         self.take_pips_var = tk.StringVar(value="5.0")
         self.time_close_minutes_var = tk.StringVar(value="0")
+        self.fixed_exit_price_var = tk.BooleanVar(value=True)
         self.allow_same_direction_var = tk.BooleanVar(value=False)
         self.allow_opposite_direction_var = tk.BooleanVar(value=False)
         self.sr_zigzag_pips_var = tk.StringVar(value="10.0")
         self.sr_break_pips_var = tk.StringVar(value="0.01")
         self.sr_min_bars_var = tk.StringVar(value="10")
-        self.sr_reentry_break_pips_var = tk.StringVar(value="5.0")
+        self.sr_reentry_break_pips_var = tk.StringVar(value="10.0")
         self.sr_reentry_tick_limit_var = tk.StringVar(value="100")
         self.sr_reentry_tick_min_var = tk.StringVar(value="0")
         self.sr_reentry_tick_limit_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_tick_min_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_wait_bars_var = tk.StringVar(value="3")
-        self.sr_reentry_min_seconds_var = tk.StringVar(value="5")
-        self.sr_reentry_max_seconds_var = tk.StringVar(value="60")
+        self.sr_reentry_min_seconds_var = tk.StringVar(value="30")
+        self.sr_reentry_max_seconds_var = tk.StringVar(value="1800")
         self.sr_reentry_midpoint_var = tk.StringVar(value="50")
         self.sr_reentry_dominance_var = tk.StringVar(value="50")
         self.sr_reentry_move_ratio_var = tk.StringVar(value="100")
@@ -2128,6 +2133,12 @@ class Step1App:
         ttk.Entry(settings, textvariable=self.time_close_minutes_var, width=8).grid(
             row=1, column=7, padx=(4, 0), pady=(6, 0), sticky="w"
         )
+        self.fixed_exit_price_check = ttk.Checkbutton(
+            settings,
+            text="損切/利確を固定決済",
+            variable=self.fixed_exit_price_var,
+        )
+        self.fixed_exit_price_check.grid(row=1, column=8, padx=(8, 0), pady=(6, 0), sticky="w")
 
         self.ma_check = ttk.Checkbutton(
             settings,
@@ -2494,6 +2505,7 @@ class Step1App:
             stop_pips = self._parse_number(self.stop_pips_var.get())
             take_pips = self._parse_number(self.take_pips_var.get())
             time_close_minutes = self._parse_number(self.time_close_minutes_var.get())
+            fixed_exit_price = self.fixed_exit_price_var.get()
             ma_enabled = self.ma_filter_var.get()
             ma_period = self._parse_number(self.ma_period_var.get())
             ma_deviation_pct = self._parse_number(self.ma_deviation_var.get())
@@ -2557,6 +2569,7 @@ class Step1App:
             "stop_pips": stop_pips,
             "take_pips": take_pips,
             "time_close_minutes": time_close_minutes,
+            "fixed_exit_price": fixed_exit_price,
             "ma_enabled": ma_enabled,
             "ma_period": int(ma_period),
             "ma_deviation_rate": ma_deviation_pct / 100.0,

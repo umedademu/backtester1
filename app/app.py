@@ -1850,8 +1850,8 @@ class Step1App:
         self.spike_pips_var = tk.StringVar(value="1.0")
         self.retrace_var = tk.StringVar(value="90")
         self.spread_var = tk.StringVar(value="1.0")
-        self.stop_pips_var = tk.StringVar(value="5.0")
-        self.take_pips_var = tk.StringVar(value="5.0")
+        self.stop_pips_var = tk.StringVar(value="10.0")
+        self.take_pips_var = tk.StringVar(value="10.0")
         self.time_close_minutes_var = tk.StringVar(value="0")
         self.fixed_exit_price_var = tk.BooleanVar(value=True)
         self.allow_same_direction_var = tk.BooleanVar(value=False)
@@ -1891,6 +1891,7 @@ class Step1App:
         self.analysis_cache = None
         self.backtest_timer_running = False
         self.backtest_started_at = None
+        self.last_view_range = None
 
         self._build_ui()
         self._poll_queue()
@@ -3126,6 +3127,10 @@ class Step1App:
         sr_params = payload.get("sr_params") or {}
         range_params = payload.get("range_params") or {}
 
+        current_range = (start, end)
+        reset_trade_jump = current_range != self.last_view_range
+        self.last_view_range = current_range
+
         if not points:
             self.chart_info_var.set("表示できるデータがありません。")
             return
@@ -3160,6 +3165,8 @@ class Step1App:
             "range_segments": [],
         }
         self.trade_focus_index = None
+        if reset_trade_jump:
+            self.trade_jump_var.set("1")
         self._update_trade_nav_state()
         self._draw_chart()
 

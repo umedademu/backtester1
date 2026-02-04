@@ -712,6 +712,19 @@ def build_reentry_lines(candles, sr_params, range_params, target_type):
                 }
             )
 
+    if lines:
+        unique = {}
+        for line in lines:
+            key = (
+                line["price"],
+                line["kind"],
+                line["start_time"],
+                line["end_time"],
+                line.get("source"),
+            )
+            unique[key] = line
+        lines = list(unique.values())
+
     lines.sort(key=lambda x: x["start_time"])
     return lines
 
@@ -732,8 +745,11 @@ def find_sr_reentry_signal(
     lines,
     max_break,
     tick_limit,
+    tick_min,
     line_bins=None,
     bin_size=None,
+    bin_state=None,
+    line_start_times=None,
     disabled_lines=None,
     end_limits=None,
     start_limits=None,
@@ -744,6 +760,10 @@ def find_sr_reentry_signal(
         return None
     if line_bins is None or bin_size is None:
         bin_size, line_bins = build_line_bins(lines, max_break)
+    if bin_state is None:
+        bin_state = {}
+    if line_start_times is None:
+        line_start_times = [line["start_time"] for line in lines]
     if disabled_lines is None:
         disabled_lines = set()
 
@@ -776,7 +796,7 @@ def find_sr_reentry_signal(
                         if duration >= min_seconds:
                             denom = duration if duration > 0 else 0.001
                             avg_per_min = tick_count / denom * 60.0
-                            if avg_per_min <= tick_limit:
+                            if tick_min <= avg_per_min <= tick_limit:
                                 disabled_lines.add(idx)
                                 return {
                                     "entry_idx": j,
@@ -797,7 +817,7 @@ def find_sr_reentry_signal(
                         if duration >= min_seconds:
                             denom = duration if duration > 0 else 0.001
                             avg_per_min = tick_count / denom * 60.0
-                            if avg_per_min <= tick_limit:
+                            if tick_min <= avg_per_min <= tick_limit:
                                 disabled_lines.add(idx)
                                 return {
                                     "entry_idx": j,
@@ -817,17 +837,36 @@ def find_sr_reentry_signal(
         low_bin = int(low / bin_size)
         high_bin = int(high / bin_size)
         for bin_idx in range(low_bin, high_bin + 1):
-            for idx in line_bins.get(bin_idx, []):
+            if bin_idx not in line_bins:
+                continue
+            entry = bin_state.get(bin_idx)
+            if entry is None:
+                idx_list = line_bins.get(bin_idx, [])
+                idx_list.sort(key=lambda i: line_start_times[i])
+                entry = {"indices": idx_list, "cursor": 0, "active": []}
+                bin_state[bin_idx] = entry
+
+            idx_list = entry["indices"]
+            cursor = entry["cursor"]
+            while cursor < len(idx_list) and line_start_times[idx_list[cursor]] <= ts:
+                entry["active"].append(idx_list[cursor])
+                cursor += 1
+            entry["cursor"] = cursor
+
+            if not entry["active"]:
+                continue
+
+            new_active = []
+            for idx in entry["active"]:
                 if idx in active_states or idx in disabled_lines:
-                    continue
-                line = lines[idx]
-                if ts < line["start_time"]:
                     continue
                 if end_limits is not None and ts > end_limits[idx]:
                     disabled_lines.add(idx)
                     continue
                 if start_limits is not None and ts < start_limits[idx]:
+                    new_active.append(idx)
                     continue
+                line = lines[idx]
                 level = line["price"]
                 kind = line["kind"]
                 if kind == "resistance":
@@ -836,12 +875,16 @@ def find_sr_reentry_signal(
                             disabled_lines.add(idx)
                             continue
                         active_states[idx] = {"start_time": ts, "tick_count": 1}
+                        continue
                 else:
                     if prev_bid >= level and bid < level:
                         if bid < level - max_break:
                             disabled_lines.add(idx)
                             continue
                         active_states[idx] = {"start_time": ts, "tick_count": 1}
+                        continue
+                new_active.append(idx)
+            entry["active"] = new_active
 
         prev_bid = bid
 
@@ -963,6 +1006,7 @@ def run_backtest(points, params):
     if entry_mode == "sr_reentry":
         sr_break_pips = params.get("sr_break_pips", 5.0)
         sr_tick_limit = int(params.get("sr_tick_limit", 10))
+        sr_tick_min = float(params.get("sr_tick_min", 0.0))
         sr_wait_bars = int(params.get("sr_wait_bars", 0))
         sr_min_seconds = float(params.get("sr_min_seconds", 0.0))
         sr_max_seconds = float(params.get("sr_max_seconds", 60.0))
@@ -974,6 +1018,8 @@ def run_backtest(points, params):
         lines = build_reentry_lines(line_candles, sr_params, range_params, sr_target)
         max_break = sr_break_pips * PIP_SIZE
         bin_size, line_bins = build_line_bins(lines, max_break)
+        bin_state = {}
+        line_start_times = [line["start_time"] for line in lines]
         disabled_lines = set()
         end_limits = [
             line["end_time"] + timedelta(minutes=line_interval) for line in lines
@@ -990,8 +1036,11 @@ def run_backtest(points, params):
                 lines,
                 max_break,
                 sr_tick_limit,
+                sr_tick_min,
                 line_bins,
                 bin_size,
+                bin_state,
+                line_start_times,
                 disabled_lines,
                 end_limits,
                 start_limits,
@@ -1314,6 +1363,7 @@ class Step1App:
         self.sr_min_bars_var = tk.StringVar(value="10")
         self.sr_reentry_break_pips_var = tk.StringVar(value="5.0")
         self.sr_reentry_tick_limit_var = tk.StringVar(value="100")
+        self.sr_reentry_tick_min_var = tk.StringVar(value="0")
         self.sr_reentry_wait_bars_var = tk.StringVar(value="3")
         self.sr_reentry_min_seconds_var = tk.StringVar(value="5")
         self.sr_reentry_max_seconds_var = tk.StringVar(value="60")
@@ -1692,6 +1742,14 @@ class Step1App:
             textvariable=self.sr_reentry_max_seconds_var,
             width=8,
         ).grid(row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
+        ttk.Label(sr_reentry_settings, text="平均ティック/分 下限").grid(
+            row=2, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_tick_min_var,
+            width=8,
+        ).grid(row=2, column=1, padx=(4, 0), pady=(6, 0), sticky="w")
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=6, column=0, sticky="w"
@@ -1915,6 +1973,7 @@ class Step1App:
         try:
             break_pips = self._parse_number(self.sr_reentry_break_pips_var.get())
             tick_limit = int(self._parse_number(self.sr_reentry_tick_limit_var.get()))
+            tick_min = self._parse_number(self.sr_reentry_tick_min_var.get())
             wait_bars = int(self._parse_number(self.sr_reentry_wait_bars_var.get()))
             min_seconds = self._parse_number(self.sr_reentry_min_seconds_var.get())
             max_seconds = self._parse_number(self.sr_reentry_max_seconds_var.get())
@@ -1927,6 +1986,12 @@ class Step1App:
             return None
         if tick_limit < 1:
             messagebox.showerror("エラー", "ティック数上限は1以上にしてください。")
+            return None
+        if tick_min < 0:
+            messagebox.showerror("エラー", "ティック数下限は0以上にしてください。")
+            return None
+        if tick_limit < tick_min:
+            messagebox.showerror("エラー", "ティック数上限は下限以上にしてください。")
             return None
         if wait_bars < 0:
             messagebox.showerror("エラー", "待機本数は0以上にしてください。")
@@ -1952,6 +2017,7 @@ class Step1App:
         return {
             "sr_break_pips": break_pips,
             "sr_tick_limit": tick_limit,
+            "sr_tick_min": tick_min,
             "sr_wait_bars": wait_bars,
             "sr_min_seconds": min_seconds,
             "sr_max_seconds": max_seconds,

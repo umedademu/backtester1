@@ -809,6 +809,7 @@ def find_sr_reentry_signal(
     max_seconds=60.0,
     midpoint_pct=50.0,
     dominance_pct=50.0,
+    move_ratio_pct=100.0,
     should_cancel=None,
 ):
     if not points or not lines:
@@ -832,6 +833,18 @@ def find_sr_reentry_signal(
         dominance_ratio = 0.0
     elif dominance_ratio > 1:
         dominance_ratio = 1.0
+    move_ratio = move_ratio_pct / 100.0
+    if move_ratio < 0:
+        move_ratio = 0.0
+
+    def passes_move_ratio(favored_avg, opposite_avg):
+        if move_ratio <= 0:
+            return True
+        if favored_avg <= 0:
+            return False
+        if opposite_avg <= 0:
+            return True
+        return favored_avg / opposite_avg >= move_ratio
 
     n = len(points)
     active_states = {}
@@ -864,6 +877,15 @@ def find_sr_reentry_signal(
                 if duration > max_seconds:
                     finished.append(idx)
                     continue
+
+                delta = bid - state["last_bid"]
+                if delta > 0:
+                    state["up_move_sum"] += delta
+                    state["up_move_count"] += 1
+                elif delta < 0:
+                    state["down_move_sum"] += -delta
+                    state["down_move_count"] += 1
+
                 if kind == "resistance":
                     if bid > level:
                         if bid > level + max_break:
@@ -884,9 +906,20 @@ def find_sr_reentry_signal(
                                 if total_stay > 0
                                 else 0.0
                             )
+                            up_avg = (
+                                state["up_move_sum"] / state["up_move_count"]
+                                if state["up_move_count"] > 0
+                                else 0.0
+                            )
+                            down_avg = (
+                                state["down_move_sum"] / state["down_move_count"]
+                                if state["down_move_count"] > 0
+                                else 0.0
+                            )
                             if (
                                 tick_min <= avg_per_min <= tick_limit
                                 and below_ratio >= dominance_ratio
+                                and passes_move_ratio(down_avg, up_avg)
                             ):
                                 disabled_lines.add(idx)
                                 return {
@@ -898,6 +931,8 @@ def find_sr_reentry_signal(
                                     "tick_count": tick_count,
                                     "stay_above": state["stay_above"],
                                     "stay_below": state["stay_below"],
+                                    "up_avg_move": up_avg,
+                                    "down_avg_move": down_avg,
                                 }
                         finished.append(idx)
                     else:
@@ -924,9 +959,20 @@ def find_sr_reentry_signal(
                                 if total_stay > 0
                                 else 0.0
                             )
+                            up_avg = (
+                                state["up_move_sum"] / state["up_move_count"]
+                                if state["up_move_count"] > 0
+                                else 0.0
+                            )
+                            down_avg = (
+                                state["down_move_sum"] / state["down_move_count"]
+                                if state["down_move_count"] > 0
+                                else 0.0
+                            )
                             if (
                                 tick_min <= avg_per_min <= tick_limit
                                 and above_ratio >= dominance_ratio
+                                and passes_move_ratio(up_avg, down_avg)
                             ):
                                 disabled_lines.add(idx)
                                 return {
@@ -938,6 +984,8 @@ def find_sr_reentry_signal(
                                     "tick_count": tick_count,
                                     "stay_above": state["stay_above"],
                                     "stay_below": state["stay_below"],
+                                    "up_avg_move": up_avg,
+                                    "down_avg_move": down_avg,
                                 }
                         finished.append(idx)
                     else:
@@ -995,6 +1043,10 @@ def find_sr_reentry_signal(
                             "extreme_price": bid,
                             "stay_above": 0.0,
                             "stay_below": 0.0,
+                            "up_move_sum": 0.0,
+                            "up_move_count": 0,
+                            "down_move_sum": 0.0,
+                            "down_move_count": 0,
                             "last_time": ts,
                             "last_bid": bid,
                         }
@@ -1010,6 +1062,10 @@ def find_sr_reentry_signal(
                             "extreme_price": bid,
                             "stay_above": 0.0,
                             "stay_below": 0.0,
+                            "up_move_sum": 0.0,
+                            "up_move_count": 0,
+                            "down_move_sum": 0.0,
+                            "down_move_count": 0,
                             "last_time": ts,
                             "last_bid": bid,
                         }
@@ -1218,6 +1274,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         sr_max_seconds = float(params.get("sr_max_seconds", 60.0))
         sr_midpoint_pct = float(params.get("sr_midpoint_pct", 50.0))
         sr_dominance_pct = float(params.get("sr_dominance_pct", 50.0))
+        sr_move_ratio_pct = float(params.get("sr_move_ratio_pct", 100.0))
         sr_target = params.get("sr_target", "both")
         line_interval = max(1, int(params.get("line_interval", 1)))
         sr_params = params.get("sr_params") or {}
@@ -1297,6 +1354,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 sr_max_seconds,
                 sr_midpoint_pct,
                 sr_dominance_pct,
+                sr_move_ratio_pct,
                 should_cancel,
             )
             if not signal:
@@ -1364,6 +1422,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     "tick_count": signal.get("tick_count"),
                     "stay_above_sec": signal.get("stay_above"),
                     "stay_below_sec": signal.get("stay_below"),
+                    "up_avg_move": signal.get("up_avg_move"),
+                    "down_avg_move": signal.get("down_avg_move"),
                 }
             )
 
@@ -1651,6 +1711,7 @@ class Step1App:
         self.sr_reentry_max_seconds_var = tk.StringVar(value="60")
         self.sr_reentry_midpoint_var = tk.StringVar(value="50")
         self.sr_reentry_dominance_var = tk.StringVar(value="50")
+        self.sr_reentry_move_ratio_var = tk.StringVar(value="100")
         self.sr_reentry_target_var = tk.StringVar(value="両方")
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
@@ -2071,6 +2132,14 @@ class Step1App:
             textvariable=self.sr_reentry_dominance_var,
             width=8,
         ).grid(row=2, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
+        ttk.Label(sr_reentry_settings, text="有利平均幅比率（％）").grid(
+            row=3, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_move_ratio_var,
+            width=8,
+        ).grid(row=3, column=1, padx=(4, 0), pady=(6, 0), sticky="w")
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
@@ -2305,6 +2374,7 @@ class Step1App:
             max_seconds = self._parse_number(self.sr_reentry_max_seconds_var.get())
             midpoint_pct = self._parse_number(self.sr_reentry_midpoint_var.get())
             dominance_pct = self._parse_number(self.sr_reentry_dominance_var.get())
+            move_ratio_pct = self._parse_number(self.sr_reentry_move_ratio_var.get())
         except ValueError:
             messagebox.showerror("エラー", "水平線戻りの数値入力が正しくありません。")
             return None
@@ -2339,6 +2409,9 @@ class Step1App:
         if dominance_pct < 0 or dominance_pct > 100:
             messagebox.showerror("エラー", "優勢滞在率は0〜100の範囲にしてください。")
             return None
+        if move_ratio_pct < 0:
+            messagebox.showerror("エラー", "有利平均幅比率は0以上にしてください。")
+            return None
 
         target_label = self.sr_reentry_target_var.get()
         target_map = {
@@ -2357,6 +2430,7 @@ class Step1App:
             "sr_max_seconds": max_seconds,
             "sr_midpoint_pct": midpoint_pct,
             "sr_dominance_pct": dominance_pct,
+            "sr_move_ratio_pct": move_ratio_pct,
             "sr_target": target_kind,
         }
 

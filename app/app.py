@@ -811,6 +811,7 @@ def find_sr_reentry_signal(
     dominance_pct=50.0,
     move_ratio_pct=100.0,
     move_speed_ratio_pct=100.0,
+    favored_tick_min_move=0.0,
     should_cancel=None,
 ):
     if not points or not lines:
@@ -840,6 +841,8 @@ def find_sr_reentry_signal(
     move_speed_ratio = move_speed_ratio_pct / 100.0
     if move_speed_ratio < 0:
         move_speed_ratio = 0.0
+    if favored_tick_min_move < 0:
+        favored_tick_min_move = 0.0
 
     def passes_move_ratio(favored_avg, opposite_avg):
         if move_ratio <= 0:
@@ -897,11 +900,15 @@ def find_sr_reentry_signal(
                 if delta > 0:
                     state["up_move_sum"] += delta
                     state["up_move_count"] += 1
+                    if delta > state["max_up_tick_move"]:
+                        state["max_up_tick_move"] = delta
                     if elapsed > 0:
                         state["up_move_time"] += elapsed
                 elif delta < 0:
                     state["down_move_sum"] += -delta
                     state["down_move_count"] += 1
+                    if -delta > state["max_down_tick_move"]:
+                        state["max_down_tick_move"] = -delta
                     if elapsed > 0:
                         state["down_move_time"] += elapsed
 
@@ -955,11 +962,13 @@ def find_sr_reentry_signal(
                                     state["up_move_sum"],
                                     state["up_move_time"],
                                 )
+                                and state["max_down_tick_move"] >= favored_tick_min_move
                             ):
                                 disabled_lines.add(idx)
                                 return {
                                     "entry_idx": j,
                                     "side": "short",
+                                    "entry_reason": "抵抗線戻り",
                                     "line_price": level,
                                     "line_kind": kind,
                                     "line_source": line.get("source"),
@@ -970,6 +979,8 @@ def find_sr_reentry_signal(
                                     "down_avg_move": down_avg,
                                     "up_move_speed": up_speed,
                                     "down_move_speed": down_speed,
+                                    "max_up_tick_move": state["max_up_tick_move"],
+                                    "max_down_tick_move": state["max_down_tick_move"],
                                 }
                         finished.append(idx)
                     else:
@@ -1026,11 +1037,13 @@ def find_sr_reentry_signal(
                                     state["down_move_sum"],
                                     state["down_move_time"],
                                 )
+                                and state["max_up_tick_move"] >= favored_tick_min_move
                             ):
                                 disabled_lines.add(idx)
                                 return {
                                     "entry_idx": j,
                                     "side": "long",
+                                    "entry_reason": "支持線戻り",
                                     "line_price": level,
                                     "line_kind": kind,
                                     "line_source": line.get("source"),
@@ -1041,6 +1054,8 @@ def find_sr_reentry_signal(
                                     "down_avg_move": down_avg,
                                     "up_move_speed": up_speed,
                                     "down_move_speed": down_speed,
+                                    "max_up_tick_move": state["max_up_tick_move"],
+                                    "max_down_tick_move": state["max_down_tick_move"],
                                 }
                         finished.append(idx)
                     else:
@@ -1104,6 +1119,8 @@ def find_sr_reentry_signal(
                             "down_move_sum": 0.0,
                             "down_move_count": 0,
                             "down_move_time": 0.0,
+                            "max_up_tick_move": 0.0,
+                            "max_down_tick_move": 0.0,
                             "last_time": ts,
                             "last_bid": bid,
                         }
@@ -1125,6 +1142,8 @@ def find_sr_reentry_signal(
                             "down_move_sum": 0.0,
                             "down_move_count": 0,
                             "down_move_time": 0.0,
+                            "max_up_tick_move": 0.0,
+                            "max_down_tick_move": 0.0,
                             "last_time": ts,
                             "last_bid": bid,
                         }
@@ -1335,6 +1354,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         sr_dominance_pct = float(params.get("sr_dominance_pct", 50.0))
         sr_move_ratio_pct = float(params.get("sr_move_ratio_pct", 100.0))
         sr_move_speed_ratio_pct = float(params.get("sr_move_speed_ratio_pct", 100.0))
+        sr_favored_tick_min_pips = float(params.get("sr_favored_tick_min_pips", 1.0))
         sr_target = params.get("sr_target", "both")
         line_interval = max(1, int(params.get("line_interval", 1)))
         sr_params = params.get("sr_params") or {}
@@ -1370,6 +1390,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         line_start_times = line_entry["line_start_times"]
         end_limits = line_entry["end_limits_base"]
         max_break = sr_break_pips * PIP_SIZE
+        favored_tick_min_move = sr_favored_tick_min_pips * PIP_SIZE
         bin_key = (line_key, round(max_break, 10))
         line_bin_cache = runtime_cache.setdefault("line_bin_cache", {})
         bin_entry = line_bin_cache.get(bin_key)
@@ -1416,6 +1437,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 sr_dominance_pct,
                 sr_move_ratio_pct,
                 sr_move_speed_ratio_pct,
+                favored_tick_min_move,
                 should_cancel,
             )
             if not signal:
@@ -1471,6 +1493,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             trades.append(
                 {
                     "side": side,
+                    "entry_reason": signal.get("entry_reason", "水平線戻り"),
                     "entry_time": entry_time,
                     "entry_price": entry_price,
                     "exit_time": points_sorted[exit_idx][0],
@@ -1596,6 +1619,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             trades.append(
                 {
                     "side": side,
+                    "entry_reason": "スパイク戻り",
                     "entry_time": entry_time,
                     "entry_price": entry_price,
                     "exit_time": points_sorted[exit_idx][0],
@@ -1779,10 +1803,12 @@ class Step1App:
         self.sr_reentry_dominance_var = tk.StringVar(value="50")
         self.sr_reentry_move_ratio_var = tk.StringVar(value="100")
         self.sr_reentry_speed_ratio_var = tk.StringVar(value="100")
+        self.sr_reentry_favored_tick_min_var = tk.StringVar(value="1.0")
         self.sr_reentry_midpoint_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_dominance_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_move_ratio_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_speed_ratio_enabled_var = tk.BooleanVar(value=True)
+        self.sr_reentry_favored_tick_min_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_target_var = tk.StringVar(value="両方")
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
@@ -2256,6 +2282,21 @@ class Step1App:
             width=8,
         )
         self.sr_reentry_speed_ratio_entry.grid(row=3, column=3, padx=(4, 0), pady=(6, 0), sticky="w")
+        self.sr_reentry_favored_tick_min_check = ttk.Checkbutton(
+            sr_reentry_settings,
+            text="有利1ティック幅下限（pp）",
+            variable=self.sr_reentry_favored_tick_min_enabled_var,
+            command=self._on_sr_reentry_filter_toggle,
+        )
+        self.sr_reentry_favored_tick_min_check.grid(row=3, column=4, sticky="w", pady=(6, 0))
+        self.sr_reentry_favored_tick_min_entry = ttk.Entry(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_favored_tick_min_var,
+            width=8,
+        )
+        self.sr_reentry_favored_tick_min_entry.grid(
+            row=3, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
@@ -2493,6 +2534,9 @@ class Step1App:
             dominance_enabled = self.sr_reentry_dominance_enabled_var.get()
             move_ratio_enabled = self.sr_reentry_move_ratio_enabled_var.get()
             speed_ratio_enabled = self.sr_reentry_speed_ratio_enabled_var.get()
+            favored_tick_min_enabled = (
+                self.sr_reentry_favored_tick_min_enabled_var.get()
+            )
 
             tick_limit = (
                 int(self._parse_number(self.sr_reentry_tick_limit_var.get()))
@@ -2522,6 +2566,11 @@ class Step1App:
             speed_ratio_pct = (
                 self._parse_number(self.sr_reentry_speed_ratio_var.get())
                 if speed_ratio_enabled
+                else 0.0
+            )
+            favored_tick_min_pips = (
+                self._parse_number(self.sr_reentry_favored_tick_min_var.get())
+                if favored_tick_min_enabled
                 else 0.0
             )
         except ValueError:
@@ -2564,6 +2613,9 @@ class Step1App:
         if speed_ratio_enabled and speed_ratio_pct < 0:
             messagebox.showerror("エラー", "有利速度比率は0以上にしてください。")
             return None
+        if favored_tick_min_enabled and favored_tick_min_pips < 0:
+            messagebox.showerror("エラー", "有利1ティック幅下限は0以上にしてください。")
+            return None
 
         target_label = self.sr_reentry_target_var.get()
         target_map = {
@@ -2584,6 +2636,7 @@ class Step1App:
             "sr_dominance_pct": dominance_pct,
             "sr_move_ratio_pct": move_ratio_pct,
             "sr_move_speed_ratio_pct": speed_ratio_pct,
+            "sr_favored_tick_min_pips": favored_tick_min_pips,
             "sr_target": target_kind,
         }
 
@@ -3069,6 +3122,13 @@ class Step1App:
         if hasattr(self, "sr_reentry_speed_ratio_entry"):
             state = "normal" if self.sr_reentry_speed_ratio_enabled_var.get() else "disabled"
             self.sr_reentry_speed_ratio_entry.config(state=state)
+        if hasattr(self, "sr_reentry_favored_tick_min_entry"):
+            state = (
+                "normal"
+                if self.sr_reentry_favored_tick_min_enabled_var.get()
+                else "disabled"
+            )
+            self.sr_reentry_favored_tick_min_entry.config(state=state)
 
     def _on_extreme_filter_toggle(self):
         enabled = self.extreme_filter_var.get()
@@ -3280,6 +3340,45 @@ class Step1App:
     def _on_mouse_leave(self, _event):
         self.cursor_info_var.set("")
 
+    def _find_nearest_trade_marker(self, x, y, radius=10):
+        data = self.chart_data or {}
+        markers = data.get("trade_markers") or []
+        if not markers:
+            return None
+
+        best = None
+        best_dist2 = radius * radius
+        for marker in markers:
+            mx = marker.get("x")
+            my = marker.get("y")
+            if mx is None or my is None:
+                continue
+            dx = x - mx
+            dy = y - my
+            dist2 = dx * dx + dy * dy
+            if dist2 <= best_dist2:
+                best = marker
+                best_dist2 = dist2
+        return best
+
+    def _format_trade_hover_text(self, marker):
+        trade = marker.get("trade") or {}
+        side = trade.get("side")
+        side_text = "ロング" if side == "long" else "ショート"
+        marker_kind = marker.get("kind")
+        marker_text = "エントリー" if marker_kind == "entry" else "クローズ"
+        entry_reason = trade.get("entry_reason") or "-"
+        exit_reason = trade.get("reason") or "-"
+        pips = trade.get("pips")
+        if isinstance(pips, (int, float)):
+            result_text = f"{pips:+.2f}ピップス"
+        else:
+            result_text = "-"
+        return (
+            f"{marker_text} {side_text} "
+            f"理由:{entry_reason} 決済:{exit_reason} 結果:{result_text}"
+        )
+
     def _on_mouse_move(self, event):
         data = self.chart_data
         if not data or self.hide_chart_var.get():
@@ -3301,6 +3400,7 @@ class Step1App:
         chart_type = (
             self.chart_type_var.get() if hasattr(self, "chart_type_var") else "tick"
         )
+        base_text = ""
         if chart_type == "candle":
             candles = data.get("view_candles") or []
             candle_times = data.get("view_candle_times") or []
@@ -3326,53 +3426,56 @@ class Step1App:
                 ):
                     idx -= 1
             ts, open_p, high_p, low_p, close_p = candles[idx]
-            self.cursor_info_var.set(
+            base_text = (
                 f"カーソル: {ts.strftime('%m/%d %H:%M')} "
                 f"始値{open_p:.3f} 高値{high_p:.3f} "
                 f"安値{low_p:.3f} 終値{close_p:.3f}"
             )
-            return
-
-        mode = data.get("mode", "time")
-        if mode == "time":
-            span_seconds = (
-                data["view_end_time"] - data["view_start_time"]
-            ).total_seconds()
-            if span_seconds <= 0:
-                return
-            ratio = (event.x - left) / plot_width
-            ratio = min(max(ratio, 0.0), 1.0)
-            target_time = data["view_start_time"] + (
-                data["view_end_time"] - data["view_start_time"]
-            ) * ratio
-            times = data.get("times") or []
-            if not times:
-                return
-            idx = bisect_left(times, target_time)
-            if idx >= len(times):
-                idx = len(times) - 1
-            elif idx > 0:
-                prev = times[idx - 1]
-                if abs((target_time - prev).total_seconds()) < abs(
-                    (times[idx] - target_time).total_seconds()
-                ):
-                    idx -= 1
         else:
-            view_start = data.get("view_start", 0)
-            view_end = data.get("view_end", 0)
-            visible = max(1, view_end - view_start + 1)
-            ratio = (event.x - left) / plot_width
-            ratio = min(max(ratio, 0.0), 1.0)
-            idx = view_start + int(round(ratio * (visible - 1)))
-            idx = max(view_start, min(idx, view_end))
+            mode = data.get("mode", "time")
+            if mode == "time":
+                span_seconds = (
+                    data["view_end_time"] - data["view_start_time"]
+                ).total_seconds()
+                if span_seconds <= 0:
+                    return
+                ratio = (event.x - left) / plot_width
+                ratio = min(max(ratio, 0.0), 1.0)
+                target_time = data["view_start_time"] + (
+                    data["view_end_time"] - data["view_start_time"]
+                ) * ratio
+                times = data.get("times") or []
+                if not times:
+                    return
+                idx = bisect_left(times, target_time)
+                if idx >= len(times):
+                    idx = len(times) - 1
+                elif idx > 0:
+                    prev = times[idx - 1]
+                    if abs((target_time - prev).total_seconds()) < abs(
+                        (times[idx] - target_time).total_seconds()
+                    ):
+                        idx -= 1
+            else:
+                view_start = data.get("view_start", 0)
+                view_end = data.get("view_end", 0)
+                visible = max(1, view_end - view_start + 1)
+                ratio = (event.x - left) / plot_width
+                ratio = min(max(ratio, 0.0), 1.0)
+                idx = view_start + int(round(ratio * (visible - 1)))
+                idx = max(view_start, min(idx, view_end))
 
-        points = data.get("all_points") or []
-        if not points:
-            return
-        ts, price = points[idx]
-        self.cursor_info_var.set(
-            f"カーソル: {ts.strftime('%m/%d %H:%M:%S')} 価格{price:.3f}"
-        )
+            points = data.get("all_points") or []
+            if not points:
+                return
+            ts, price = points[idx]
+            base_text = f"カーソル: {ts.strftime('%m/%d %H:%M:%S')} 価格{price:.3f}"
+
+        marker = self._find_nearest_trade_marker(event.x, event.y)
+        if marker:
+            self.cursor_info_var.set(base_text + " | " + self._format_trade_hover_text(marker))
+        else:
+            self.cursor_info_var.set(base_text)
 
     def _draw_chart(self):
         data = self.chart_data
@@ -3754,6 +3857,7 @@ class Step1App:
                 canvas.create_line(x1, y, x2, y, fill=color, width=1, dash=(3, 3))
 
         trades = data.get("trades") or []
+        data["trade_markers"] = []
         if trades:
             def ensure_time(value):
                 if isinstance(value, datetime):
@@ -3834,6 +3938,12 @@ class Step1App:
                 )
                 draw_triangle(entry_x, entry_y, size, entry_dir, color)
                 draw_triangle(exit_x, exit_y, size, exit_dir, color)
+                data["trade_markers"].append(
+                    {"x": entry_x, "y": entry_y, "kind": "entry", "trade": trade}
+                )
+                data["trade_markers"].append(
+                    {"x": exit_x, "y": exit_y, "kind": "exit", "trade": trade}
+                )
 
         ticks = 5
         for i in range(ticks + 1):

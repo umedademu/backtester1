@@ -1,5 +1,6 @@
 import calendar
 import csv
+import json
 import lzma
 import queue
 import struct
@@ -39,7 +40,14 @@ def freeze_value(value):
 
 
 def is_cancel_requested(check_fn):
-    return bool(check_fn and check_fn())
+    if check_fn and check_fn():
+        return True
+    counter = getattr(is_cancel_requested, "_counter", 0) + 1
+    if counter >= 2000:
+        pytime.sleep(0)
+        counter = 0
+    is_cancel_requested._counter = counter
+    return False
 
 
 def project_root() -> Path:
@@ -1893,7 +1901,9 @@ class Step1App:
         self.backtest_started_at = None
         self.last_view_range = None
 
+        self._load_persistent_state()
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self._poll_queue()
 
     def _build_ui(self):
@@ -2819,6 +2829,210 @@ class Step1App:
             self.status_var.set("中止要求を受け付けました...")
         else:
             self.chart_cancel_button.config(state="disabled")
+
+    def _state_file_path(self):
+        return project_root() / "ui_state.json"
+
+    def _load_persistent_state(self):
+        path = self._state_file_path()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        def set_var(var, value):
+            if value is None:
+                return
+            try:
+                var.set(value)
+            except Exception:
+                pass
+
+        def set_bool(var, value):
+            if value is None:
+                return
+            try:
+                var.set(bool(value))
+            except Exception:
+                pass
+
+        def set_date_value(key, attr_name, var):
+            raw = data.get(key)
+            if not raw:
+                return
+            try:
+                parsed = date.fromisoformat(raw)
+            except Exception:
+                return
+            setattr(self, attr_name, parsed)
+            var.set(parsed.isoformat())
+
+        set_date_value("start_date", "start_date", self.start_var)
+        set_date_value("end_date", "end_date", self.end_var)
+        set_date_value("view_start_date", "view_start_date", self.view_start_var)
+        set_date_value("view_end_date", "view_end_date", self.view_end_var)
+
+        set_bool(self.exclude_weekends_var, data.get("exclude_weekends"))
+        set_var(self.x_axis_mode_var, data.get("x_axis_mode"))
+        set_var(self.chart_type_var, data.get("chart_type"))
+        set_var(self.candle_interval_var, data.get("candle_interval"))
+        set_var(self.entry_mode_var, data.get("entry_mode"))
+        set_bool(self.hide_chart_var, data.get("hide_chart"))
+        set_bool(self.ma_filter_var, data.get("ma_filter"))
+        set_var(self.ma_period_var, data.get("ma_period"))
+        set_var(self.ma_deviation_var, data.get("ma_deviation"))
+        set_bool(self.zigzag_show_var, data.get("zigzag_show"))
+        set_bool(self.sr_line_show_var, data.get("sr_line_show"))
+        set_bool(self.range_band_show_var, data.get("range_band_show"))
+        set_var(self.range_band_bars_var, data.get("range_band_bars"))
+        set_bool(self.extreme_filter_var, data.get("extreme_filter"))
+        set_var(self.extreme_hold_ms_var, data.get("extreme_hold_ms"))
+        set_var(self.extreme_distance_pips_var, data.get("extreme_distance_pips"))
+        set_bool(self.backtest_exclude_var, data.get("backtest_exclude"))
+
+        hours = data.get("backtest_exclude_hours")
+        if isinstance(hours, list):
+            for i, value in enumerate(hours[: len(self.backtest_exclude_hours_vars)]):
+                self.backtest_exclude_hours_vars[i].set(bool(value))
+
+        set_var(self.spike_window_var, data.get("spike_window"))
+        set_var(self.spike_pips_var, data.get("spike_pips"))
+        set_var(self.retrace_var, data.get("retrace"))
+        set_var(self.spread_var, data.get("spread"))
+        set_var(self.stop_pips_var, data.get("stop_pips"))
+        set_var(self.take_pips_var, data.get("take_pips"))
+        set_var(self.time_close_minutes_var, data.get("time_close_minutes"))
+        set_bool(self.fixed_exit_price_var, data.get("fixed_exit_price"))
+        set_bool(self.allow_same_direction_var, data.get("allow_same_direction"))
+        set_bool(self.allow_opposite_direction_var, data.get("allow_opposite_direction"))
+
+        set_var(self.sr_zigzag_pips_var, data.get("sr_zigzag_pips"))
+        set_var(self.sr_break_pips_var, data.get("sr_break_pips"))
+        set_var(self.sr_min_bars_var, data.get("sr_min_bars"))
+        set_var(self.sr_reentry_break_pips_var, data.get("sr_reentry_break_pips"))
+        set_var(self.sr_reentry_tick_limit_var, data.get("sr_reentry_tick_limit"))
+        set_var(self.sr_reentry_tick_min_var, data.get("sr_reentry_tick_min"))
+        set_bool(
+            self.sr_reentry_tick_limit_enabled_var,
+            data.get("sr_reentry_tick_limit_enabled"),
+        )
+        set_bool(
+            self.sr_reentry_tick_min_enabled_var,
+            data.get("sr_reentry_tick_min_enabled"),
+        )
+        set_var(self.sr_reentry_wait_bars_var, data.get("sr_reentry_wait_bars"))
+        set_var(self.sr_reentry_min_seconds_var, data.get("sr_reentry_min_seconds"))
+        set_var(self.sr_reentry_max_seconds_var, data.get("sr_reentry_max_seconds"))
+        set_var(self.sr_reentry_midpoint_var, data.get("sr_reentry_midpoint"))
+        set_var(self.sr_reentry_dominance_var, data.get("sr_reentry_dominance"))
+        set_var(self.sr_reentry_move_ratio_var, data.get("sr_reentry_move_ratio"))
+        set_var(self.sr_reentry_speed_ratio_var, data.get("sr_reentry_speed_ratio"))
+        set_var(self.sr_reentry_ratio_join_var, data.get("sr_reentry_ratio_join"))
+        set_var(
+            self.sr_reentry_favored_tick_min_var,
+            data.get("sr_reentry_favored_tick_min"),
+        )
+        set_bool(
+            self.sr_reentry_midpoint_enabled_var,
+            data.get("sr_reentry_midpoint_enabled"),
+        )
+        set_bool(
+            self.sr_reentry_dominance_enabled_var,
+            data.get("sr_reentry_dominance_enabled"),
+        )
+        set_bool(
+            self.sr_reentry_move_ratio_enabled_var,
+            data.get("sr_reentry_move_ratio_enabled"),
+        )
+        set_bool(
+            self.sr_reentry_speed_ratio_enabled_var,
+            data.get("sr_reentry_speed_ratio_enabled"),
+        )
+        set_bool(
+            self.sr_reentry_favored_tick_min_enabled_var,
+            data.get("sr_reentry_favored_tick_min_enabled"),
+        )
+        set_var(self.sr_reentry_target_var, data.get("sr_reentry_target"))
+
+    def _collect_persistent_state(self):
+        return {
+            "start_date": self.start_date.isoformat(),
+            "end_date": self.end_date.isoformat(),
+            "view_start_date": self.view_start_date.isoformat(),
+            "view_end_date": self.view_end_date.isoformat(),
+            "exclude_weekends": self.exclude_weekends_var.get(),
+            "x_axis_mode": self.x_axis_mode_var.get(),
+            "chart_type": self.chart_type_var.get(),
+            "candle_interval": int(self.candle_interval_var.get()),
+            "entry_mode": self.entry_mode_var.get(),
+            "hide_chart": self.hide_chart_var.get(),
+            "ma_filter": self.ma_filter_var.get(),
+            "ma_period": self.ma_period_var.get(),
+            "ma_deviation": self.ma_deviation_var.get(),
+            "zigzag_show": self.zigzag_show_var.get(),
+            "sr_line_show": self.sr_line_show_var.get(),
+            "range_band_show": self.range_band_show_var.get(),
+            "range_band_bars": self.range_band_bars_var.get(),
+            "extreme_filter": self.extreme_filter_var.get(),
+            "extreme_hold_ms": self.extreme_hold_ms_var.get(),
+            "extreme_distance_pips": self.extreme_distance_pips_var.get(),
+            "backtest_exclude": self.backtest_exclude_var.get(),
+            "backtest_exclude_hours": [
+                var.get() for var in self.backtest_exclude_hours_vars
+            ],
+            "spike_window": self.spike_window_var.get(),
+            "spike_pips": self.spike_pips_var.get(),
+            "retrace": self.retrace_var.get(),
+            "spread": self.spread_var.get(),
+            "stop_pips": self.stop_pips_var.get(),
+            "take_pips": self.take_pips_var.get(),
+            "time_close_minutes": self.time_close_minutes_var.get(),
+            "fixed_exit_price": self.fixed_exit_price_var.get(),
+            "allow_same_direction": self.allow_same_direction_var.get(),
+            "allow_opposite_direction": self.allow_opposite_direction_var.get(),
+            "sr_zigzag_pips": self.sr_zigzag_pips_var.get(),
+            "sr_break_pips": self.sr_break_pips_var.get(),
+            "sr_min_bars": self.sr_min_bars_var.get(),
+            "sr_reentry_break_pips": self.sr_reentry_break_pips_var.get(),
+            "sr_reentry_tick_limit": self.sr_reentry_tick_limit_var.get(),
+            "sr_reentry_tick_min": self.sr_reentry_tick_min_var.get(),
+            "sr_reentry_tick_limit_enabled": self.sr_reentry_tick_limit_enabled_var.get(),
+            "sr_reentry_tick_min_enabled": self.sr_reentry_tick_min_enabled_var.get(),
+            "sr_reentry_wait_bars": self.sr_reentry_wait_bars_var.get(),
+            "sr_reentry_min_seconds": self.sr_reentry_min_seconds_var.get(),
+            "sr_reentry_max_seconds": self.sr_reentry_max_seconds_var.get(),
+            "sr_reentry_midpoint": self.sr_reentry_midpoint_var.get(),
+            "sr_reentry_dominance": self.sr_reentry_dominance_var.get(),
+            "sr_reentry_move_ratio": self.sr_reentry_move_ratio_var.get(),
+            "sr_reentry_speed_ratio": self.sr_reentry_speed_ratio_var.get(),
+            "sr_reentry_ratio_join": self.sr_reentry_ratio_join_var.get(),
+            "sr_reentry_favored_tick_min": self.sr_reentry_favored_tick_min_var.get(),
+            "sr_reentry_midpoint_enabled": self.sr_reentry_midpoint_enabled_var.get(),
+            "sr_reentry_dominance_enabled": self.sr_reentry_dominance_enabled_var.get(),
+            "sr_reentry_move_ratio_enabled": self.sr_reentry_move_ratio_enabled_var.get(),
+            "sr_reentry_speed_ratio_enabled": self.sr_reentry_speed_ratio_enabled_var.get(),
+            "sr_reentry_favored_tick_min_enabled": (
+                self.sr_reentry_favored_tick_min_enabled_var.get()
+            ),
+            "sr_reentry_target": self.sr_reentry_target_var.get(),
+        }
+
+    def _save_persistent_state(self):
+        path = self._state_file_path()
+        try:
+            payload = self._collect_persistent_state()
+            path.write_text(
+                json.dumps(payload, ensure_ascii=True, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _on_app_close(self):
+        self._save_persistent_state()
+        self.root.destroy()
 
     def _format_elapsed_text(self, seconds):
         if seconds < 60:

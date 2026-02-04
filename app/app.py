@@ -810,6 +810,7 @@ def find_sr_reentry_signal(
     midpoint_pct=50.0,
     dominance_pct=50.0,
     move_ratio_pct=100.0,
+    move_speed_ratio_pct=100.0,
     should_cancel=None,
 ):
     if not points or not lines:
@@ -836,6 +837,9 @@ def find_sr_reentry_signal(
     move_ratio = move_ratio_pct / 100.0
     if move_ratio < 0:
         move_ratio = 0.0
+    move_speed_ratio = move_speed_ratio_pct / 100.0
+    if move_speed_ratio < 0:
+        move_speed_ratio = 0.0
 
     def passes_move_ratio(favored_avg, opposite_avg):
         if move_ratio <= 0:
@@ -845,6 +849,17 @@ def find_sr_reentry_signal(
         if opposite_avg <= 0:
             return True
         return favored_avg / opposite_avg >= move_ratio
+
+    def passes_move_speed_ratio(favored_sum, favored_time, opposite_sum, opposite_time):
+        if move_speed_ratio <= 0:
+            return True
+        if favored_time <= 0 or opposite_time <= 0:
+            return False
+        favored_speed = favored_sum / favored_time
+        opposite_speed = opposite_sum / opposite_time
+        if favored_speed <= 0 or opposite_speed <= 0:
+            return False
+        return favored_speed / opposite_speed >= move_speed_ratio
 
     n = len(points)
     active_states = {}
@@ -882,9 +897,13 @@ def find_sr_reentry_signal(
                 if delta > 0:
                     state["up_move_sum"] += delta
                     state["up_move_count"] += 1
+                    if elapsed > 0:
+                        state["up_move_time"] += elapsed
                 elif delta < 0:
                     state["down_move_sum"] += -delta
                     state["down_move_count"] += 1
+                    if elapsed > 0:
+                        state["down_move_time"] += elapsed
 
                 if kind == "resistance":
                     if bid > level:
@@ -916,10 +935,26 @@ def find_sr_reentry_signal(
                                 if state["down_move_count"] > 0
                                 else 0.0
                             )
+                            down_speed = (
+                                state["down_move_sum"] / state["down_move_time"]
+                                if state["down_move_time"] > 0
+                                else 0.0
+                            )
+                            up_speed = (
+                                state["up_move_sum"] / state["up_move_time"]
+                                if state["up_move_time"] > 0
+                                else 0.0
+                            )
                             if (
                                 tick_min <= avg_per_min <= tick_limit
                                 and below_ratio >= dominance_ratio
                                 and passes_move_ratio(down_avg, up_avg)
+                                and passes_move_speed_ratio(
+                                    state["down_move_sum"],
+                                    state["down_move_time"],
+                                    state["up_move_sum"],
+                                    state["up_move_time"],
+                                )
                             ):
                                 disabled_lines.add(idx)
                                 return {
@@ -933,6 +968,8 @@ def find_sr_reentry_signal(
                                     "stay_below": state["stay_below"],
                                     "up_avg_move": up_avg,
                                     "down_avg_move": down_avg,
+                                    "up_move_speed": up_speed,
+                                    "down_move_speed": down_speed,
                                 }
                         finished.append(idx)
                     else:
@@ -969,10 +1006,26 @@ def find_sr_reentry_signal(
                                 if state["down_move_count"] > 0
                                 else 0.0
                             )
+                            down_speed = (
+                                state["down_move_sum"] / state["down_move_time"]
+                                if state["down_move_time"] > 0
+                                else 0.0
+                            )
+                            up_speed = (
+                                state["up_move_sum"] / state["up_move_time"]
+                                if state["up_move_time"] > 0
+                                else 0.0
+                            )
                             if (
                                 tick_min <= avg_per_min <= tick_limit
                                 and above_ratio >= dominance_ratio
                                 and passes_move_ratio(up_avg, down_avg)
+                                and passes_move_speed_ratio(
+                                    state["up_move_sum"],
+                                    state["up_move_time"],
+                                    state["down_move_sum"],
+                                    state["down_move_time"],
+                                )
                             ):
                                 disabled_lines.add(idx)
                                 return {
@@ -986,6 +1039,8 @@ def find_sr_reentry_signal(
                                     "stay_below": state["stay_below"],
                                     "up_avg_move": up_avg,
                                     "down_avg_move": down_avg,
+                                    "up_move_speed": up_speed,
+                                    "down_move_speed": down_speed,
                                 }
                         finished.append(idx)
                     else:
@@ -1045,8 +1100,10 @@ def find_sr_reentry_signal(
                             "stay_below": 0.0,
                             "up_move_sum": 0.0,
                             "up_move_count": 0,
+                            "up_move_time": 0.0,
                             "down_move_sum": 0.0,
                             "down_move_count": 0,
+                            "down_move_time": 0.0,
                             "last_time": ts,
                             "last_bid": bid,
                         }
@@ -1064,8 +1121,10 @@ def find_sr_reentry_signal(
                             "stay_below": 0.0,
                             "up_move_sum": 0.0,
                             "up_move_count": 0,
+                            "up_move_time": 0.0,
                             "down_move_sum": 0.0,
                             "down_move_count": 0,
+                            "down_move_time": 0.0,
                             "last_time": ts,
                             "last_bid": bid,
                         }
@@ -1275,6 +1334,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         sr_midpoint_pct = float(params.get("sr_midpoint_pct", 50.0))
         sr_dominance_pct = float(params.get("sr_dominance_pct", 50.0))
         sr_move_ratio_pct = float(params.get("sr_move_ratio_pct", 100.0))
+        sr_move_speed_ratio_pct = float(params.get("sr_move_speed_ratio_pct", 100.0))
         sr_target = params.get("sr_target", "both")
         line_interval = max(1, int(params.get("line_interval", 1)))
         sr_params = params.get("sr_params") or {}
@@ -1355,6 +1415,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 sr_midpoint_pct,
                 sr_dominance_pct,
                 sr_move_ratio_pct,
+                sr_move_speed_ratio_pct,
                 should_cancel,
             )
             if not signal:
@@ -1424,6 +1485,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     "stay_below_sec": signal.get("stay_below"),
                     "up_avg_move": signal.get("up_avg_move"),
                     "down_avg_move": signal.get("down_avg_move"),
+                    "up_move_speed": signal.get("up_move_speed"),
+                    "down_move_speed": signal.get("down_move_speed"),
                 }
             )
 
@@ -1682,6 +1745,7 @@ class Step1App:
         self.ma_period_var = tk.StringVar(value="200")
         self.ma_deviation_var = tk.StringVar(value="0.01")
         self.zigzag_show_var = tk.BooleanVar(value=False)
+        self.sr_line_show_var = tk.BooleanVar(value=True)
         self.range_band_show_var = tk.BooleanVar(value=False)
         self.range_band_bars_var = tk.StringVar(value="30")
         self.cursor_info_var = tk.StringVar(value="")
@@ -1706,12 +1770,19 @@ class Step1App:
         self.sr_reentry_break_pips_var = tk.StringVar(value="5.0")
         self.sr_reentry_tick_limit_var = tk.StringVar(value="100")
         self.sr_reentry_tick_min_var = tk.StringVar(value="0")
+        self.sr_reentry_tick_limit_enabled_var = tk.BooleanVar(value=True)
+        self.sr_reentry_tick_min_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_wait_bars_var = tk.StringVar(value="3")
         self.sr_reentry_min_seconds_var = tk.StringVar(value="5")
         self.sr_reentry_max_seconds_var = tk.StringVar(value="60")
         self.sr_reentry_midpoint_var = tk.StringVar(value="50")
         self.sr_reentry_dominance_var = tk.StringVar(value="50")
         self.sr_reentry_move_ratio_var = tk.StringVar(value="100")
+        self.sr_reentry_speed_ratio_var = tk.StringVar(value="100")
+        self.sr_reentry_midpoint_enabled_var = tk.BooleanVar(value=True)
+        self.sr_reentry_dominance_enabled_var = tk.BooleanVar(value=True)
+        self.sr_reentry_move_ratio_enabled_var = tk.BooleanVar(value=True)
+        self.sr_reentry_speed_ratio_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_target_var = tk.StringVar(value="両方")
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
@@ -1835,13 +1906,20 @@ class Step1App:
             command=self._on_zigzag_toggle,
         )
         self.zigzag_check.grid(row=1, column=5, padx=(12, 0), sticky="w")
+        self.sr_line_check = ttk.Checkbutton(
+            chart_controls,
+            text="水平線",
+            variable=self.sr_line_show_var,
+            command=self._on_sr_line_toggle,
+        )
+        self.sr_line_check.grid(row=1, column=6, padx=(8, 0), sticky="w")
         self.range_band_check = ttk.Checkbutton(
             chart_controls,
             text="レンジ補助線",
             variable=self.range_band_show_var,
             command=self._on_range_band_toggle,
         )
-        self.range_band_check.grid(row=1, column=6, padx=(8, 0), sticky="w")
+        self.range_band_check.grid(row=1, column=7, padx=(8, 0), sticky="w")
 
         ttk.Label(chart_controls, text="足").grid(row=2, column=1, padx=(12, 4), sticky="w")
         self.candle_1_radio = ttk.Radiobutton(
@@ -2065,14 +2143,19 @@ class Step1App:
             textvariable=self.sr_reentry_break_pips_var,
             width=8,
         ).grid(row=0, column=1, padx=(4, 12), sticky="w")
-        ttk.Label(sr_reentry_settings, text="平均ティック/分 上限").grid(
-            row=0, column=2, sticky="w"
+        self.sr_reentry_tick_limit_check = ttk.Checkbutton(
+            sr_reentry_settings,
+            text="ティック上限",
+            variable=self.sr_reentry_tick_limit_enabled_var,
+            command=self._on_sr_reentry_filter_toggle,
         )
-        ttk.Entry(
+        self.sr_reentry_tick_limit_check.grid(row=0, column=2, sticky="w")
+        self.sr_reentry_tick_limit_entry = ttk.Entry(
             sr_reentry_settings,
             textvariable=self.sr_reentry_tick_limit_var,
             width=8,
-        ).grid(row=0, column=3, padx=(4, 12), sticky="w")
+        )
+        self.sr_reentry_tick_limit_entry.grid(row=0, column=3, padx=(4, 12), sticky="w")
         ttk.Label(sr_reentry_settings, text="対象線").grid(
             row=0, column=4, sticky="w"
         )
@@ -2108,38 +2191,71 @@ class Step1App:
             textvariable=self.sr_reentry_max_seconds_var,
             width=8,
         ).grid(row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
-        ttk.Label(sr_reentry_settings, text="平均ティック/分 下限").grid(
-            row=2, column=0, sticky="w", pady=(6, 0)
+        self.sr_reentry_tick_min_check = ttk.Checkbutton(
+            sr_reentry_settings,
+            text="ティック下限",
+            variable=self.sr_reentry_tick_min_enabled_var,
+            command=self._on_sr_reentry_filter_toggle,
         )
-        ttk.Entry(
+        self.sr_reentry_tick_min_check.grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.sr_reentry_tick_min_entry = ttk.Entry(
             sr_reentry_settings,
             textvariable=self.sr_reentry_tick_min_var,
             width=8,
-        ).grid(row=2, column=1, padx=(4, 0), pady=(6, 0), sticky="w")
-        ttk.Label(sr_reentry_settings, text="滞在判定位置（％）").grid(
-            row=2, column=2, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(
+        self.sr_reentry_tick_min_entry.grid(row=2, column=1, padx=(4, 0), pady=(6, 0), sticky="w")
+        self.sr_reentry_midpoint_check = ttk.Checkbutton(
+            sr_reentry_settings,
+            text="滞在位置",
+            variable=self.sr_reentry_midpoint_enabled_var,
+            command=self._on_sr_reentry_filter_toggle,
+        )
+        self.sr_reentry_midpoint_check.grid(row=2, column=2, sticky="w", pady=(6, 0))
+        self.sr_reentry_midpoint_entry = ttk.Entry(
             sr_reentry_settings,
             textvariable=self.sr_reentry_midpoint_var,
             width=8,
-        ).grid(row=2, column=3, padx=(4, 12), pady=(6, 0), sticky="w")
-        ttk.Label(sr_reentry_settings, text="優勢滞在率（％）").grid(
-            row=2, column=4, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(
+        self.sr_reentry_midpoint_entry.grid(row=2, column=3, padx=(4, 12), pady=(6, 0), sticky="w")
+        self.sr_reentry_dominance_check = ttk.Checkbutton(
+            sr_reentry_settings,
+            text="優勢滞在率",
+            variable=self.sr_reentry_dominance_enabled_var,
+            command=self._on_sr_reentry_filter_toggle,
+        )
+        self.sr_reentry_dominance_check.grid(row=2, column=4, sticky="w", pady=(6, 0))
+        self.sr_reentry_dominance_entry = ttk.Entry(
             sr_reentry_settings,
             textvariable=self.sr_reentry_dominance_var,
             width=8,
-        ).grid(row=2, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
-        ttk.Label(sr_reentry_settings, text="有利平均幅比率（％）").grid(
-            row=3, column=0, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(
+        self.sr_reentry_dominance_entry.grid(row=2, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
+        self.sr_reentry_move_ratio_check = ttk.Checkbutton(
+            sr_reentry_settings,
+            text="平均幅比率",
+            variable=self.sr_reentry_move_ratio_enabled_var,
+            command=self._on_sr_reentry_filter_toggle,
+        )
+        self.sr_reentry_move_ratio_check.grid(row=3, column=0, sticky="w", pady=(6, 0))
+        self.sr_reentry_move_ratio_entry = ttk.Entry(
             sr_reentry_settings,
             textvariable=self.sr_reentry_move_ratio_var,
             width=8,
-        ).grid(row=3, column=1, padx=(4, 0), pady=(6, 0), sticky="w")
+        )
+        self.sr_reentry_move_ratio_entry.grid(row=3, column=1, padx=(4, 0), pady=(6, 0), sticky="w")
+        self.sr_reentry_speed_ratio_check = ttk.Checkbutton(
+            sr_reentry_settings,
+            text="速度比率",
+            variable=self.sr_reentry_speed_ratio_enabled_var,
+            command=self._on_sr_reentry_filter_toggle,
+        )
+        self.sr_reentry_speed_ratio_check.grid(row=3, column=2, sticky="w", pady=(6, 0))
+        self.sr_reentry_speed_ratio_entry = ttk.Entry(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_speed_ratio_var,
+            width=8,
+        )
+        self.sr_reentry_speed_ratio_entry.grid(row=3, column=3, padx=(4, 0), pady=(6, 0), sticky="w")
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
@@ -2210,6 +2326,7 @@ class Step1App:
         self._on_ma_filter_toggle()
         self._on_extreme_filter_toggle()
         self._on_backtest_exclude_toggle()
+        self._on_sr_reentry_filter_toggle()
 
     def _pick_start(self):
         CalendarPopup(self.root, self.start_date, self._set_start)
@@ -2367,14 +2484,46 @@ class Step1App:
     def _get_sr_reentry_params(self):
         try:
             break_pips = self._parse_number(self.sr_reentry_break_pips_var.get())
-            tick_limit = int(self._parse_number(self.sr_reentry_tick_limit_var.get()))
-            tick_min = self._parse_number(self.sr_reentry_tick_min_var.get())
             wait_bars = int(self._parse_number(self.sr_reentry_wait_bars_var.get()))
             min_seconds = self._parse_number(self.sr_reentry_min_seconds_var.get())
             max_seconds = self._parse_number(self.sr_reentry_max_seconds_var.get())
-            midpoint_pct = self._parse_number(self.sr_reentry_midpoint_var.get())
-            dominance_pct = self._parse_number(self.sr_reentry_dominance_var.get())
-            move_ratio_pct = self._parse_number(self.sr_reentry_move_ratio_var.get())
+            tick_limit_enabled = self.sr_reentry_tick_limit_enabled_var.get()
+            tick_min_enabled = self.sr_reentry_tick_min_enabled_var.get()
+            midpoint_enabled = self.sr_reentry_midpoint_enabled_var.get()
+            dominance_enabled = self.sr_reentry_dominance_enabled_var.get()
+            move_ratio_enabled = self.sr_reentry_move_ratio_enabled_var.get()
+            speed_ratio_enabled = self.sr_reentry_speed_ratio_enabled_var.get()
+
+            tick_limit = (
+                int(self._parse_number(self.sr_reentry_tick_limit_var.get()))
+                if tick_limit_enabled
+                else 1_000_000_000
+            )
+            tick_min = (
+                self._parse_number(self.sr_reentry_tick_min_var.get())
+                if tick_min_enabled
+                else 0.0
+            )
+            midpoint_pct = (
+                self._parse_number(self.sr_reentry_midpoint_var.get())
+                if midpoint_enabled
+                else 50.0
+            )
+            dominance_pct = (
+                self._parse_number(self.sr_reentry_dominance_var.get())
+                if dominance_enabled
+                else 0.0
+            )
+            move_ratio_pct = (
+                self._parse_number(self.sr_reentry_move_ratio_var.get())
+                if move_ratio_enabled
+                else 0.0
+            )
+            speed_ratio_pct = (
+                self._parse_number(self.sr_reentry_speed_ratio_var.get())
+                if speed_ratio_enabled
+                else 0.0
+            )
         except ValueError:
             messagebox.showerror("エラー", "水平線戻りの数値入力が正しくありません。")
             return None
@@ -2382,13 +2531,13 @@ class Step1App:
         if break_pips <= 0:
             messagebox.showerror("エラー", "抜け幅は0より大きくしてください。")
             return None
-        if tick_limit < 1:
+        if tick_limit_enabled and tick_limit < 1:
             messagebox.showerror("エラー", "ティック数上限は1以上にしてください。")
             return None
-        if tick_min < 0:
+        if tick_min_enabled and tick_min < 0:
             messagebox.showerror("エラー", "ティック数下限は0以上にしてください。")
             return None
-        if tick_limit < tick_min:
+        if tick_limit_enabled and tick_min_enabled and tick_limit < tick_min:
             messagebox.showerror("エラー", "ティック数上限は下限以上にしてください。")
             return None
         if wait_bars < 0:
@@ -2403,14 +2552,17 @@ class Step1App:
         if max_seconds < min_seconds:
             messagebox.showerror("エラー", "対象秒数は最小秒数以上にしてください。")
             return None
-        if midpoint_pct < 0 or midpoint_pct > 100:
+        if midpoint_enabled and (midpoint_pct < 0 or midpoint_pct > 100):
             messagebox.showerror("エラー", "滞在判定位置は0〜100の範囲にしてください。")
             return None
-        if dominance_pct < 0 or dominance_pct > 100:
+        if dominance_enabled and (dominance_pct < 0 or dominance_pct > 100):
             messagebox.showerror("エラー", "優勢滞在率は0〜100の範囲にしてください。")
             return None
-        if move_ratio_pct < 0:
+        if move_ratio_enabled and move_ratio_pct < 0:
             messagebox.showerror("エラー", "有利平均幅比率は0以上にしてください。")
+            return None
+        if speed_ratio_enabled and speed_ratio_pct < 0:
+            messagebox.showerror("エラー", "有利速度比率は0以上にしてください。")
             return None
 
         target_label = self.sr_reentry_target_var.get()
@@ -2431,6 +2583,7 @@ class Step1App:
             "sr_midpoint_pct": midpoint_pct,
             "sr_dominance_pct": dominance_pct,
             "sr_move_ratio_pct": move_ratio_pct,
+            "sr_move_speed_ratio_pct": speed_ratio_pct,
             "sr_target": target_kind,
         }
 
@@ -2889,9 +3042,33 @@ class Step1App:
         if self.chart_data:
             self._draw_chart()
 
+    def _on_sr_line_toggle(self):
+        if self.chart_data:
+            self._draw_chart()
+
     def _on_range_band_toggle(self):
         if self.chart_data:
             self._draw_chart()
+
+    def _on_sr_reentry_filter_toggle(self):
+        if hasattr(self, "sr_reentry_tick_limit_entry"):
+            state = "normal" if self.sr_reentry_tick_limit_enabled_var.get() else "disabled"
+            self.sr_reentry_tick_limit_entry.config(state=state)
+        if hasattr(self, "sr_reentry_tick_min_entry"):
+            state = "normal" if self.sr_reentry_tick_min_enabled_var.get() else "disabled"
+            self.sr_reentry_tick_min_entry.config(state=state)
+        if hasattr(self, "sr_reentry_midpoint_entry"):
+            state = "normal" if self.sr_reentry_midpoint_enabled_var.get() else "disabled"
+            self.sr_reentry_midpoint_entry.config(state=state)
+        if hasattr(self, "sr_reentry_dominance_entry"):
+            state = "normal" if self.sr_reentry_dominance_enabled_var.get() else "disabled"
+            self.sr_reentry_dominance_entry.config(state=state)
+        if hasattr(self, "sr_reentry_move_ratio_entry"):
+            state = "normal" if self.sr_reentry_move_ratio_enabled_var.get() else "disabled"
+            self.sr_reentry_move_ratio_entry.config(state=state)
+        if hasattr(self, "sr_reentry_speed_ratio_entry"):
+            state = "normal" if self.sr_reentry_speed_ratio_enabled_var.get() else "disabled"
+            self.sr_reentry_speed_ratio_entry.config(state=state)
 
     def _on_extreme_filter_toggle(self):
         enabled = self.extreme_filter_var.get()
@@ -3261,13 +3438,19 @@ class Step1App:
             return
 
         candles = None
-        if chart_type == "candle":
-            candle_cache = data.get("candle_cache")
-            if candle_cache is None:
-                candle_cache = {}
-                data["candle_cache"] = candle_cache
+        need_overlay_data = (
+            chart_type == "candle"
+            or self.zigzag_show_var.get()
+            or self.sr_line_show_var.get()
+            or self.range_band_show_var.get()
+        )
+        if need_overlay_data:
+            overlay_cache = data.get("overlay_cache")
+            if overlay_cache is None:
+                overlay_cache = {}
+                data["overlay_cache"] = overlay_cache
 
-            cache_entry = candle_cache.get(candle_interval)
+            cache_entry = overlay_cache.get(candle_interval)
             if cache_entry is None or cache_entry.get("source_len") != len(points_all):
                 full_candles = build_timeframe_candles(points_all, candle_interval)
                 sr_params = {
@@ -3297,42 +3480,48 @@ class Step1App:
                     "range_segments": range_segments,
                     "sr_segments": sr_segments,
                 }
-                candle_cache[candle_interval] = cache_entry
+                overlay_cache[candle_interval] = cache_entry
 
-            full_candles = cache_entry.get("candles") or []
-            view_candles = [
-                c for c in full_candles if view_start_time <= c[0] <= view_end_time
-            ]
-            candles = view_candles
-            data["view_candles"] = candles
-            data["view_candle_times"] = [c[0] for c in candles]
-            data["view_candle_interval"] = candle_interval
             data["zigzag_points"] = cache_entry.get("zigzag_points") or []
             data["range_segments"] = cache_entry.get("range_segments") or []
             data["sr_segments"] = cache_entry.get("sr_segments") or []
 
-            if not candles:
-                self.chart_info_var.set("表示範囲にデータがありません。")
-                canvas = self.chart_canvas
-                canvas.delete("all")
-                width, height, left, top, right, bottom, _plot_width, _plot_height = (
-                    self._get_plot_area()
-                )
-                canvas.create_rectangle(
-                    left, top, width - right, height - bottom, outline="#888888"
-                )
-                canvas.create_text(
-                    width // 2,
-                    height // 2,
-                    text="表示範囲にデータがありません。",
-                    fill="#666666",
-                )
-                return
+            if chart_type == "candle":
+                full_candles = cache_entry.get("candles") or []
+                view_candles = [
+                    c for c in full_candles if view_start_time <= c[0] <= view_end_time
+                ]
+                candles = view_candles
+                data["view_candles"] = candles
+                data["view_candle_times"] = [c[0] for c in candles]
+                data["view_candle_interval"] = candle_interval
 
-            highs = [h for _t, _o, h, _l, _c in candles]
-            lows = [l for _t, _o, _h, l, _c in candles]
-            min_p = min(lows)
-            max_p = max(highs)
+                if not candles:
+                    self.chart_info_var.set("表示範囲にデータがありません。")
+                    canvas = self.chart_canvas
+                    canvas.delete("all")
+                    width, height, left, top, right, bottom, _plot_width, _plot_height = (
+                        self._get_plot_area()
+                    )
+                    canvas.create_rectangle(
+                        left, top, width - right, height - bottom, outline="#888888"
+                    )
+                    canvas.create_text(
+                        width // 2,
+                        height // 2,
+                        text="表示範囲にデータがありません。",
+                        fill="#666666",
+                    )
+                    return
+
+                highs = [h for _t, _o, h, _l, _c in candles]
+                lows = [l for _t, _o, _h, l, _c in candles]
+                min_p = min(lows)
+                max_p = max(highs)
+            else:
+                prices_full = [p for _, p in view_points]
+                min_p = min(prices_full)
+                max_p = max(prices_full)
         else:
             prices_full = [p for _, p in view_points]
             min_p = min(prices_full)
@@ -3488,106 +3677,58 @@ class Step1App:
             if zz_coords:
                 canvas.create_line(zz_coords, fill="#7f7f7f", width=1)
 
+        def line_time_to_x(ts, as_end=False):
+            if mode == "time":
+                if span_seconds <= 0:
+                    return None
+                if ts < view_start_time:
+                    ts = view_start_time
+                if ts > view_end_time:
+                    ts = view_end_time
+                return (
+                    left
+                    + (ts - view_start_time).total_seconds()
+                    / span_seconds
+                    * plot_width
+                )
+            if n <= 1:
+                return None
+            idx = bisect_right(times, ts) - 1 if as_end else bisect_left(times, ts)
+            if idx < view_start_idx or idx > view_end_idx:
+                return None
+            return left + (idx - view_start_idx) / (n - 1) * plot_width
+
         range_segments = data.get("range_segments") or []
-        if self.range_band_show_var.get() and chart_type == "candle" and range_segments:
-            if span_seconds > 0:
-                segments_view = []
-                for seg in range_segments:
-                    start_ts = seg.get("start_time")
-                    end_ts = seg.get("end_time")
-                    high = seg.get("high")
-                    low = seg.get("low")
-                    if (
-                        start_ts is None
-                        or end_ts is None
-                        or high is None
-                        or low is None
-                    ):
-                        continue
-                    if end_ts < view_start_time or start_ts > view_end_time:
-                        continue
-                    draw_start = (
-                        start_ts if start_ts > view_start_time else view_start_time
-                    )
-                    draw_end = end_ts if end_ts < view_end_time else view_end_time
-                    segments_view.append(
-                        {
-                            "start_time": draw_start,
-                            "end_time": draw_end,
-                            "high": high,
-                            "low": low,
-                        }
-                    )
-
-                if segments_view:
-                    top_coords = []
-                    prev_x_end = None
-                    prev_y_high = None
-                    for i, seg in enumerate(segments_view):
-                        x_start = (
-                            left
-                            + (seg["start_time"] - view_start_time).total_seconds()
-                            / span_seconds
-                            * plot_width
-                        )
-                        x_end = (
-                            left
-                            + (seg["end_time"] - view_start_time).total_seconds()
-                            / span_seconds
-                            * plot_width
-                        )
-                        y_high = price_to_y(seg["high"])
-                        if i == 0:
-                            top_coords.extend([x_start, y_high])
-                        else:
-                            if prev_x_end is not None and abs(x_start - prev_x_end) > 1e-6:
-                                top_coords.extend([x_start, prev_y_high])
-                            if prev_y_high is not None and abs(y_high - prev_y_high) > 1e-6:
-                                top_coords.extend([x_start, y_high])
-                        top_coords.extend([x_end, y_high])
-                        prev_x_end = x_end
-                        prev_y_high = y_high
-
-                    bottom_coords = []
-                    prev_x_start = None
-                    prev_y_low = None
-                    for i, seg in enumerate(reversed(segments_view)):
-                        x_end = (
-                            left
-                            + (seg["end_time"] - view_start_time).total_seconds()
-                            / span_seconds
-                            * plot_width
-                        )
-                        x_start = (
-                            left
-                            + (seg["start_time"] - view_start_time).total_seconds()
-                            / span_seconds
-                            * plot_width
-                        )
-                        y_low = price_to_y(seg["low"])
-                        if i == 0:
-                            bottom_coords.extend([x_end, y_low])
-                        else:
-                            if prev_x_start is not None and abs(x_end - prev_x_start) > 1e-6:
-                                bottom_coords.extend([x_end, prev_y_low])
-                            if prev_y_low is not None and abs(y_low - prev_y_low) > 1e-6:
-                                bottom_coords.extend([x_end, y_low])
-                        bottom_coords.extend([x_start, y_low])
-                        prev_x_start = x_start
-                        prev_y_low = y_low
-
-                    if top_coords and bottom_coords:
-                        polygon_coords = top_coords + bottom_coords
-                        canvas.create_polygon(
-                            polygon_coords,
-                            outline="#1f77b4",
-                            fill="",
-                            width=1,
-                            dash=(2, 2),
-                        )
+        if self.range_band_show_var.get() and range_segments:
+            for seg in range_segments:
+                start_ts = seg.get("start_time")
+                end_ts = seg.get("end_time")
+                high = seg.get("high")
+                low = seg.get("low")
+                if (
+                    start_ts is None
+                    or end_ts is None
+                    or high is None
+                    or low is None
+                ):
+                    continue
+                if end_ts < view_start_time or start_ts > view_end_time:
+                    continue
+                draw_start = start_ts if start_ts > view_start_time else view_start_time
+                draw_end = end_ts if end_ts < view_end_time else view_end_time
+                x1 = line_time_to_x(draw_start, as_end=False)
+                x2 = line_time_to_x(draw_end, as_end=True)
+                if x1 is None or x2 is None:
+                    continue
+                if x2 < x1:
+                    x1, x2 = x2, x1
+                y_high = price_to_y(high)
+                y_low = price_to_y(low)
+                canvas.create_line(x1, y_high, x2, y_high, fill="#1f77b4", width=1, dash=(2, 2))
+                canvas.create_line(x1, y_low, x2, y_low, fill="#1f77b4", width=1, dash=(2, 2))
 
         sr_segments = data.get("sr_segments") or []
-        if chart_type == "candle" and sr_segments and span_seconds > 0:
+        if self.sr_line_show_var.get() and sr_segments:
             for seg in sr_segments:
                 start_ts = seg.get("start_time")
                 end_ts = seg.get("end_time")
@@ -3604,18 +3745,12 @@ class Step1App:
                     continue
                 draw_start = start_ts if start_ts > view_start_time else view_start_time
                 draw_end = end_ts if end_ts < view_end_time else view_end_time
-                x1 = (
-                    left
-                    + (draw_start - view_start_time).total_seconds()
-                    / span_seconds
-                    * plot_width
-                )
-                x2 = (
-                    left
-                    + (draw_end - view_start_time).total_seconds()
-                    / span_seconds
-                    * plot_width
-                )
+                x1 = line_time_to_x(draw_start, as_end=False)
+                x2 = line_time_to_x(draw_end, as_end=True)
+                if x1 is None or x2 is None:
+                    continue
+                if x2 < x1:
+                    x1, x2 = x2, x1
                 y = price_to_y(price)
                 color = "#2ca02c" if kind == "support" else "#d62728"
                 canvas.create_line(x1, y, x2, y, fill=color, width=1, dash=(3, 3))

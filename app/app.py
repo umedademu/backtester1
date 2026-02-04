@@ -318,6 +318,37 @@ def build_minute_ma(candles, period):
     return times, ma_values, series
 
 
+def build_minute_close_info(points):
+    if not points:
+        return [], [], []
+
+    minute_times = []
+    minute_close_prices = []
+    minute_close_indices = []
+
+    current_minute = None
+    close_price = None
+    close_idx = None
+
+    for idx, (ts, bid) in enumerate(points):
+        minute_start = ts.replace(second=0, microsecond=0)
+        if current_minute is None or minute_start != current_minute:
+            if current_minute is not None:
+                minute_times.append(current_minute)
+                minute_close_prices.append(close_price)
+                minute_close_indices.append(close_idx)
+            current_minute = minute_start
+        close_price = bid
+        close_idx = idx
+
+    if current_minute is not None:
+        minute_times.append(current_minute)
+        minute_close_prices.append(close_price)
+        minute_close_indices.append(close_idx)
+
+    return minute_times, minute_close_prices, minute_close_indices
+
+
 def build_range_band_segments(candles, lookback_bars=30):
     if not candles:
         return []
@@ -922,13 +953,33 @@ def summarize_trades(trades):
     }
 
 
-def simulate_exit(points, entry_idx, side, entry_price, spread, stop, take):
+def simulate_exit(
+    points,
+    entry_idx,
+    side,
+    entry_price,
+    spread,
+    stop,
+    take,
+    time_close_minutes=0.0,
+    minute_close_info=None,
+):
     if side == "long":
         stop_price = entry_price - stop
         take_price = entry_price + take
     else:
         stop_price = entry_price + stop
         take_price = entry_price - take
+
+    forced_close_time = None
+    if time_close_minutes and time_close_minutes > 0:
+        forced_close_time = points[entry_idx][0] + timedelta(minutes=time_close_minutes)
+
+    minute_times = []
+    minute_close_prices = []
+    minute_close_indices = []
+    if minute_close_info:
+        minute_times, minute_close_prices, minute_close_indices = minute_close_info
 
     n = len(points)
     exit_idx = None
@@ -960,6 +1011,22 @@ def simulate_exit(points, entry_idx, side, entry_price, spread, stop, take):
                 exit_price = ask
                 exit_reason = "利確"
                 break
+        if forced_close_time is not None and _t >= forced_close_time:
+            close_bid = bid
+            close_idx = j
+            if minute_times:
+                minute_start = _t.replace(second=0, microsecond=0)
+                minute_pos = bisect_left(minute_times, minute_start)
+                if (
+                    0 <= minute_pos < len(minute_times)
+                    and minute_times[minute_pos] == minute_start
+                ):
+                    close_bid = minute_close_prices[minute_pos]
+                    close_idx = minute_close_indices[minute_pos]
+            exit_idx = close_idx
+            exit_price = close_bid if side == "long" else close_bid + spread
+            exit_reason = "時間"
+            break
         j += 1
 
     if exit_idx is None:
@@ -1007,6 +1074,7 @@ def run_backtest(points, params, runtime_cache=None):
     spread = params["spread_pips"] * PIP_SIZE
     stop = params["stop_pips"] * PIP_SIZE
     take = params["take_pips"] * PIP_SIZE
+    time_close_minutes = float(params.get("time_close_minutes", 0.0))
     ma_enabled = params.get("ma_enabled", False)
     ma_period = max(1, int(params.get("ma_period", 0)))
     ma_deviation = params.get("ma_deviation_rate", 0.0)
@@ -1031,6 +1099,13 @@ def run_backtest(points, params, runtime_cache=None):
             ma_entry = build_minute_ma(minute_candles, ma_period)
             ma_cache[ma_period] = ma_entry
         candle_times, ma_values, ma_series = ma_entry
+
+    minute_close_info = None
+    if time_close_minutes > 0:
+        minute_close_info = runtime_cache.get("minute_close_info")
+        if minute_close_info is None:
+            minute_close_info = build_minute_close_info(points_sorted)
+            runtime_cache["minute_close_info"] = minute_close_info
 
     entry_mode = params.get("entry_mode", "spike")
 
@@ -1156,7 +1231,15 @@ def run_backtest(points, params, runtime_cache=None):
                     continue
 
             exit_idx, exit_price, exit_reason = simulate_exit(
-                points_sorted, entry_idx, side, entry_price, spread, stop, take
+                points_sorted,
+                entry_idx,
+                side,
+                entry_price,
+                spread,
+                stop,
+                take,
+                time_close_minutes,
+                minute_close_info,
             )
 
             if side == "long":
@@ -1258,7 +1341,15 @@ def run_backtest(points, params, runtime_cache=None):
                     continue
 
             exit_idx, exit_price, exit_reason = simulate_exit(
-                points_sorted, entry_idx, side, entry_price, spread, stop, take
+                points_sorted,
+                entry_idx,
+                side,
+                entry_price,
+                spread,
+                stop,
+                take,
+                time_close_minutes,
+                minute_close_info,
             )
 
             if side == "long":
@@ -1434,6 +1525,7 @@ class Step1App:
         self.spread_var = tk.StringVar(value="1.0")
         self.stop_pips_var = tk.StringVar(value="5.0")
         self.take_pips_var = tk.StringVar(value="5.0")
+        self.time_close_minutes_var = tk.StringVar(value="0")
         self.sr_zigzag_pips_var = tk.StringVar(value="10.0")
         self.sr_break_pips_var = tk.StringVar(value="0.01")
         self.sr_min_bars_var = tk.StringVar(value="10")
@@ -1668,6 +1760,12 @@ class Step1App:
         ttk.Label(settings, text="利確幅（ピップス）").grid(row=1, column=4, sticky="w", pady=(6, 0))
         ttk.Entry(settings, textvariable=self.take_pips_var, width=8).grid(
             row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="時間経過クローズ（分）").grid(
+            row=1, column=6, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(settings, textvariable=self.time_close_minutes_var, width=8).grid(
+            row=1, column=7, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
         self.ma_check = ttk.Checkbutton(
@@ -1940,6 +2038,7 @@ class Step1App:
             spread_pips = self._parse_number(self.spread_var.get())
             stop_pips = self._parse_number(self.stop_pips_var.get())
             take_pips = self._parse_number(self.take_pips_var.get())
+            time_close_minutes = self._parse_number(self.time_close_minutes_var.get())
             ma_enabled = self.ma_filter_var.get()
             ma_period = self._parse_number(self.ma_period_var.get())
             ma_deviation_pct = self._parse_number(self.ma_deviation_var.get())
@@ -1976,6 +2075,9 @@ class Step1App:
         if take_pips <= 0:
             messagebox.showerror("エラー", "利確幅は0より大きくしてください。")
             return None
+        if time_close_minutes < 0:
+            messagebox.showerror("エラー", "時間経過クローズは0以上にしてください。")
+            return None
 
         if ma_period < 2:
             messagebox.showerror("エラー", "移動平均の期間は2以上にしてください。")
@@ -1997,6 +2099,7 @@ class Step1App:
             "spread_pips": spread_pips,
             "stop_pips": stop_pips,
             "take_pips": take_pips,
+            "time_close_minutes": time_close_minutes,
             "ma_enabled": ma_enabled,
             "ma_period": int(ma_period),
             "ma_deviation_rate": ma_deviation_pct / 100.0,

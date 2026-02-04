@@ -1311,6 +1311,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     extreme_distance = params.get("extreme_distance_pips", 0.0) * PIP_SIZE
     exclude_enabled = params.get("exclude_enabled", False)
     exclude_hours = params.get("exclude_hours", set())
+    allow_same_direction = bool(params.get("allow_same_direction", False))
+    allow_opposite_direction = bool(params.get("allow_opposite_direction", False))
+    allow_overlap = allow_same_direction or allow_opposite_direction
 
     candle_times = []
     ma_values = []
@@ -1338,8 +1341,25 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     entry_mode = params.get("entry_mode", "spike")
 
     trades = []
-    equity_curve = [(times[0], 0.0)]
-    cumulative = 0.0
+    active_positions = []
+
+    def can_open_position(entry_idx, side):
+        if not allow_overlap:
+            return True
+        active_positions[:] = [
+            pos for pos in active_positions if pos["exit_idx"] > entry_idx
+        ]
+        has_same = any(pos["side"] == side for pos in active_positions)
+        has_opposite = any(pos["side"] != side for pos in active_positions)
+        if has_same and not allow_same_direction:
+            return False
+        if has_opposite and not allow_opposite_direction:
+            return False
+        return True
+
+    def register_position(side, exit_idx):
+        if allow_overlap:
+            active_positions.append({"side": side, "exit_idx": exit_idx})
 
     i = 0
     n = len(points_sorted)
@@ -1472,6 +1492,10 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     i = entry_idx + 1
                     continue
 
+            if not can_open_position(entry_idx, side):
+                i = entry_idx + 1
+                continue
+
             exit_idx, exit_price, exit_reason = simulate_exit(
                 points_sorted,
                 entry_idx,
@@ -1494,8 +1518,10 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 {
                     "side": side,
                     "entry_reason": signal.get("entry_reason", "水平線戻り"),
+                    "entry_idx": entry_idx,
                     "entry_time": entry_time,
                     "entry_price": entry_price,
+                    "exit_idx": exit_idx,
                     "exit_time": points_sorted[exit_idx][0],
                     "exit_price": exit_price,
                     "pips": pips,
@@ -1512,10 +1538,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     "down_move_speed": signal.get("down_move_speed"),
                 }
             )
-
-            cumulative += pips
-            equity_curve.append((points_sorted[exit_idx][0], cumulative))
-            i = exit_idx + 1
+            register_position(side, exit_idx)
+            i = entry_idx + 1 if allow_overlap else exit_idx + 1
     else:
         while i < n - 1:
             if is_cancel_requested(should_cancel):
@@ -1598,6 +1622,10 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     i = entry_idx + 1
                     continue
 
+            if not can_open_position(entry_idx, side):
+                i = entry_idx + 1
+                continue
+
             exit_idx, exit_price, exit_reason = simulate_exit(
                 points_sorted,
                 entry_idx,
@@ -1620,19 +1648,29 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 {
                     "side": side,
                     "entry_reason": "スパイク戻り",
+                    "entry_idx": entry_idx,
                     "entry_time": entry_time,
                     "entry_price": entry_price,
+                    "exit_idx": exit_idx,
                     "exit_time": points_sorted[exit_idx][0],
                     "exit_price": exit_price,
                     "pips": pips,
                     "reason": exit_reason,
                 }
             )
+            register_position(side, exit_idx)
+            i = entry_idx + 1 if allow_overlap else exit_idx + 1
 
+    equity_curve = [(times[0], 0.0)]
+    cumulative = 0.0
+    if trades:
+        exit_events = sorted(
+            ((t.get("exit_time"), idx, t.get("pips", 0.0)) for idx, t in enumerate(trades)),
+            key=lambda item: (item[0], item[1]),
+        )
+        for exit_time, _idx, pips in exit_events:
             cumulative += pips
-            equity_curve.append((points_sorted[exit_idx][0], cumulative))
-            i = exit_idx + 1
-
+            equity_curve.append((exit_time, cumulative))
     if equity_curve and equity_curve[-1][0] != times[-1]:
         equity_curve.append((times[-1], cumulative))
 
@@ -1788,6 +1826,8 @@ class Step1App:
         self.stop_pips_var = tk.StringVar(value="5.0")
         self.take_pips_var = tk.StringVar(value="5.0")
         self.time_close_minutes_var = tk.StringVar(value="0")
+        self.allow_same_direction_var = tk.BooleanVar(value=False)
+        self.allow_opposite_direction_var = tk.BooleanVar(value=False)
         self.sr_zigzag_pips_var = tk.StringVar(value="10.0")
         self.sr_break_pips_var = tk.StringVar(value="0.01")
         self.sr_min_bars_var = tk.StringVar(value="10")
@@ -1812,6 +1852,9 @@ class Step1App:
         self.sr_reentry_target_var = tk.StringVar(value="両方")
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
+        self.trade_jump_var = tk.StringVar(value="1")
+        self.trade_nav_info_var = tk.StringVar(value="取引: 0件")
+        self.trade_focus_index = None
         self.pnl_data = None
         self.backtest_ready = False
         self.analysis_cache_key = None
@@ -1924,6 +1967,26 @@ class Step1App:
             command=self._on_chart_visibility_change,
         )
         self.hide_chart_check.grid(row=0, column=5, padx=(12, 0), sticky="w")
+        ttk.Label(chart_controls, text="取引").grid(row=0, column=6, padx=(12, 4), sticky="w")
+        self.trade_jump_entry = ttk.Entry(
+            chart_controls, textvariable=self.trade_jump_var, width=6
+        )
+        self.trade_jump_entry.grid(row=0, column=7, sticky="w")
+        self.trade_jump_button = ttk.Button(
+            chart_controls, text="移動", command=self._jump_to_trade
+        )
+        self.trade_jump_button.grid(row=0, column=8, padx=(4, 0), sticky="w")
+        self.trade_prev_button = ttk.Button(
+            chart_controls, text="前へ", command=self._focus_prev_trade
+        )
+        self.trade_prev_button.grid(row=0, column=9, padx=(6, 0), sticky="w")
+        self.trade_next_button = ttk.Button(
+            chart_controls, text="次へ", command=self._focus_next_trade
+        )
+        self.trade_next_button.grid(row=0, column=10, padx=(4, 0), sticky="w")
+        ttk.Label(chart_controls, textvariable=self.trade_nav_info_var).grid(
+            row=0, column=11, padx=(8, 0), sticky="w"
+        )
 
         self.zigzag_check = ttk.Checkbutton(
             chart_controls,
@@ -2134,6 +2197,18 @@ class Step1App:
             value="sr_reentry",
         )
         self.strategy_sr_radio.grid(row=5, column=2, sticky="w", pady=(6, 0))
+        self.allow_same_direction_check = ttk.Checkbutton(
+            settings,
+            text="同方向同時保有",
+            variable=self.allow_same_direction_var,
+        )
+        self.allow_same_direction_check.grid(row=5, column=3, sticky="w", pady=(6, 0))
+        self.allow_opposite_direction_check = ttk.Checkbutton(
+            settings,
+            text="逆方向同時保有",
+            variable=self.allow_opposite_direction_var,
+        )
+        self.allow_opposite_direction_check.grid(row=5, column=4, sticky="w", pady=(6, 0))
 
         sr_settings = ttk.LabelFrame(param_area, text="水平線条件")
         sr_settings.grid(row=0, column=1, sticky="nsew", padx=(0, 6))
@@ -2368,6 +2443,7 @@ class Step1App:
         self._on_extreme_filter_toggle()
         self._on_backtest_exclude_toggle()
         self._on_sr_reentry_filter_toggle()
+        self._update_trade_nav_state()
 
     def _pick_start(self):
         CalendarPopup(self.root, self.start_date, self._set_start)
@@ -2425,6 +2501,8 @@ class Step1App:
                 extreme_distance_pips = 0.0
             exclude_enabled = self.backtest_exclude_var.get()
             exclude_hours = self._get_backtest_exclude_hours() if exclude_enabled else set()
+            allow_same_direction = self.allow_same_direction_var.get()
+            allow_opposite_direction = self.allow_opposite_direction_var.get()
         except ValueError:
             messagebox.showerror("エラー", "数値の入力が正しくありません。")
             return None
@@ -2480,6 +2558,8 @@ class Step1App:
             "extreme_distance_pips": extreme_distance_pips,
             "exclude_enabled": exclude_enabled,
             "exclude_hours": exclude_hours,
+            "allow_same_direction": allow_same_direction,
+            "allow_opposite_direction": allow_opposite_direction,
         }
 
     def _get_sr_params(self):
@@ -2983,6 +3063,8 @@ class Step1App:
             "zigzag_points": [],
             "range_segments": [],
         }
+        self.trade_focus_index = None
+        self._update_trade_nav_state()
         self._draw_chart()
 
     def _render_backtest(self, payload):
@@ -3032,7 +3114,149 @@ class Step1App:
             self.chart_data["ma_series"] = payload.get("ma_series") or []
             self.chart_data["ma_enabled"] = payload.get("ma_enabled", False)
             self._draw_chart()
+        self._update_trade_nav_state()
         self._draw_pnl_chart()
+
+    def _update_trade_nav_state(self):
+        trades = []
+        if self.chart_data is not None:
+            trades = self.chart_data.get("trades") or []
+        total = len(trades)
+        if total <= 0:
+            self.trade_focus_index = None
+            self.trade_nav_info_var.set("取引: 0件")
+            if hasattr(self, "trade_prev_button"):
+                self.trade_prev_button.config(state="disabled")
+            if hasattr(self, "trade_next_button"):
+                self.trade_next_button.config(state="disabled")
+            if hasattr(self, "trade_jump_button"):
+                self.trade_jump_button.config(state="disabled")
+            return
+
+        if self.trade_focus_index is not None:
+            if self.trade_focus_index < 0:
+                self.trade_focus_index = 0
+            elif self.trade_focus_index >= total:
+                self.trade_focus_index = total - 1
+            self.trade_nav_info_var.set(
+                f"取引: {self.trade_focus_index + 1}/{total}"
+            )
+            self.trade_jump_var.set(str(self.trade_focus_index + 1))
+        else:
+            self.trade_nav_info_var.set(f"取引: 0/{total}")
+
+        if hasattr(self, "trade_prev_button"):
+            self.trade_prev_button.config(state="normal")
+        if hasattr(self, "trade_next_button"):
+            self.trade_next_button.config(state="normal")
+        if hasattr(self, "trade_jump_button"):
+            self.trade_jump_button.config(state="normal")
+
+    def _focus_trade_index(self, index):
+        if not self.chart_data:
+            return
+        trades = self.chart_data.get("trades") or []
+        if not trades:
+            return
+        total = len(trades)
+        if index < 0:
+            index = 0
+        elif index >= total:
+            index = total - 1
+
+        trade = trades[index]
+        times = self.chart_data.get("times") or []
+        if not times:
+            return
+        target_time = trade.get("entry_time")
+        entry_idx = trade.get("entry_idx")
+        if entry_idx is None and isinstance(target_time, datetime):
+            entry_idx = bisect_left(times, target_time)
+            if entry_idx >= len(times):
+                entry_idx = len(times) - 1
+            if entry_idx < 0:
+                entry_idx = 0
+        elif entry_idx is None:
+            entry_idx = 0
+
+        chart_type = (
+            self.chart_type_var.get() if hasattr(self, "chart_type_var") else "tick"
+        )
+        mode = self.chart_data.get("mode", "time")
+        if chart_type == "candle" or mode == "time":
+            view_start_time = self.chart_data.get("view_start_time", times[0])
+            view_end_time = self.chart_data.get("view_end_time", times[-1])
+            span = view_end_time - view_start_time
+            if span.total_seconds() <= 0:
+                span = timedelta(hours=1)
+            center_time = target_time if isinstance(target_time, datetime) else times[entry_idx]
+            half = span / 2
+            new_start = center_time - half
+            new_end = center_time + half
+            if new_start < times[0]:
+                new_start = times[0]
+                new_end = new_start + span
+            if new_end > times[-1]:
+                new_end = times[-1]
+                new_start = new_end - span
+            if new_start < times[0]:
+                new_start = times[0]
+            self.chart_data["view_start_time"] = new_start
+            self.chart_data["view_end_time"] = new_end
+        else:
+            view_start = self.chart_data.get("view_start", 0)
+            view_end = self.chart_data.get("view_end", len(times) - 1)
+            visible = max(1, view_end - view_start + 1)
+            max_start = max(0, len(times) - visible)
+            new_start = entry_idx - visible // 2
+            if new_start < 0:
+                new_start = 0
+            elif new_start > max_start:
+                new_start = max_start
+            self.chart_data["view_start"] = new_start
+            self.chart_data["view_end"] = new_start + visible - 1
+
+        self.trade_focus_index = index
+        self._update_trade_nav_state()
+        self._draw_chart()
+
+    def _jump_to_trade(self):
+        if not self.chart_data:
+            return
+        trades = self.chart_data.get("trades") or []
+        if not trades:
+            return
+        try:
+            value = int(self._parse_number(self.trade_jump_var.get()))
+        except ValueError:
+            messagebox.showerror("エラー", "取引番号の入力が正しくありません。")
+            return
+        if value < 1 or value > len(trades):
+            messagebox.showerror("エラー", f"取引番号は1～{len(trades)}の範囲で指定してください。")
+            return
+        self._focus_trade_index(value - 1)
+
+    def _focus_prev_trade(self):
+        if not self.chart_data:
+            return
+        trades = self.chart_data.get("trades") or []
+        if not trades:
+            return
+        if self.trade_focus_index is None:
+            self._focus_trade_index(len(trades) - 1)
+            return
+        self._focus_trade_index(self.trade_focus_index - 1)
+
+    def _focus_next_trade(self):
+        if not self.chart_data:
+            return
+        trades = self.chart_data.get("trades") or []
+        if not trades:
+            return
+        if self.trade_focus_index is None:
+            self._focus_trade_index(0)
+            return
+        self._focus_trade_index(self.trade_focus_index + 1)
 
     def _on_axis_mode_change(self):
         if not self.chart_data:

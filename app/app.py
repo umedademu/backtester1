@@ -1218,23 +1218,23 @@ def simulate_exit(
         if side == "long":
             if bid <= stop_price:
                 exit_idx = j
-                exit_price = bid
+                exit_price = stop_price
                 exit_reason = "損切"
                 break
             if bid >= take_price:
                 exit_idx = j
-                exit_price = bid
+                exit_price = take_price
                 exit_reason = "利確"
                 break
         else:
             if ask >= stop_price:
                 exit_idx = j
-                exit_price = ask
+                exit_price = stop_price
                 exit_reason = "損切"
                 break
             if ask <= take_price:
                 exit_idx = j
-                exit_price = ask
+                exit_price = take_price
                 exit_reason = "利確"
                 break
         if forced_close_time is not None and _t >= forced_close_time:

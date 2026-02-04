@@ -1859,11 +1859,6 @@ class Step1App:
         self.backtest_ready = False
         self.analysis_cache_key = None
         self.analysis_cache = None
-        self.chart_tasks = []
-        self.chart_task_seq = 0
-        self.chart_task_id_by_index = []
-        self.active_chart_task_id = None
-        self.selected_chart_task_id = None
 
         self._build_ui()
         self._poll_queue()
@@ -1890,7 +1885,6 @@ class Step1App:
 
         chart_tab.columnconfigure(0, weight=1)
         chart_tab.rowconfigure(7, weight=1)
-        chart_tab.rowconfigure(8, weight=0)
 
         ttk.Label(chart_tab, text="表示期間（JST）").grid(row=0, column=0, sticky="w")
 
@@ -2400,22 +2394,6 @@ class Step1App:
         self.chart_canvas.bind("<Motion>", self._on_mouse_move)
         self.chart_canvas.bind("<Leave>", self._on_mouse_leave)
 
-        task_frame = ttk.LabelFrame(chart_tab, text="バックテストタスク")
-        task_frame.grid(row=8, column=0, sticky="ew", pady=(6, 0))
-        task_frame.columnconfigure(0, weight=1)
-        self.chart_task_listbox = tk.Listbox(
-            task_frame, height=5, exportselection=False
-        )
-        self.chart_task_listbox.grid(row=0, column=0, sticky="ew")
-        self.chart_task_listbox.bind("<<ListboxSelect>>", self._on_chart_task_select)
-        self.chart_task_listbox.bind("<Double-Button-1>", self._open_selected_chart_task)
-        task_btns = ttk.Frame(task_frame)
-        task_btns.grid(row=0, column=1, padx=(6, 0), sticky="ns")
-        self.chart_task_show_button = ttk.Button(
-            task_btns, text="表示", command=self._open_selected_chart_task, state="disabled"
-        )
-        self.chart_task_show_button.grid(row=0, column=0, sticky="ew")
-
         download_tab.columnconfigure(0, weight=1)
         download_tab.rowconfigure(4, weight=1)
 
@@ -2776,229 +2754,10 @@ class Step1App:
         else:
             self.chart_cancel_button.config(state="disabled")
 
-    def _clone_backtest_params(self, params):
-        copied = dict(params or {})
-        exclude_hours = copied.get("exclude_hours")
-        if isinstance(exclude_hours, set):
-            copied["exclude_hours"] = set(exclude_hours)
-        sr_params = copied.get("sr_params")
-        if isinstance(sr_params, dict):
-            copied["sr_params"] = dict(sr_params)
-        range_params = copied.get("range_params")
-        if isinstance(range_params, dict):
-            copied["range_params"] = dict(range_params)
-        return copied
-
-    def _build_chart_task_label(self, start, end, params):
-        entry_mode = params.get("entry_mode", "spike")
-        mode_text = "水平線戻り" if entry_mode == "sr_reentry" else "スパイク"
-        interval = int(params.get("line_interval", 1))
-        return (
-            f"{start.strftime('%Y-%m-%d')}~{end.strftime('%Y-%m-%d')} "
-            f"{mode_text} 足{interval}分"
-        )
-
-    def _find_chart_task(self, task_id):
-        for task in self.chart_tasks:
-            if task.get("id") == task_id:
-                return task
-        return None
-
-    def _refresh_chart_task_list(self, select_task_id=None):
-        if not hasattr(self, "chart_task_listbox"):
-            return
-        status_map = {
-            "queued": "待機",
-            "running": "計算中",
-            "done": "完了",
-            "error": "エラー",
-            "cancelled": "中止",
-        }
-        self.chart_task_listbox.delete(0, tk.END)
-        self.chart_task_id_by_index = []
-        selected_index = None
-        for idx, task in enumerate(self.chart_tasks):
-            status = status_map.get(task.get("status"), "-")
-            task_id = task.get("id")
-            title = task.get("title") or ""
-            line = f"[{task_id:03d}] {status} {title}"
-            self.chart_task_listbox.insert(tk.END, line)
-            self.chart_task_id_by_index.append(task_id)
-            if select_task_id is not None and task_id == select_task_id:
-                selected_index = idx
-            elif (
-                select_task_id is None
-                and self.selected_chart_task_id is not None
-                and task_id == self.selected_chart_task_id
-            ):
-                selected_index = idx
-        if selected_index is not None:
-            self.chart_task_listbox.selection_clear(0, tk.END)
-            self.chart_task_listbox.selection_set(selected_index)
-            self.chart_task_listbox.see(selected_index)
-        if hasattr(self, "chart_task_show_button"):
-            state = "normal" if self.chart_tasks else "disabled"
-            self.chart_task_show_button.config(state=state)
-
-    def _enqueue_chart_task(self, start, end, params, sr_params, range_params):
-        self.chart_task_seq += 1
-        task_id = self.chart_task_seq
-        task = {
-            "id": task_id,
-            "start": start,
-            "end": end,
-            "params": self._clone_backtest_params(params),
-            "sr_params": dict(sr_params or {}),
-            "range_params": dict(range_params or {}),
-            "status": "queued",
-            "title": self._build_chart_task_label(start, end, params),
-            "chart_payload": None,
-            "backtest_payload": None,
-            "error_message": "",
-        }
-        self.chart_tasks.append(task)
-        if self.selected_chart_task_id is None:
-            self.selected_chart_task_id = task_id
-        self._refresh_chart_task_list()
-        return task
-
-    def _start_next_chart_task(self):
-        if self.chart_worker and self.chart_worker.is_alive():
-            return
-        next_task = None
-        for task in self.chart_tasks:
-            if task.get("status") == "queued":
-                next_task = task
-                break
-        if next_task is None:
-            self.active_chart_task_id = None
-            self.chart_cancel_button.config(state="disabled")
-            return
-
-        task_id = next_task["id"]
-        next_task["status"] = "running"
-        self.active_chart_task_id = task_id
-        self.chart_cancel_event.clear()
-        self.chart_cancel_button.config(state="normal")
-        self.status_var.set(f"バックテスト実行中: #{task_id}")
-        self._refresh_chart_task_list()
-        self.chart_worker = threading.Thread(
-            target=self._chart_worker,
-            args=(
-                task_id,
-                next_task["start"],
-                next_task["end"],
-                next_task["params"],
-                next_task["sr_params"],
-                next_task["range_params"],
-            ),
-            daemon=True,
-        )
-        self.chart_worker.start()
-
-    def _apply_chart_task_result(self, payload):
-        task_id = payload.get("task_id")
-        task = self._find_chart_task(task_id)
-        if not task:
-            return
-        task["status"] = "done"
-        task["chart_payload"] = payload.get("chart_payload")
-        task["backtest_payload"] = payload.get("backtest_payload")
-        task["error_message"] = ""
-        self._refresh_chart_task_list()
-
-        if self.selected_chart_task_id in (None, task_id) or not self.backtest_ready:
-            self.selected_chart_task_id = task_id
-            self._open_chart_task(task_id)
-        self.status_var.set(f"バックテスト完了: #{task_id}")
-
-    def _mark_chart_task_error(self, task_id, message):
-        task = self._find_chart_task(task_id)
-        if not task:
-            return
-        task["status"] = "error"
-        task["error_message"] = message
-        self._refresh_chart_task_list()
-        if self.selected_chart_task_id == task_id:
-            self.backtest_info_var.set("バックテスト: エラー")
-            self.pnl_info_var.set(f"損益: エラー（#{task_id}）")
-        self.status_var.set(f"バックテスト失敗: #{task_id}")
-
-    def _mark_chart_task_cancelled(self, task_id):
-        task = self._find_chart_task(task_id)
-        if not task:
-            return
-        task["status"] = "cancelled"
-        self._refresh_chart_task_list()
-        if self.selected_chart_task_id == task_id:
-            self.backtest_info_var.set("バックテスト: 中止")
-            self.pnl_info_var.set(f"損益: 中止（#{task_id}）")
-            self.backtest_ready = False
-            self.pnl_data = None
-            self._draw_pnl_chart()
-        self.status_var.set(f"バックテスト中止: #{task_id}")
-
-    def _on_chart_task_done(self, task_id):
-        if self.active_chart_task_id == task_id:
-            self.active_chart_task_id = None
-        self.chart_worker = None
-        self.chart_cancel_event.clear()
-        self._start_next_chart_task()
-
-    def _open_chart_task(self, task_id):
-        task = self._find_chart_task(task_id)
-        if not task:
-            return
-        chart_payload = task.get("chart_payload")
-        backtest_payload = task.get("backtest_payload")
-        if not chart_payload or not backtest_payload:
-            return
-        self.selected_chart_task_id = task_id
-        self._refresh_chart_task_list(select_task_id=task_id)
-        self._render_chart(chart_payload)
-        self._render_backtest(backtest_payload)
-
-    def _get_selected_chart_task_id(self):
-        if not hasattr(self, "chart_task_listbox"):
-            return None
-        selection = self.chart_task_listbox.curselection()
-        if not selection:
-            return None
-        idx = selection[0]
-        if idx < 0 or idx >= len(self.chart_task_id_by_index):
-            return None
-        return self.chart_task_id_by_index[idx]
-
-    def _on_chart_task_select(self, _event=None):
-        task_id = self._get_selected_chart_task_id()
-        if task_id is None:
-            return
-        self.selected_chart_task_id = task_id
-        task = self._find_chart_task(task_id)
-        if task and task.get("status") == "done":
-            self._open_chart_task(task_id)
-
-    def _open_selected_chart_task(self, _event=None):
-        task_id = self._get_selected_chart_task_id()
-        if task_id is None:
-            return
-        task = self._find_chart_task(task_id)
-        if not task:
-            return
-        status = task.get("status")
-        if status == "done":
-            self._open_chart_task(task_id)
-            return
-        if status == "error":
-            message = task.get("error_message") or "バックテストで問題が発生しました。"
-            messagebox.showerror("エラー", message)
-            return
-        if status == "cancelled":
-            messagebox.showinfo("お知らせ", "このタスクは中止されています。")
-            return
-        messagebox.showinfo("お知らせ", "このタスクはまだ完了していません。")
-
     def _show_chart(self):
+        if self.chart_worker and self.chart_worker.is_alive():
+            messagebox.showinfo("お知らせ", "表示処理中です。")
+            return
         if self.view_end_date < self.view_start_date:
             messagebox.showerror("エラー", "終了日は開始日より後にしてください。")
             return
@@ -3022,15 +2781,23 @@ class Step1App:
         params["sr_params"] = sr_params
         params["range_params"] = range_params
         params.update(sr_reentry_params)
-        task = self._enqueue_chart_task(
-            self.view_start_date, self.view_end_date, params, sr_params, range_params
+        self.chart_cancel_event.clear()
+        self.chart_button.config(state="disabled")
+        self.chart_cancel_button.config(state="normal")
+        self.status_var.set("表示準備中...")
+        self.backtest_info_var.set("バックテスト: 計算中...")
+        self.pnl_info_var.set("損益: 計算中...")
+        self.backtest_ready = False
+        self.pnl_data = None
+        self._draw_pnl_chart()
+        self.chart_worker = threading.Thread(
+            target=self._chart_worker,
+            args=(self.view_start_date, self.view_end_date, params, sr_params, range_params),
+            daemon=True,
         )
-        self.selected_chart_task_id = task["id"]
-        self._refresh_chart_task_list(select_task_id=task["id"])
-        self.status_var.set(f"タスク追加: #{task['id']}")
-        self._start_next_chart_task()
+        self.chart_worker.start()
 
-    def _chart_worker(self, task_id, start: date, end: date, params, sr_params, range_params):
+    def _chart_worker(self, start: date, end: date, params, sr_params, range_params):
         cache, cache_hit = self._load_analysis_cache(start, end)
         points_sorted = cache.get("points_sorted") or []
         missing = cache.get("missing") or ()
@@ -3038,33 +2805,38 @@ class Step1App:
         if missing and not cache_hit:
             self.queue.put(("log", f"[表示] CSV不足 {len(missing)}件"))
         if not points_sorted:
-            self.queue.put(
-                (
-                    "task_error",
-                    {
-                        "task_id": task_id,
-                        "message": "表示できるデータがありません。",
-                    },
-                )
-            )
-            self.queue.put(("task_done", {"task_id": task_id}))
+            self.queue.put(("chart_error", "表示できるデータがありません。"))
+            self.queue.put(("chart_done", None))
             return
 
-        chart_payload = {
-            "start": start,
-            "end": end,
-            "points": points_sorted,
-            "missing_count": len(missing),
-            "sr_params": dict(sr_params or {}),
-            "range_params": dict(range_params or {}),
-        }
+        chart_signature = (
+            len(points_sorted),
+            freeze_value(sr_params or {}),
+            freeze_value(range_params or {}),
+        )
+        should_refresh_chart = (
+            self.chart_data is None
+            or cache.get("chart_signature") != chart_signature
+            or not cache_hit
+        )
+        if should_refresh_chart:
+            payload = {
+                "start": start,
+                "end": end,
+                "points": points_sorted,
+                "missing_count": len(missing),
+                "sr_params": dict(sr_params or {}),
+                "range_params": dict(range_params or {}),
+            }
+            self.queue.put(("chart_data", payload))
+            cache["chart_signature"] = chart_signature
 
         if self.chart_cancel_event.is_set():
-            self.queue.put(("task_cancelled", {"task_id": task_id}))
-            self.queue.put(("task_done", {"task_id": task_id}))
+            self.queue.put(("chart_cancelled", None))
+            self.queue.put(("chart_done", None))
             return
 
-        self.queue.put(("status", f"バックテスト中... #{task_id}"))
+        self.queue.put(("status", "バックテスト中..."))
         try:
             backtest = run_backtest(
                 points_sorted,
@@ -3072,31 +2844,15 @@ class Step1App:
                 runtime_cache=cache.get("backtest_cache"),
                 should_cancel=self.chart_cancel_event.is_set,
             )
-            self.queue.put(
-                (
-                    "task_result",
-                    {
-                        "task_id": task_id,
-                        "chart_payload": chart_payload,
-                        "backtest_payload": backtest,
-                    },
-                )
-            )
+            self.queue.put(("backtest_data", backtest))
         except InterruptedError:
-            self.queue.put(("task_cancelled", {"task_id": task_id}))
-            self.queue.put(("task_done", {"task_id": task_id}))
+            self.queue.put(("chart_cancelled", None))
+            self.queue.put(("chart_done", None))
             return
         except Exception as e:
-            self.queue.put(
-                (
-                    "task_error",
-                    {
-                        "task_id": task_id,
-                        "message": f"バックテストで問題が起きました: {e}",
-                    },
-                )
-            )
-        self.queue.put(("task_done", {"task_id": task_id}))
+            self.queue.put(("backtest_error", str(e)))
+        self.queue.put(("status", "表示完了"))
+        self.queue.put(("chart_done", None))
 
     def _download_worker(self, start: date, end: date, exclude_weekends: bool):
         hours = to_utc_hour_range(start, end)
@@ -3227,18 +2983,36 @@ class Step1App:
                     self.run_button.config(state="normal")
                     self.cancel_button.config(state="disabled")
                     self._clear_analysis_cache()
-                elif kind == "task_result":
-                    self._apply_chart_task_result(payload or {})
-                elif kind == "task_error":
-                    task_id = (payload or {}).get("task_id")
-                    message = (payload or {}).get("message") or "不明なエラーです。"
-                    self._mark_chart_task_error(task_id, message)
-                elif kind == "task_cancelled":
-                    task_id = (payload or {}).get("task_id")
-                    self._mark_chart_task_cancelled(task_id)
-                elif kind == "task_done":
-                    task_id = (payload or {}).get("task_id")
-                    self._on_chart_task_done(task_id)
+                elif kind == "chart_done":
+                    self.chart_button.config(state="normal")
+                    self.chart_cancel_button.config(state="disabled")
+                elif kind == "chart_error":
+                    messagebox.showerror("エラー", payload)
+                    self.backtest_info_var.set("バックテスト: データなし")
+                    self.pnl_info_var.set("損益: データなし")
+                    self.backtest_ready = False
+                    self.pnl_data = None
+                    self._draw_pnl_chart()
+                    self.chart_cancel_button.config(state="disabled")
+                elif kind == "chart_data":
+                    self._render_chart(payload)
+                elif kind == "backtest_data":
+                    self._render_backtest(payload)
+                elif kind == "backtest_error":
+                    messagebox.showerror("エラー", f"バックテストで問題が起きました: {payload}")
+                    self.backtest_info_var.set("バックテスト: エラー")
+                    self.pnl_info_var.set("損益: エラー")
+                    self.backtest_ready = False
+                    self.pnl_data = None
+                    self._draw_pnl_chart()
+                    self.chart_cancel_button.config(state="disabled")
+                elif kind == "chart_cancelled":
+                    self.status_var.set("表示計算を中止しました")
+                    self.backtest_info_var.set("バックテスト: 中止")
+                    self.pnl_info_var.set("損益: 中止")
+                    self.backtest_ready = False
+                    self.pnl_data = None
+                    self._draw_pnl_chart()
                 elif kind == "cancelled":
                     self.status_var.set("キャンセルしました")
                     self.run_button.config(state="normal")
@@ -3342,6 +3116,13 @@ class Step1App:
             self._draw_chart()
         self._update_trade_nav_state()
         self._draw_pnl_chart()
+        self._notify_backtest_done()
+
+    def _notify_backtest_done(self):
+        try:
+            self.root.bell()
+        except Exception:
+            pass
 
     def _update_trade_nav_state(self):
         trades = []

@@ -27,6 +27,16 @@ BASE_URL = "https://datafeed.dukascopy.com/datafeed"
 PIP_SIZE = 0.01
 
 
+def freeze_value(value):
+    if isinstance(value, dict):
+        return tuple(sorted((k, freeze_value(v)) for k, v in value.items()))
+    if isinstance(value, set):
+        return tuple(sorted(freeze_value(v) for v in value))
+    if isinstance(value, (list, tuple)):
+        return tuple(freeze_value(v) for v in value)
+    return value
+
+
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -729,13 +739,16 @@ def build_reentry_lines(candles, sr_params, range_params, target_type):
     return lines
 
 
-def build_line_bins(lines, max_break):
+def build_line_bins(lines, max_break, line_start_times=None):
     bin_size = max(max_break, PIP_SIZE)
     bins = {}
     for idx, line in enumerate(lines):
         price = line["price"]
         bin_idx = int(price / bin_size)
         bins.setdefault(bin_idx, []).append(idx)
+    if line_start_times is not None:
+        for bin_idx, idx_list in bins.items():
+            idx_list.sort(key=lambda i: line_start_times[i])
     return bin_size, bins
 
 
@@ -841,8 +854,7 @@ def find_sr_reentry_signal(
                 continue
             entry = bin_state.get(bin_idx)
             if entry is None:
-                idx_list = line_bins.get(bin_idx, [])
-                idx_list.sort(key=lambda i: line_start_times[i])
+                idx_list = list(line_bins.get(bin_idx, []))
                 entry = {"indices": idx_list, "cursor": 0, "active": []}
                 bin_state[bin_idx] = entry
 
@@ -959,7 +971,7 @@ def simulate_exit(points, entry_idx, side, entry_price, spread, stop, take):
     return exit_idx, exit_price, exit_reason
 
 
-def run_backtest(points, params):
+def run_backtest(points, params, runtime_cache=None):
     if not points:
         return {
             "trades": [],
@@ -971,8 +983,24 @@ def run_backtest(points, params):
             "ma_deviation_rate": params.get("ma_deviation_rate", 0.0),
         }
 
-    points_sorted = sorted(points, key=lambda x: x[0])
-    times = [ts for ts, _ in points_sorted]
+    if runtime_cache is None:
+        runtime_cache = {}
+
+    if runtime_cache.get("points_ref") is points:
+        points_sorted = runtime_cache.get("points_sorted") or points
+        times = runtime_cache.get("times") or [ts for ts, _ in points_sorted]
+    else:
+        points_sorted = sorted(points, key=lambda x: x[0])
+        times = [ts for ts, _ in points_sorted]
+        runtime_cache.clear()
+        runtime_cache["points_ref"] = points
+        runtime_cache["points_sorted"] = points_sorted
+        runtime_cache["times"] = times
+        runtime_cache["candle_cache"] = {}
+        runtime_cache["ma_cache"] = {}
+        runtime_cache["line_cache"] = {}
+        runtime_cache["line_bin_cache"] = {}
+
     window = timedelta(milliseconds=params["window_ms"])
     spike = params["spike_pips"] * PIP_SIZE
     retrace_rate = params["retrace_rate"]
@@ -992,8 +1020,17 @@ def run_backtest(points, params):
     ma_values = []
     ma_series = []
     if ma_enabled:
-        candles = build_minute_candles(points_sorted)
-        candle_times, ma_values, ma_series = build_minute_ma(candles, ma_period)
+        ma_cache = runtime_cache.setdefault("ma_cache", {})
+        ma_entry = ma_cache.get(ma_period)
+        if ma_entry is None:
+            candle_cache = runtime_cache.setdefault("candle_cache", {})
+            minute_candles = candle_cache.get(1)
+            if minute_candles is None:
+                minute_candles = build_minute_candles(points_sorted)
+                candle_cache[1] = minute_candles
+            ma_entry = build_minute_ma(minute_candles, ma_period)
+            ma_cache[ma_period] = ma_entry
+        candle_times, ma_values, ma_series = ma_entry
 
     entry_mode = params.get("entry_mode", "spike")
 
@@ -1014,20 +1051,59 @@ def run_backtest(points, params):
         line_interval = max(1, int(params.get("line_interval", 1)))
         sr_params = params.get("sr_params") or {}
         range_params = params.get("range_params") or {}
-        line_candles = build_timeframe_candles(points_sorted, line_interval)
-        lines = build_reentry_lines(line_candles, sr_params, range_params, sr_target)
+        line_key = (
+            line_interval,
+            sr_target,
+            freeze_value(sr_params),
+            freeze_value(range_params),
+        )
+        line_cache = runtime_cache.setdefault("line_cache", {})
+        line_entry = line_cache.get(line_key)
+        if line_entry is None:
+            candle_cache = runtime_cache.setdefault("candle_cache", {})
+            line_candles = candle_cache.get(line_interval)
+            if line_candles is None:
+                line_candles = build_timeframe_candles(points_sorted, line_interval)
+                candle_cache[line_interval] = line_candles
+            lines = build_reentry_lines(line_candles, sr_params, range_params, sr_target)
+            line_start_times = [line["start_time"] for line in lines]
+            end_limits_base = [
+                line["end_time"] + timedelta(minutes=line_interval) for line in lines
+            ]
+            line_entry = {
+                "lines": lines,
+                "line_start_times": line_start_times,
+                "end_limits_base": end_limits_base,
+                "start_limits_cache": {},
+            }
+            line_cache[line_key] = line_entry
+
+        lines = line_entry["lines"]
+        line_start_times = line_entry["line_start_times"]
+        end_limits = line_entry["end_limits_base"]
         max_break = sr_break_pips * PIP_SIZE
-        bin_size, line_bins = build_line_bins(lines, max_break)
+        bin_key = (line_key, round(max_break, 10))
+        line_bin_cache = runtime_cache.setdefault("line_bin_cache", {})
+        bin_entry = line_bin_cache.get(bin_key)
+        if bin_entry is None:
+            bin_size, line_bins = build_line_bins(lines, max_break, line_start_times)
+            bin_entry = {
+                "bin_size": bin_size,
+                "line_bins": line_bins,
+            }
+            line_bin_cache[bin_key] = bin_entry
+        else:
+            bin_size = bin_entry["bin_size"]
+            line_bins = bin_entry["line_bins"]
+
         bin_state = {}
-        line_start_times = [line["start_time"] for line in lines]
         disabled_lines = set()
-        end_limits = [
-            line["end_time"] + timedelta(minutes=line_interval) for line in lines
-        ]
-        start_limits = [
-            line["start_time"] + timedelta(minutes=line_interval * sr_wait_bars)
-            for line in lines
-        ]
+        start_limits_cache = line_entry.setdefault("start_limits_cache", {})
+        start_limits = start_limits_cache.get(sr_wait_bars)
+        if start_limits is None:
+            wait_delta = timedelta(minutes=line_interval * sr_wait_bars)
+            start_limits = [start_time + wait_delta for start_time in line_start_times]
+            start_limits_cache[sr_wait_bars] = start_limits
 
         while i < n - 1:
             signal = find_sr_reentry_signal(
@@ -1372,6 +1448,8 @@ class Step1App:
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
         self.pnl_data = None
         self.backtest_ready = False
+        self.analysis_cache_key = None
+        self.analysis_cache = None
 
         self._build_ui()
         self._poll_queue()
@@ -2093,26 +2171,44 @@ class Step1App:
         self.chart_worker.start()
 
     def _chart_worker(self, start: date, end: date, params, sr_params, range_params):
-        points, missing = load_ticks_from_csv(start, end)
-        if missing:
+        cache, cache_hit = self._load_analysis_cache(start, end)
+        points_sorted = cache.get("points_sorted") or []
+        missing = cache.get("missing") or ()
+
+        if missing and not cache_hit:
             self.queue.put(("log", f"[表示] CSV不足 {len(missing)}件"))
-        if not points:
+        if not points_sorted:
             self.queue.put(("chart_error", "表示できるデータがありません。"))
             self.queue.put(("chart_done", None))
             return
-        points_sorted = sorted(points, key=lambda x: x[0])
-        payload = {
-            "start": start,
-            "end": end,
-            "points": points_sorted,
-            "missing_count": len(missing),
-            "sr_params": dict(sr_params or {}),
-            "range_params": dict(range_params or {}),
-        }
-        self.queue.put(("chart_data", payload))
+
+        chart_signature = (
+            len(points_sorted),
+            freeze_value(sr_params or {}),
+            freeze_value(range_params or {}),
+        )
+        should_refresh_chart = (
+            self.chart_data is None
+            or cache.get("chart_signature") != chart_signature
+            or not cache_hit
+        )
+        if should_refresh_chart:
+            payload = {
+                "start": start,
+                "end": end,
+                "points": points_sorted,
+                "missing_count": len(missing),
+                "sr_params": dict(sr_params or {}),
+                "range_params": dict(range_params or {}),
+            }
+            self.queue.put(("chart_data", payload))
+            cache["chart_signature"] = chart_signature
+
         self.queue.put(("status", "バックテスト中..."))
         try:
-            backtest = run_backtest(points_sorted, params)
+            backtest = run_backtest(
+                points_sorted, params, runtime_cache=cache.get("backtest_cache")
+            )
             self.queue.put(("backtest_data", backtest))
         except Exception as e:
             self.queue.put(("backtest_error", str(e)))
@@ -2203,6 +2299,38 @@ class Step1App:
             log_fn=lambda msg: self.queue.put(("log", msg)),
         )
 
+    def _clear_analysis_cache(self):
+        self.analysis_cache_key = None
+        self.analysis_cache = None
+
+    def _load_analysis_cache(self, start: date, end: date):
+        key = (start, end)
+        if self.analysis_cache_key == key and self.analysis_cache is not None:
+            return self.analysis_cache, True
+
+        points, missing = load_ticks_from_csv(start, end)
+        points_sorted = sorted(points, key=lambda x: x[0])
+        times = [ts for ts, _ in points_sorted]
+        backtest_cache = {
+            "points_ref": points_sorted,
+            "points_sorted": points_sorted,
+            "times": times,
+            "candle_cache": {},
+            "ma_cache": {},
+            "line_cache": {},
+            "line_bin_cache": {},
+        }
+        cache = {
+            "points_sorted": points_sorted,
+            "times": times,
+            "missing": tuple(missing),
+            "backtest_cache": backtest_cache,
+            "chart_signature": None,
+        }
+        self.analysis_cache_key = key
+        self.analysis_cache = cache
+        return cache, False
+
     def _poll_queue(self):
         try:
             while True:
@@ -2215,6 +2343,7 @@ class Step1App:
                 elif kind == "done":
                     self.run_button.config(state="normal")
                     self.cancel_button.config(state="disabled")
+                    self._clear_analysis_cache()
                 elif kind == "chart_done":
                     self.chart_button.config(state="normal")
                 elif kind == "chart_error":
@@ -2239,6 +2368,7 @@ class Step1App:
                     self.status_var.set("キャンセルしました")
                     self.run_button.config(state="normal")
                     self.cancel_button.config(state="disabled")
+                    self._clear_analysis_cache()
         except queue.Empty:
             pass
         self.root.after(200, self._poll_queue)

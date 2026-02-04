@@ -813,6 +813,9 @@ def find_sr_reentry_signal(
     move_ratio_pct=100.0,
     move_speed_ratio_pct=100.0,
     favored_tick_min_move=0.0,
+    move_ratio_enabled=True,
+    move_speed_ratio_enabled=True,
+    ratio_join_mode="and",
     should_cancel=None,
 ):
     if not points or not lines:
@@ -864,6 +867,17 @@ def find_sr_reentry_signal(
         if favored_speed <= 0 or opposite_speed <= 0:
             return False
         return favored_speed / opposite_speed >= move_speed_ratio
+
+    def combine_ratio_filters(move_ok, speed_ok):
+        if not move_ratio_enabled and not move_speed_ratio_enabled:
+            return True
+        if move_ratio_enabled and not move_speed_ratio_enabled:
+            return move_ok
+        if move_speed_ratio_enabled and not move_ratio_enabled:
+            return speed_ok
+        if ratio_join_mode == "or":
+            return move_ok or speed_ok
+        return move_ok and speed_ok
 
     n = len(points)
     active_states = {}
@@ -943,6 +957,13 @@ def find_sr_reentry_signal(
                                 if state["down_move_count"] > 0
                                 else 0.0
                             )
+                            move_ok = passes_move_ratio(down_avg, up_avg)
+                            speed_ok = passes_move_speed_ratio(
+                                state["down_move_sum"],
+                                state["down_move_time"],
+                                state["up_move_sum"],
+                                state["up_move_time"],
+                            )
                             down_speed = (
                                 state["down_move_sum"] / state["down_move_time"]
                                 if state["down_move_time"] > 0
@@ -956,13 +977,7 @@ def find_sr_reentry_signal(
                             if (
                                 tick_min <= avg_per_min <= tick_limit
                                 and below_ratio >= dominance_ratio
-                                and passes_move_ratio(down_avg, up_avg)
-                                and passes_move_speed_ratio(
-                                    state["down_move_sum"],
-                                    state["down_move_time"],
-                                    state["up_move_sum"],
-                                    state["up_move_time"],
-                                )
+                                and combine_ratio_filters(move_ok, speed_ok)
                                 and state["max_down_tick_move"] >= favored_tick_min_move
                             ):
                                 disabled_lines.add(idx)
@@ -1018,6 +1033,13 @@ def find_sr_reentry_signal(
                                 if state["down_move_count"] > 0
                                 else 0.0
                             )
+                            move_ok = passes_move_ratio(up_avg, down_avg)
+                            speed_ok = passes_move_speed_ratio(
+                                state["up_move_sum"],
+                                state["up_move_time"],
+                                state["down_move_sum"],
+                                state["down_move_time"],
+                            )
                             down_speed = (
                                 state["down_move_sum"] / state["down_move_time"]
                                 if state["down_move_time"] > 0
@@ -1031,13 +1053,7 @@ def find_sr_reentry_signal(
                             if (
                                 tick_min <= avg_per_min <= tick_limit
                                 and above_ratio >= dominance_ratio
-                                and passes_move_ratio(up_avg, down_avg)
-                                and passes_move_speed_ratio(
-                                    state["up_move_sum"],
-                                    state["up_move_time"],
-                                    state["down_move_sum"],
-                                    state["down_move_time"],
-                                )
+                                and combine_ratio_filters(move_ok, speed_ok)
                                 and state["max_up_tick_move"] >= favored_tick_min_move
                             ):
                                 disabled_lines.add(idx)
@@ -1378,6 +1394,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         sr_move_ratio_pct = float(params.get("sr_move_ratio_pct", 100.0))
         sr_move_speed_ratio_pct = float(params.get("sr_move_speed_ratio_pct", 100.0))
         sr_favored_tick_min_pips = float(params.get("sr_favored_tick_min_pips", 1.0))
+        sr_move_ratio_enabled = bool(params.get("sr_move_ratio_enabled", True))
+        sr_move_speed_ratio_enabled = bool(params.get("sr_move_speed_ratio_enabled", True))
+        sr_ratio_join_mode = params.get("sr_ratio_join_mode", "and")
         sr_target = params.get("sr_target", "both")
         line_interval = max(1, int(params.get("line_interval", 1)))
         sr_params = params.get("sr_params") or {}
@@ -1461,6 +1480,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 sr_move_ratio_pct,
                 sr_move_speed_ratio_pct,
                 favored_tick_min_move,
+                sr_move_ratio_enabled,
+                sr_move_speed_ratio_enabled,
+                sr_ratio_join_mode,
                 should_cancel,
             )
             if not signal:
@@ -1849,6 +1871,7 @@ class Step1App:
         self.sr_reentry_dominance_var = tk.StringVar(value="50")
         self.sr_reentry_move_ratio_var = tk.StringVar(value="100")
         self.sr_reentry_speed_ratio_var = tk.StringVar(value="100")
+        self.sr_reentry_ratio_join_var = tk.StringVar(value="両方")
         self.sr_reentry_favored_tick_min_var = tk.StringVar(value="1.0")
         self.sr_reentry_midpoint_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_dominance_enabled_var = tk.BooleanVar(value=True)
@@ -2372,6 +2395,19 @@ class Step1App:
             width=8,
         )
         self.sr_reentry_speed_ratio_entry.grid(row=3, column=3, padx=(4, 0), pady=(6, 0), sticky="w")
+        ttk.Label(sr_reentry_settings, text="比率条件").grid(
+            row=4, column=0, sticky="w", pady=(6, 0)
+        )
+        self.sr_reentry_ratio_join_combo = ttk.Combobox(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_ratio_join_var,
+            values=["両方", "どちらか"],
+            width=10,
+            state="readonly",
+        )
+        self.sr_reentry_ratio_join_combo.grid(
+            row=4, column=1, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
         self.sr_reentry_favored_tick_min_check = ttk.Checkbutton(
             sr_reentry_settings,
             text="有利1ティック幅下限（pp）",
@@ -2637,6 +2673,7 @@ class Step1App:
             favored_tick_min_enabled = (
                 self.sr_reentry_favored_tick_min_enabled_var.get()
             )
+            ratio_join_label = self.sr_reentry_ratio_join_var.get()
 
             tick_limit = (
                 int(self._parse_number(self.sr_reentry_tick_limit_var.get()))
@@ -2724,6 +2761,11 @@ class Step1App:
             "両方": "both",
         }
         target_kind = target_map.get(target_label, "both")
+        ratio_join_map = {
+            "両方": "and",
+            "どちらか": "or",
+        }
+        ratio_join_mode = ratio_join_map.get(ratio_join_label, "and")
 
         return {
             "sr_break_pips": break_pips,
@@ -2737,6 +2779,9 @@ class Step1App:
             "sr_move_ratio_pct": move_ratio_pct,
             "sr_move_speed_ratio_pct": speed_ratio_pct,
             "sr_favored_tick_min_pips": favored_tick_min_pips,
+            "sr_move_ratio_enabled": move_ratio_enabled,
+            "sr_move_speed_ratio_enabled": speed_ratio_enabled,
+            "sr_ratio_join_mode": ratio_join_mode,
             "sr_target": target_kind,
         }
 

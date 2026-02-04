@@ -37,6 +37,10 @@ def freeze_value(value):
     return value
 
 
+def is_cancel_requested(check_fn):
+    return bool(check_fn and check_fn())
+
+
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -645,7 +649,9 @@ def build_zigzag_sr_segments(candles, zigzag_pips=5.0, break_pips=1.0, min_bars=
     return segments
 
 
-def find_spike_signal(points, times, start_idx, window, spike, retrace_rate):
+def find_spike_signal(
+    points, times, start_idx, window, spike, retrace_rate, should_cancel=None
+):
     t0, p0 = points[start_idx]
     end_time = t0 + window
     end_idx = bisect_right(times, end_time)
@@ -658,6 +664,8 @@ def find_spike_signal(points, times, start_idx, window, spike, retrace_rate):
     max_idx = start_idx
 
     for j in range(start_idx + 1, end_idx):
+        if is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
         price = points[j][1]
 
         if price < min_price:
@@ -799,6 +807,8 @@ def find_sr_reentry_signal(
     start_limits=None,
     min_seconds=0.0,
     max_seconds=60.0,
+    midpoint_pct=50.0,
+    should_cancel=None,
 ):
     if not points or not lines:
         return None
@@ -811,11 +821,19 @@ def find_sr_reentry_signal(
     if disabled_lines is None:
         disabled_lines = set()
 
+    midpoint_ratio = midpoint_pct / 100.0
+    if midpoint_ratio < 0:
+        midpoint_ratio = 0.0
+    elif midpoint_ratio > 1:
+        midpoint_ratio = 1.0
+
     n = len(points)
     active_states = {}
     prev_bid = points[start_idx - 1][1] if start_idx > 0 else points[start_idx][1]
 
     for j in range(start_idx, n):
+        if is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
         ts, bid = points[j]
 
         if active_states:
@@ -824,6 +842,16 @@ def find_sr_reentry_signal(
                 line = lines[idx]
                 level = line["price"]
                 kind = line["kind"]
+
+                elapsed = (ts - state["last_time"]).total_seconds()
+                if elapsed > 0:
+                    threshold = level + (state["extreme_price"] - level) * midpoint_ratio
+                    last_bid = state["last_bid"]
+                    if last_bid > threshold:
+                        state["stay_above"] += elapsed
+                    elif last_bid < threshold:
+                        state["stay_below"] += elapsed
+
                 start_time = state["start_time"]
                 tick_count = state["tick_count"]
                 duration = (ts - start_time).total_seconds()
@@ -836,11 +864,18 @@ def find_sr_reentry_signal(
                             finished.append(idx)
                         else:
                             state["tick_count"] = tick_count + 1
+                            if bid > state["extreme_price"]:
+                                state["extreme_price"] = bid
+                            state["last_time"] = ts
+                            state["last_bid"] = bid
                     elif bid < level:
                         if duration >= min_seconds:
                             denom = duration if duration > 0 else 0.001
                             avg_per_min = tick_count / denom * 60.0
-                            if tick_min <= avg_per_min <= tick_limit:
+                            if (
+                                tick_min <= avg_per_min <= tick_limit
+                                and state["stay_below"] > state["stay_above"]
+                            ):
                                 disabled_lines.add(idx)
                                 return {
                                     "entry_idx": j,
@@ -849,19 +884,32 @@ def find_sr_reentry_signal(
                                     "line_kind": kind,
                                     "line_source": line.get("source"),
                                     "tick_count": tick_count,
+                                    "stay_above": state["stay_above"],
+                                    "stay_below": state["stay_below"],
                                 }
                         finished.append(idx)
+                    else:
+                        state["tick_count"] = tick_count + 1
+                        state["last_time"] = ts
+                        state["last_bid"] = bid
                 else:
                     if bid < level:
                         if bid < level - max_break:
                             finished.append(idx)
                         else:
                             state["tick_count"] = tick_count + 1
+                            if bid < state["extreme_price"]:
+                                state["extreme_price"] = bid
+                            state["last_time"] = ts
+                            state["last_bid"] = bid
                     elif bid > level:
                         if duration >= min_seconds:
                             denom = duration if duration > 0 else 0.001
                             avg_per_min = tick_count / denom * 60.0
-                            if tick_min <= avg_per_min <= tick_limit:
+                            if (
+                                tick_min <= avg_per_min <= tick_limit
+                                and state["stay_above"] > state["stay_below"]
+                            ):
                                 disabled_lines.add(idx)
                                 return {
                                     "entry_idx": j,
@@ -870,8 +918,14 @@ def find_sr_reentry_signal(
                                     "line_kind": kind,
                                     "line_source": line.get("source"),
                                     "tick_count": tick_count,
+                                    "stay_above": state["stay_above"],
+                                    "stay_below": state["stay_below"],
                                 }
                         finished.append(idx)
+                    else:
+                        state["tick_count"] = tick_count + 1
+                        state["last_time"] = ts
+                        state["last_bid"] = bid
             for idx in finished:
                 active_states.pop(idx, None)
                 disabled_lines.add(idx)
@@ -917,14 +971,30 @@ def find_sr_reentry_signal(
                         if bid > level + max_break:
                             disabled_lines.add(idx)
                             continue
-                        active_states[idx] = {"start_time": ts, "tick_count": 1}
+                        active_states[idx] = {
+                            "start_time": ts,
+                            "tick_count": 1,
+                            "extreme_price": bid,
+                            "stay_above": 0.0,
+                            "stay_below": 0.0,
+                            "last_time": ts,
+                            "last_bid": bid,
+                        }
                         continue
                 else:
                     if prev_bid >= level and bid < level:
                         if bid < level - max_break:
                             disabled_lines.add(idx)
                             continue
-                        active_states[idx] = {"start_time": ts, "tick_count": 1}
+                        active_states[idx] = {
+                            "start_time": ts,
+                            "tick_count": 1,
+                            "extreme_price": bid,
+                            "stay_above": 0.0,
+                            "stay_below": 0.0,
+                            "last_time": ts,
+                            "last_bid": bid,
+                        }
                         continue
                 new_active.append(idx)
             entry["active"] = new_active
@@ -963,6 +1033,7 @@ def simulate_exit(
     take,
     time_close_minutes=0.0,
     minute_close_info=None,
+    should_cancel=None,
 ):
     if side == "long":
         stop_price = entry_price - stop
@@ -987,6 +1058,8 @@ def simulate_exit(
     exit_reason = None
     j = entry_idx + 1
     while j < n:
+        if is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
         _t, bid = points[j]
         ask = bid + spread
         if side == "long":
@@ -1038,7 +1111,7 @@ def simulate_exit(
     return exit_idx, exit_price, exit_reason
 
 
-def run_backtest(points, params, runtime_cache=None):
+def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     if not points:
         return {
             "trades": [],
@@ -1052,6 +1125,9 @@ def run_backtest(points, params, runtime_cache=None):
 
     if runtime_cache is None:
         runtime_cache = {}
+
+    if is_cancel_requested(should_cancel):
+        raise InterruptedError("cancelled")
 
     if runtime_cache.get("points_ref") is points:
         points_sorted = runtime_cache.get("points_sorted") or points
@@ -1122,6 +1198,7 @@ def run_backtest(points, params, runtime_cache=None):
         sr_wait_bars = int(params.get("sr_wait_bars", 0))
         sr_min_seconds = float(params.get("sr_min_seconds", 0.0))
         sr_max_seconds = float(params.get("sr_max_seconds", 60.0))
+        sr_midpoint_pct = float(params.get("sr_midpoint_pct", 50.0))
         sr_target = params.get("sr_target", "both")
         line_interval = max(1, int(params.get("line_interval", 1)))
         sr_params = params.get("sr_params") or {}
@@ -1181,6 +1258,8 @@ def run_backtest(points, params, runtime_cache=None):
             start_limits_cache[sr_wait_bars] = start_limits
 
         while i < n - 1:
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
             signal = find_sr_reentry_signal(
                 points_sorted,
                 i,
@@ -1197,6 +1276,8 @@ def run_backtest(points, params, runtime_cache=None):
                 start_limits,
                 sr_min_seconds,
                 sr_max_seconds,
+                sr_midpoint_pct,
+                should_cancel,
             )
             if not signal:
                 break
@@ -1240,6 +1321,7 @@ def run_backtest(points, params, runtime_cache=None):
                 take,
                 time_close_minutes,
                 minute_close_info,
+                should_cancel,
             )
 
             if side == "long":
@@ -1260,6 +1342,8 @@ def run_backtest(points, params, runtime_cache=None):
                     "line_kind": signal.get("line_kind"),
                     "line_source": signal.get("line_source"),
                     "tick_count": signal.get("tick_count"),
+                    "stay_above_sec": signal.get("stay_above"),
+                    "stay_below_sec": signal.get("stay_below"),
                 }
             )
 
@@ -1268,8 +1352,16 @@ def run_backtest(points, params, runtime_cache=None):
             i = exit_idx + 1
     else:
         while i < n - 1:
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
             signal = find_spike_signal(
-                points_sorted, times, i, window, spike, retrace_rate
+                points_sorted,
+                times,
+                i,
+                window,
+                spike,
+                retrace_rate,
+                should_cancel,
             )
             if not signal:
                 i += 1
@@ -1350,6 +1442,7 @@ def run_backtest(points, params, runtime_cache=None):
                 take,
                 time_close_minutes,
                 minute_close_info,
+                should_cancel,
             )
 
             if side == "long":
@@ -1485,6 +1578,7 @@ class Step1App:
         self.drag_start_x = None
         self.drag_start_view = None
         self.cancel_event = threading.Event()
+        self.chart_cancel_event = threading.Event()
 
         today_jst = datetime.now(JST).date()
         self.start_date = today_jst
@@ -1502,7 +1596,7 @@ class Step1App:
         self.x_axis_mode_var = tk.StringVar(value="time")
         self.chart_type_var = tk.StringVar(value="tick")
         self.candle_interval_var = tk.IntVar(value=1)
-        self.entry_mode_var = tk.StringVar(value="spike")
+        self.entry_mode_var = tk.StringVar(value="sr_reentry")
         self.hide_chart_var = tk.BooleanVar(value=False)
         self.ma_filter_var = tk.BooleanVar(value=True)
         self.ma_period_var = tk.StringVar(value="200")
@@ -1535,6 +1629,7 @@ class Step1App:
         self.sr_reentry_wait_bars_var = tk.StringVar(value="3")
         self.sr_reentry_min_seconds_var = tk.StringVar(value="5")
         self.sr_reentry_max_seconds_var = tk.StringVar(value="60")
+        self.sr_reentry_midpoint_var = tk.StringVar(value="50")
         self.sr_reentry_target_var = tk.StringVar(value="両方")
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
@@ -1595,12 +1690,19 @@ class Step1App:
 
         chart_controls = ttk.Frame(chart_tab)
         chart_controls.grid(row=2, column=0, sticky="ew", pady=(8, 6))
-        chart_controls.columnconfigure(3, weight=1)
+        chart_controls.columnconfigure(4, weight=1)
 
         self.chart_button = ttk.Button(chart_controls, text="表示", command=self._show_chart)
         self.chart_button.grid(row=0, column=0, sticky="w")
+        self.chart_cancel_button = ttk.Button(
+            chart_controls,
+            text="中止",
+            command=self._cancel_chart,
+            state="disabled",
+        )
+        self.chart_cancel_button.grid(row=0, column=1, padx=(6, 0), sticky="w")
 
-        ttk.Label(chart_controls, text="横軸").grid(row=0, column=1, padx=(12, 4), sticky="w")
+        ttk.Label(chart_controls, text="横軸").grid(row=0, column=2, padx=(12, 4), sticky="w")
         self.axis_time_radio = ttk.Radiobutton(
             chart_controls,
             text="時間",
@@ -1608,7 +1710,7 @@ class Step1App:
             value="time",
             command=self._on_axis_mode_change,
         )
-        self.axis_time_radio.grid(row=0, column=2, sticky="w")
+        self.axis_time_radio.grid(row=0, column=3, sticky="w")
         self.axis_tick_radio = ttk.Radiobutton(
             chart_controls,
             text="本数",
@@ -1616,9 +1718,9 @@ class Step1App:
             value="tick",
             command=self._on_axis_mode_change,
         )
-        self.axis_tick_radio.grid(row=0, column=3, sticky="w")
+        self.axis_tick_radio.grid(row=0, column=4, sticky="w")
 
-        ttk.Label(chart_controls, text="表示").grid(row=1, column=1, padx=(12, 4), sticky="w")
+        ttk.Label(chart_controls, text="表示").grid(row=1, column=2, padx=(12, 4), sticky="w")
         self.chart_tick_radio = ttk.Radiobutton(
             chart_controls,
             text="ティック",
@@ -1626,7 +1728,7 @@ class Step1App:
             value="tick",
             command=self._on_chart_type_change,
         )
-        self.chart_tick_radio.grid(row=1, column=2, sticky="w")
+        self.chart_tick_radio.grid(row=1, column=3, sticky="w")
         self.chart_candle_radio = ttk.Radiobutton(
             chart_controls,
             text="足",
@@ -1634,7 +1736,7 @@ class Step1App:
             value="candle",
             command=self._on_chart_type_change,
         )
-        self.chart_candle_radio.grid(row=1, column=3, sticky="w")
+        self.chart_candle_radio.grid(row=1, column=4, sticky="w")
 
         self.hide_chart_check = ttk.Checkbutton(
             chart_controls,
@@ -1642,7 +1744,7 @@ class Step1App:
             variable=self.hide_chart_var,
             command=self._on_chart_visibility_change,
         )
-        self.hide_chart_check.grid(row=0, column=4, padx=(12, 0), sticky="w")
+        self.hide_chart_check.grid(row=0, column=5, padx=(12, 0), sticky="w")
 
         self.zigzag_check = ttk.Checkbutton(
             chart_controls,
@@ -1650,14 +1752,14 @@ class Step1App:
             variable=self.zigzag_show_var,
             command=self._on_zigzag_toggle,
         )
-        self.zigzag_check.grid(row=1, column=4, padx=(12, 0), sticky="w")
+        self.zigzag_check.grid(row=1, column=5, padx=(12, 0), sticky="w")
         self.range_band_check = ttk.Checkbutton(
             chart_controls,
             text="レンジ補助線",
             variable=self.range_band_show_var,
             command=self._on_range_band_toggle,
         )
-        self.range_band_check.grid(row=1, column=5, padx=(8, 0), sticky="w")
+        self.range_band_check.grid(row=1, column=6, padx=(8, 0), sticky="w")
 
         ttk.Label(chart_controls, text="足").grid(row=2, column=1, padx=(12, 4), sticky="w")
         self.candle_1_radio = ttk.Radiobutton(
@@ -1926,6 +2028,14 @@ class Step1App:
             textvariable=self.sr_reentry_tick_min_var,
             width=8,
         ).grid(row=2, column=1, padx=(4, 0), pady=(6, 0), sticky="w")
+        ttk.Label(sr_reentry_settings, text="滞在判定位置（％）").grid(
+            row=2, column=2, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            sr_reentry_settings,
+            textvariable=self.sr_reentry_midpoint_var,
+            width=8,
+        ).grid(row=2, column=3, padx=(4, 12), pady=(6, 0), sticky="w")
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=6, column=0, sticky="w"
@@ -2158,6 +2268,7 @@ class Step1App:
             wait_bars = int(self._parse_number(self.sr_reentry_wait_bars_var.get()))
             min_seconds = self._parse_number(self.sr_reentry_min_seconds_var.get())
             max_seconds = self._parse_number(self.sr_reentry_max_seconds_var.get())
+            midpoint_pct = self._parse_number(self.sr_reentry_midpoint_var.get())
         except ValueError:
             messagebox.showerror("エラー", "水平線戻りの数値入力が正しくありません。")
             return None
@@ -2186,6 +2297,9 @@ class Step1App:
         if max_seconds < min_seconds:
             messagebox.showerror("エラー", "対象秒数は最小秒数以上にしてください。")
             return None
+        if midpoint_pct < 0 or midpoint_pct > 100:
+            messagebox.showerror("エラー", "滞在判定位置は0〜100の範囲にしてください。")
+            return None
 
         target_label = self.sr_reentry_target_var.get()
         target_map = {
@@ -2202,6 +2316,7 @@ class Step1App:
             "sr_wait_bars": wait_bars,
             "sr_min_seconds": min_seconds,
             "sr_max_seconds": max_seconds,
+            "sr_midpoint_pct": midpoint_pct,
             "sr_target": target_kind,
         }
 
@@ -2232,6 +2347,13 @@ class Step1App:
         else:
             self.cancel_button.config(state="disabled")
 
+    def _cancel_chart(self):
+        if self.chart_worker and self.chart_worker.is_alive():
+            self.chart_cancel_event.set()
+            self.status_var.set("中止要求を受け付けました...")
+        else:
+            self.chart_cancel_button.config(state="disabled")
+
     def _show_chart(self):
         if self.chart_worker and self.chart_worker.is_alive():
             messagebox.showinfo("お知らせ", "表示処理中です。")
@@ -2259,7 +2381,9 @@ class Step1App:
         params["sr_params"] = sr_params
         params["range_params"] = range_params
         params.update(sr_reentry_params)
+        self.chart_cancel_event.clear()
         self.chart_button.config(state="disabled")
+        self.chart_cancel_button.config(state="normal")
         self.status_var.set("表示準備中...")
         self.backtest_info_var.set("バックテスト: 計算中...")
         self.pnl_info_var.set("損益: 計算中...")
@@ -2307,12 +2431,24 @@ class Step1App:
             self.queue.put(("chart_data", payload))
             cache["chart_signature"] = chart_signature
 
+        if self.chart_cancel_event.is_set():
+            self.queue.put(("chart_cancelled", None))
+            self.queue.put(("chart_done", None))
+            return
+
         self.queue.put(("status", "バックテスト中..."))
         try:
             backtest = run_backtest(
-                points_sorted, params, runtime_cache=cache.get("backtest_cache")
+                points_sorted,
+                params,
+                runtime_cache=cache.get("backtest_cache"),
+                should_cancel=self.chart_cancel_event.is_set,
             )
             self.queue.put(("backtest_data", backtest))
+        except InterruptedError:
+            self.queue.put(("chart_cancelled", None))
+            self.queue.put(("chart_done", None))
+            return
         except Exception as e:
             self.queue.put(("backtest_error", str(e)))
         self.queue.put(("status", "表示完了"))
@@ -2449,6 +2585,7 @@ class Step1App:
                     self._clear_analysis_cache()
                 elif kind == "chart_done":
                     self.chart_button.config(state="normal")
+                    self.chart_cancel_button.config(state="disabled")
                 elif kind == "chart_error":
                     messagebox.showerror("エラー", payload)
                     self.backtest_info_var.set("バックテスト: データなし")
@@ -2456,6 +2593,7 @@ class Step1App:
                     self.backtest_ready = False
                     self.pnl_data = None
                     self._draw_pnl_chart()
+                    self.chart_cancel_button.config(state="disabled")
                 elif kind == "chart_data":
                     self._render_chart(payload)
                 elif kind == "backtest_data":
@@ -2464,6 +2602,14 @@ class Step1App:
                     messagebox.showerror("エラー", f"バックテストで問題が起きました: {payload}")
                     self.backtest_info_var.set("バックテスト: エラー")
                     self.pnl_info_var.set("損益: エラー")
+                    self.backtest_ready = False
+                    self.pnl_data = None
+                    self._draw_pnl_chart()
+                    self.chart_cancel_button.config(state="disabled")
+                elif kind == "chart_cancelled":
+                    self.status_var.set("表示計算を中止しました")
+                    self.backtest_info_var.set("バックテスト: 中止")
+                    self.pnl_info_var.set("損益: 中止")
                     self.backtest_ready = False
                     self.pnl_data = None
                     self._draw_pnl_chart()

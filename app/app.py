@@ -3163,12 +3163,15 @@ class Step1App:
         notebook = ttk.Notebook(self.root)
         notebook.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
 
+        param_tab = ttk.Frame(notebook, padding=12)
         chart_tab = ttk.Frame(notebook, padding=12)
         download_tab = ttk.Frame(notebook, padding=12)
         pnl_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(param_tab, text="パラメータ")
         notebook.add(chart_tab, text="チャート")
         notebook.add(download_tab, text="ダウンロード")
         notebook.add(pnl_tab, text="損益")
+        notebook.select(param_tab)
 
         status_bar = ttk.Frame(self.root)
         status_bar.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
@@ -3177,10 +3180,12 @@ class Step1App:
 
         chart_tab.columnconfigure(0, weight=1)
         chart_tab.rowconfigure(8, weight=1)
+        param_tab.columnconfigure(0, weight=1)
+        param_tab.rowconfigure(3, weight=1)
 
-        ttk.Label(chart_tab, text="表示期間（JST）").grid(row=0, column=0, sticky="w")
+        ttk.Label(param_tab, text="表示期間（JST）").grid(row=0, column=0, sticky="w")
 
-        view_row = ttk.Frame(chart_tab)
+        view_row = ttk.Frame(param_tab)
         view_row.grid(row=1, column=0, sticky="ew")
         view_row.columnconfigure(7, weight=1)
 
@@ -3202,19 +3207,21 @@ class Step1App:
             row=0, column=5
         )
 
-        chart_controls = ttk.Frame(chart_tab)
-        chart_controls.grid(row=2, column=0, sticky="ew", pady=(4, 4))
-        chart_controls.columnconfigure(4, weight=1)
-
-        self.chart_button = ttk.Button(chart_controls, text="表示", command=self._show_chart)
+        run_row = ttk.Frame(param_tab)
+        run_row.grid(row=2, column=0, sticky="w", pady=(6, 4))
+        self.chart_button = ttk.Button(run_row, text="実行", command=self._show_chart)
         self.chart_button.grid(row=0, column=0, sticky="w")
         self.chart_cancel_button = ttk.Button(
-            chart_controls,
+            run_row,
             text="中止",
             command=self._cancel_chart,
             state="disabled",
         )
         self.chart_cancel_button.grid(row=0, column=1, padx=(6, 0), sticky="w")
+
+        chart_controls = ttk.Frame(chart_tab)
+        chart_controls.grid(row=2, column=0, sticky="ew", pady=(4, 4))
+        chart_controls.columnconfigure(4, weight=1)
 
         ttk.Label(chart_controls, text="横軸").grid(row=0, column=2, padx=(12, 4), sticky="w")
         self.axis_time_radio = ttk.Radiobutton(
@@ -3376,8 +3383,8 @@ class Step1App:
         )
         self.candle_1440_radio.grid(row=3, column=5, sticky="w")
 
-        param_area = ttk.Frame(chart_tab)
-        param_area.grid(row=3, column=0, sticky="ew", pady=(4, 4))
+        param_area = ttk.Frame(param_tab)
+        param_area.grid(row=3, column=0, sticky="nsew", pady=(4, 4))
         param_area.columnconfigure(0, weight=1)
         param_area.columnconfigure(1, weight=1)
         param_area.columnconfigure(2, weight=1)

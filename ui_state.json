@@ -11,7 +11,7 @@
   "entry_sr_enabled": false,
   "entry_momentum_enabled": false,
   "entry_reverse_enabled": true,
-  "hide_chart": true,
+  "hide_chart": false,
   "ma_filter": true,
   "ma_period": "20",
   "ma_deviation": "0.01",
@@ -64,7 +64,7 @@
   "momentum_max_pips": "3",
   "spread": "1",
   "stop_pips": "5",
-  "take_pips": "5",
+  "take_pips": "10",
   "time_close_seconds": "60",
   "fixed_exit_price": true,
   "common_stop_override": true,
@@ -198,5 +198,9 @@
   "signal_chain_count": "2",
   "signal_chain_monitor_minutes": "240",
   "signal_chain_ignore_opposite": true,
-  "signal_chain_enabled": false
+  "signal_chain_enabled": false,
+  "signal_chain_count_reverse": true,
+  "signal_chain_count_momentum": true,
+  "signal_chain_count_sr": true,
+  "signal_chain_count_spike": true
 }

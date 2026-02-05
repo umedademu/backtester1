@@ -726,6 +726,9 @@ def find_reverse_signal(
     if end_idx <= start_idx + 1:
         return None
 
+    monitor_high = p0
+    monitor_low = p0
+
     upper = p0 + move
     lower = p0 - move
 
@@ -736,6 +739,10 @@ def find_reverse_signal(
         if is_cancel_requested(should_cancel):
             raise InterruptedError("cancelled")
         price = points[j][1]
+        if price > monitor_high:
+            monitor_high = price
+        if price < monitor_low:
+            monitor_low = price
         if price >= upper:
             direction = "short"
             trigger_idx = j
@@ -755,6 +762,8 @@ def find_reverse_signal(
             "entry_idx": trigger_idx,
             "side": direction,
             "entry_reason": "秒逆張り",
+            "monitor_high": monitor_high,
+            "monitor_low": monitor_low,
         }
 
     last_extreme_time = trigger_time
@@ -764,6 +773,10 @@ def find_reverse_signal(
             if is_cancel_requested(should_cancel):
                 raise InterruptedError("cancelled")
             ts, price = points[j]
+            if price > monitor_high:
+                monitor_high = price
+            if price < monitor_low:
+                monitor_low = price
             if price > extreme:
                 extreme = price
                 last_extreme_time = ts
@@ -774,6 +787,8 @@ def find_reverse_signal(
                     "entry_idx": j,
                     "side": "short",
                     "entry_reason": "秒逆張り",
+                    "monitor_high": monitor_high,
+                    "monitor_low": monitor_low,
                 }
     else:
         extreme = points[trigger_idx][1]
@@ -781,6 +796,10 @@ def find_reverse_signal(
             if is_cancel_requested(should_cancel):
                 raise InterruptedError("cancelled")
             ts, price = points[j]
+            if price > monitor_high:
+                monitor_high = price
+            if price < monitor_low:
+                monitor_low = price
             if price < extreme:
                 extreme = price
                 last_extreme_time = ts
@@ -791,6 +810,8 @@ def find_reverse_signal(
                     "entry_idx": j,
                     "side": "long",
                     "entry_reason": "秒逆張り",
+                    "monitor_high": monitor_high,
+                    "monitor_low": monitor_low,
                 }
 
     return None
@@ -1512,6 +1533,8 @@ def simulate_namping_trade(
     first_entry_enabled=True,
     steps=None,
     should_cancel=None,
+    extra_stop_price=None,
+    extra_stop_reason="抜け撤退",
 ):
     if not points:
         return None
@@ -1604,6 +1627,34 @@ def simulate_namping_trade(
         if total_lot <= 0:
             j += 1
             continue
+
+        if extra_stop_price is not None:
+            if side == "long":
+                if bid <= extra_stop_price:
+                    exit_price = extra_stop_price if fixed_exit_price else bid
+                    return {
+                        "entry_idx": first_entry_idx,
+                        "entry_price": entries[0]["price"],
+                        "avg_entry_price": avg_price,
+                        "lot_total": total_lot,
+                        "entries": entries,
+                        "exit_idx": j,
+                        "exit_price": exit_price,
+                        "exit_reason": extra_stop_reason,
+                    }
+            else:
+                if ask >= extra_stop_price:
+                    exit_price = extra_stop_price if fixed_exit_price else ask
+                    return {
+                        "entry_idx": first_entry_idx,
+                        "entry_price": entries[0]["price"],
+                        "avg_entry_price": avg_price,
+                        "lot_total": total_lot,
+                        "entries": entries,
+                        "exit_idx": j,
+                        "exit_price": exit_price,
+                        "exit_reason": extra_stop_reason,
+                    }
 
         last_entry_price = entries[-1]["price"]
         if side == "long":
@@ -1765,6 +1816,12 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     reverse_move = float(params.get("reverse_pips", 3.0)) * PIP_SIZE
     reverse_hold_seconds = float(params.get("reverse_hold_seconds", 2.0))
     reverse_max_pullback = float(params.get("reverse_max_pullback_pips", 5.0)) * PIP_SIZE
+    reverse_monitor_stop_enabled = bool(
+        params.get("reverse_monitor_stop_enabled", False)
+    )
+    reverse_monitor_stop_pips = float(
+        params.get("reverse_monitor_stop_pips", 0.0)
+    ) * PIP_SIZE
     signal_chain_pos_move = float(params.get("signal_chain_pos_pips", 10.0)) * PIP_SIZE
     signal_chain_neg_move = float(params.get("signal_chain_neg_pips", 5.0)) * PIP_SIZE
     signal_chain_count = int(params.get("signal_chain_count", 3))
@@ -2819,6 +2876,15 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     continue
 
             trade_params = trade_params_by_kind["reverse"]
+            extra_stop_price = None
+            if reverse_monitor_stop_enabled:
+                monitor_high = signal.get("monitor_high")
+                monitor_low = signal.get("monitor_low")
+                if monitor_high is not None and monitor_low is not None:
+                    if side == "short":
+                        extra_stop_price = monitor_high + reverse_monitor_stop_pips
+                    else:
+                        extra_stop_price = monitor_low - reverse_monitor_stop_pips
             trade_result = simulate_namping_trade(
                 points_sorted,
                 entry_idx,
@@ -2833,6 +2899,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 trade_params["namping_first_enabled"],
                 trade_params["namping_steps"],
                 should_cancel,
+                extra_stop_price=extra_stop_price,
             )
             if not trade_result:
                 i = entry_idx + 1
@@ -3094,6 +3161,8 @@ class Step1App:
         self.reverse_pips_var = tk.StringVar(value="3")
         self.reverse_hold_seconds_var = tk.StringVar(value="2")
         self.reverse_max_pullback_var = tk.StringVar(value="5")
+        self.reverse_monitor_stop_enabled_var = tk.BooleanVar(value=False)
+        self.reverse_monitor_stop_pips_var = tk.StringVar(value="0")
         self.momentum_window_var = tk.StringVar(value="1000")
         self.momentum_spike_pips_var = tk.StringVar(value="3.0")
         self.momentum_boundary_pct_var = tk.StringVar(value="50")
@@ -3941,6 +4010,27 @@ class Step1App:
         ttk.Entry(
             reverse_settings, textvariable=self.reverse_max_pullback_var, width=8
         ).grid(row=0, column=7, padx=(4, 0), sticky="w")
+        self.reverse_monitor_stop_check = ttk.Checkbutton(
+            reverse_settings,
+            text="監視抜け撤退",
+            variable=self.reverse_monitor_stop_enabled_var,
+            command=self._on_reverse_monitor_stop_toggle,
+        )
+        self.reverse_monitor_stop_check.grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
+        self.reverse_monitor_stop_label = ttk.Label(
+            reverse_settings, text="抜け幅（pp）"
+        )
+        self.reverse_monitor_stop_label.grid(
+            row=1, column=1, sticky="w", pady=(6, 0)
+        )
+        self.reverse_monitor_stop_pips_entry = ttk.Entry(
+            reverse_settings, textvariable=self.reverse_monitor_stop_pips_var, width=8
+        )
+        self.reverse_monitor_stop_pips_entry.grid(
+            row=1, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
 
         self.entry_momentum_check = ttk.Checkbutton(
             momentum_tab,
@@ -4449,6 +4539,10 @@ class Step1App:
             reverse_max_pullback_pips = self._parse_number(
                 self.reverse_max_pullback_var.get()
             )
+            reverse_monitor_stop_enabled = self.reverse_monitor_stop_enabled_var.get()
+            reverse_monitor_stop_pips = self._parse_number(
+                self.reverse_monitor_stop_pips_var.get()
+            )
             spread_pips = self._parse_number(self.spread_var.get())
             common_stop_pips = self._parse_number(self.stop_pips_var.get())
             common_take_pips = self._parse_number(self.take_pips_var.get())
@@ -4555,6 +4649,11 @@ class Step1App:
                 return None
             if reverse_max_pullback_pips < 0:
                 messagebox.showerror("エラー", "戻り上限は0以上にしてください。")
+                return None
+            if reverse_monitor_stop_enabled and reverse_monitor_stop_pips < 0:
+                messagebox.showerror(
+                    "エラー", "監視抜け撤退の抜け幅は0以上にしてください。"
+                )
                 return None
         if spread_pips < 0:
             messagebox.showerror("エラー", "スプレッドは0以上にしてください。")
@@ -4696,6 +4795,8 @@ class Step1App:
             "reverse_pips": reverse_pips,
             "reverse_hold_seconds": reverse_hold_seconds,
             "reverse_max_pullback_pips": reverse_max_pullback_pips,
+            "reverse_monitor_stop_enabled": reverse_monitor_stop_enabled,
+            "reverse_monitor_stop_pips": reverse_monitor_stop_pips,
             "spread_pips": spread_pips,
             "stop_pips": common_stop_pips,
             "take_pips": common_take_pips,
@@ -5120,6 +5221,14 @@ class Step1App:
         set_var(self.reverse_pips_var, data.get("reverse_pips"))
         set_var(self.reverse_hold_seconds_var, data.get("reverse_hold_seconds"))
         set_var(self.reverse_max_pullback_var, data.get("reverse_max_pullback_pips"))
+        set_bool(
+            self.reverse_monitor_stop_enabled_var,
+            data.get("reverse_monitor_stop_enabled"),
+        )
+        set_var(
+            self.reverse_monitor_stop_pips_var,
+            data.get("reverse_monitor_stop_pips"),
+        )
         set_var(self.momentum_window_var, data.get("momentum_window_ms"))
         set_var(self.momentum_spike_pips_var, data.get("momentum_spike_pips"))
         set_var(self.momentum_boundary_pct_var, data.get("momentum_boundary_pct"))
@@ -5572,6 +5681,8 @@ class Step1App:
             "reverse_pips": self.reverse_pips_var.get(),
             "reverse_hold_seconds": self.reverse_hold_seconds_var.get(),
             "reverse_max_pullback_pips": self.reverse_max_pullback_var.get(),
+            "reverse_monitor_stop_enabled": self.reverse_monitor_stop_enabled_var.get(),
+            "reverse_monitor_stop_pips": self.reverse_monitor_stop_pips_var.get(),
             "momentum_window_ms": self.momentum_window_var.get(),
             "momentum_spike_pips": self.momentum_spike_pips_var.get(),
             "momentum_boundary_pct": self.momentum_boundary_pct_var.get(),
@@ -6553,6 +6664,8 @@ class Step1App:
         self._apply_state_recursive(info["frame"], enabled, skip=info["toggle"])
         if enabled:
             self._on_namping_toggle_group(key)
+            if key == "reverse":
+                self._on_reverse_monitor_stop_toggle()
 
     def _on_namping_toggle_group(self, key: str):
         group = self.namping_widget_groups.get(key)
@@ -6565,6 +6678,14 @@ class Step1App:
 
     def _on_namping_toggle(self):
         self._on_namping_toggle_group("common")
+
+    def _on_reverse_monitor_stop_toggle(self):
+        enabled = self.reverse_monitor_stop_enabled_var.get()
+        state = "normal" if enabled else "disabled"
+        if hasattr(self, "reverse_monitor_stop_pips_entry"):
+            self.reverse_monitor_stop_pips_entry.config(state=state)
+        if hasattr(self, "reverse_monitor_stop_label"):
+            self._set_widget_enabled(self.reverse_monitor_stop_label, enabled)
 
     def _on_extreme_filter_toggle(self):
         enabled = self.extreme_filter_var.get()

@@ -711,7 +711,7 @@ def find_spike_signal(
 
 
 def find_reverse_signal(
-    points, times, start_idx, window, move, should_cancel=None
+    points, times, start_idx, window, move, hold_seconds=0.0, should_cancel=None
 ):
     t0, p0 = points[start_idx]
     end_time = t0 + window
@@ -722,22 +722,65 @@ def find_reverse_signal(
     upper = p0 + move
     lower = p0 - move
 
+    direction = None
+    trigger_idx = None
+    trigger_time = None
     for j in range(start_idx + 1, end_idx):
         if is_cancel_requested(should_cancel):
             raise InterruptedError("cancelled")
         price = points[j][1]
         if price >= upper:
-            return {
-                "entry_idx": j,
-                "side": "short",
-                "entry_reason": "秒逆張り",
-            }
+            direction = "short"
+            trigger_idx = j
+            trigger_time = points[j][0]
+            break
         if price <= lower:
-            return {
-                "entry_idx": j,
-                "side": "long",
-                "entry_reason": "秒逆張り",
-            }
+            direction = "long"
+            trigger_idx = j
+            trigger_time = points[j][0]
+            break
+
+    if direction is None or trigger_idx is None:
+        return None
+
+    if hold_seconds <= 0:
+        return {
+            "entry_idx": trigger_idx,
+            "side": direction,
+            "entry_reason": "秒逆張り",
+        }
+
+    last_extreme_time = trigger_time
+    if direction == "short":
+        extreme = points[trigger_idx][1]
+        for j in range(trigger_idx + 1, len(points)):
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
+            ts, price = points[j]
+            if price > extreme:
+                extreme = price
+                last_extreme_time = ts
+            if (ts - last_extreme_time).total_seconds() >= hold_seconds:
+                return {
+                    "entry_idx": j,
+                    "side": "short",
+                    "entry_reason": "秒逆張り",
+                }
+    else:
+        extreme = points[trigger_idx][1]
+        for j in range(trigger_idx + 1, len(points)):
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
+            ts, price = points[j]
+            if price < extreme:
+                extreme = price
+                last_extreme_time = ts
+            if (ts - last_extreme_time).total_seconds() >= hold_seconds:
+                return {
+                    "entry_idx": j,
+                    "side": "long",
+                    "entry_reason": "秒逆張り",
+                }
 
     return None
 
@@ -1716,6 +1759,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     momentum_max_move = float(params.get("momentum_max_pips", 0.0)) * PIP_SIZE
     reverse_window_seconds = float(params.get("reverse_window_seconds", 2.0))
     reverse_move = float(params.get("reverse_pips", 3.0)) * PIP_SIZE
+    reverse_hold_seconds = float(params.get("reverse_hold_seconds", 2.0))
     signal_chain_pos_move = float(params.get("signal_chain_pos_pips", 10.0)) * PIP_SIZE
     signal_chain_neg_move = float(params.get("signal_chain_neg_pips", 5.0)) * PIP_SIZE
     signal_chain_count = int(params.get("signal_chain_count", 3))
@@ -2085,6 +2129,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 i_gate,
                 reverse_window,
                 reverse_move,
+                reverse_hold_seconds,
                 should_cancel,
             )
             if not signal:
@@ -2682,6 +2727,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 i,
                 reverse_window,
                 reverse_move,
+                reverse_hold_seconds,
                 should_cancel,
             )
             if not signal:
@@ -3024,6 +3070,7 @@ class Step1App:
         self.retrace_var = tk.StringVar(value="90")
         self.reverse_window_var = tk.StringVar(value="2")
         self.reverse_pips_var = tk.StringVar(value="3")
+        self.reverse_hold_seconds_var = tk.StringVar(value="2")
         self.momentum_window_var = tk.StringVar(value="1000")
         self.momentum_spike_pips_var = tk.StringVar(value="3.0")
         self.momentum_boundary_pct_var = tk.StringVar(value="50")
@@ -3350,6 +3397,10 @@ class Step1App:
         ttk.Label(settings, text="逆張り幅（pp）").grid(row=0, column=8, sticky="w")
         ttk.Entry(settings, textvariable=self.reverse_pips_var, width=8).grid(
             row=0, column=9, padx=(4, 0), sticky="w"
+        )
+        ttk.Label(settings, text="上げ止まり秒").grid(row=0, column=10, sticky="w")
+        ttk.Entry(settings, textvariable=self.reverse_hold_seconds_var, width=8).grid(
+            row=0, column=11, padx=(4, 0), sticky="w"
         )
 
         ttk.Label(settings, text="スプレッド（ピップス）").grid(row=1, column=0, sticky="w")
@@ -3972,6 +4023,7 @@ class Step1App:
             retrace_pct = self._parse_number(self.retrace_var.get())
             reverse_window_seconds = self._parse_number(self.reverse_window_var.get())
             reverse_pips = self._parse_number(self.reverse_pips_var.get())
+            reverse_hold_seconds = self._parse_number(self.reverse_hold_seconds_var.get())
             spread_pips = self._parse_number(self.spread_var.get())
             stop_pips = self._parse_number(self.stop_pips_var.get())
             take_pips = self._parse_number(self.take_pips_var.get())
@@ -4055,6 +4107,9 @@ class Step1App:
             return None
         if reverse_pips <= 0:
             messagebox.showerror("エラー", "逆張り幅は0より大きくしてください。")
+            return None
+        if reverse_hold_seconds < 0:
+            messagebox.showerror("エラー", "上げ止まり秒は0以上にしてください。")
             return None
         if spread_pips < 0:
             messagebox.showerror("エラー", "スプレッドは0以上にしてください。")
@@ -4141,6 +4196,7 @@ class Step1App:
             "retrace_rate": retrace_pct / 100.0,
             "reverse_window_seconds": reverse_window_seconds,
             "reverse_pips": reverse_pips,
+            "reverse_hold_seconds": reverse_hold_seconds,
             "spread_pips": spread_pips,
             "stop_pips": stop_pips,
             "take_pips": take_pips,
@@ -4541,6 +4597,7 @@ class Step1App:
         set_var(self.retrace_var, data.get("retrace"))
         set_var(self.reverse_window_var, data.get("reverse_window_seconds"))
         set_var(self.reverse_pips_var, data.get("reverse_pips"))
+        set_var(self.reverse_hold_seconds_var, data.get("reverse_hold_seconds"))
         set_var(self.momentum_window_var, data.get("momentum_window_ms"))
         set_var(self.momentum_spike_pips_var, data.get("momentum_spike_pips"))
         set_var(self.momentum_boundary_pct_var, data.get("momentum_boundary_pct"))
@@ -4686,6 +4743,7 @@ class Step1App:
             "retrace": self.retrace_var.get(),
             "reverse_window_seconds": self.reverse_window_var.get(),
             "reverse_pips": self.reverse_pips_var.get(),
+            "reverse_hold_seconds": self.reverse_hold_seconds_var.get(),
             "momentum_window_ms": self.momentum_window_var.get(),
             "momentum_spike_pips": self.momentum_spike_pips_var.get(),
             "momentum_boundary_pct": self.momentum_boundary_pct_var.get(),

@@ -53,7 +53,7 @@
   "spike_pips": "5",
   "retrace": "100",
   "reverse_window_seconds": "3",
-  "reverse_pips": "5",
+  "reverse_pips": "10",
   "momentum_window_ms": "500",
   "momentum_spike_pips": "1",
   "momentum_boundary_pct": "80",
@@ -108,8 +108,8 @@
   "sr_reentry_target": "\u6c34\u5e73\u7dda",
   "signal_chain_pos_pips": "10",
   "signal_chain_neg_pips": "5",
-  "signal_chain_count": "1",
+  "signal_chain_count": "2",
   "signal_chain_monitor_minutes": "240",
   "signal_chain_ignore_opposite": true,
-  "signal_chain_enabled": false
+  "signal_chain_enabled": true
 }

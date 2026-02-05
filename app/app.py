@@ -3218,6 +3218,12 @@ class Step1App:
             state="disabled",
         )
         self.chart_cancel_button.grid(row=0, column=1, padx=(6, 0), sticky="w")
+        ttk.Label(run_row, textvariable=self.backtest_info_var).grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(run_row, textvariable=self.backtest_elapsed_var).grid(
+            row=2, column=0, columnspan=3, sticky="w"
+        )
 
         chart_controls = ttk.Frame(chart_tab)
         chart_controls.grid(row=2, column=0, sticky="ew", pady=(4, 4))
@@ -3924,12 +3930,6 @@ class Step1App:
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
-        )
-        ttk.Label(chart_tab, textvariable=self.backtest_info_var).grid(
-            row=5, column=0, sticky="w"
-        )
-        ttk.Label(chart_tab, textvariable=self.backtest_elapsed_var).grid(
-            row=6, column=0, sticky="w"
         )
         ttk.Label(chart_tab, textvariable=self.cursor_info_var).grid(
             row=7, column=0, sticky="w"

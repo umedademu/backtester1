@@ -3406,7 +3406,7 @@ class Step1App:
         ttk.Entry(settings, textvariable=self.reverse_pips_var, width=8).grid(
             row=1, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="上げ止まり秒").grid(row=1, column=4, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="停滞秒").grid(row=1, column=4, sticky="w", pady=(6, 0))
         ttk.Entry(settings, textvariable=self.reverse_hold_seconds_var, width=8).grid(
             row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
@@ -4118,7 +4118,7 @@ class Step1App:
             messagebox.showerror("エラー", "逆張り幅は0より大きくしてください。")
             return None
         if reverse_hold_seconds < 0:
-            messagebox.showerror("エラー", "上げ止まり秒は0以上にしてください。")
+            messagebox.showerror("エラー", "停滞秒は0以上にしてください。")
             return None
         if spread_pips < 0:
             messagebox.showerror("エラー", "スプレッドは0以上にしてください。")

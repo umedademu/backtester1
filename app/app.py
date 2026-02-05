@@ -3092,8 +3092,8 @@ class Step1App:
         if spike_pips <= 0:
             messagebox.showerror("エラー", "スパイク幅は0より大きくしてください。")
             return None
-        if retrace_pct < 0 or retrace_pct > 100:
-            messagebox.showerror("エラー", "最小戻し率は0〜100の範囲にしてください。")
+        if retrace_pct < 0:
+            messagebox.showerror("エラー", "最小戻し率は0以上にしてください。")
             return None
         if spread_pips < 0:
             messagebox.showerror("エラー", "スプレッドは0以上にしてください。")

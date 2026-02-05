@@ -1731,10 +1731,19 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     spike = params["spike_pips"] * PIP_SIZE
     retrace_rate = params["retrace_rate"]
     spread = params["spread_pips"] * PIP_SIZE
-    stop = params["stop_pips"] * PIP_SIZE
-    take = params["take_pips"] * PIP_SIZE
-    fixed_exit_price = bool(params.get("fixed_exit_price", True))
-    time_close_seconds = float(params.get("time_close_seconds", 0.0))
+    common_stop_pips = float(params.get("common_stop_pips", params.get("stop_pips", 0.0)))
+    common_take_pips = float(params.get("common_take_pips", params.get("take_pips", 0.0)))
+    common_time_close_seconds = float(
+        params.get("common_time_close_seconds", params.get("time_close_seconds", 0.0))
+    )
+    common_fixed_exit_price = bool(
+        params.get("common_fixed_exit_price", params.get("fixed_exit_price", True))
+    )
+    common_stop_override = bool(params.get("common_stop_override", True))
+    common_take_override = bool(params.get("common_take_override", True))
+    common_time_override = bool(params.get("common_time_override", True))
+    common_fixed_override = bool(params.get("common_fixed_override", True))
+    common_namping_override = bool(params.get("common_namping_override", True))
     ma_enabled = params.get("ma_enabled", False)
     ma_period = max(1, int(params.get("ma_period", 0)))
     ma_deviation = params.get("ma_deviation_rate", 0.0)
@@ -1746,22 +1755,6 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     allow_same_direction = bool(params.get("allow_same_direction", False))
     allow_opposite_direction = bool(params.get("allow_opposite_direction", False))
     allow_overlap = allow_same_direction or allow_opposite_direction
-    namping_first_enabled = bool(params.get("namping_first_enabled", True))
-    namping_step1_enabled = bool(params.get("namping_step1_enabled", True))
-    namping_step2_enabled = bool(params.get("namping_step2_enabled", True))
-    namping_step3_enabled = bool(params.get("namping_step3_enabled", False))
-    namping_step4_enabled = bool(params.get("namping_step4_enabled", False))
-    namping_step5_enabled = bool(params.get("namping_step5_enabled", False))
-    namping_step1_pips = float(params.get("namping_step1_pips", 5.0)) * PIP_SIZE
-    namping_step2_pips = float(params.get("namping_step2_pips", 5.0)) * PIP_SIZE
-    namping_step3_pips = float(params.get("namping_step3_pips", 5.0)) * PIP_SIZE
-    namping_step4_pips = float(params.get("namping_step4_pips", 5.0)) * PIP_SIZE
-    namping_step5_pips = float(params.get("namping_step5_pips", 5.0)) * PIP_SIZE
-    namping_step1_lot = float(params.get("namping_step1_lot", 2.0))
-    namping_step2_lot = float(params.get("namping_step2_lot", 4.0))
-    namping_step3_lot = float(params.get("namping_step3_lot", 8.0))
-    namping_step4_lot = float(params.get("namping_step4_lot", 16.0))
-    namping_step5_lot = float(params.get("namping_step5_lot", 32.0))
     momentum_window_ms = float(params.get("momentum_window_ms", 1000.0))
     momentum_spike = float(params.get("momentum_spike_pips", 3.0)) * PIP_SIZE
     momentum_boundary_pct = float(params.get("momentum_boundary_pct", 50.0))
@@ -1795,6 +1788,113 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     entry_reverse_enabled = bool(
         params.get("entry_reverse_enabled", entry_mode in ("reverse", "multi"))
     )
+
+    def build_namping(prefix):
+        return {
+            "first_enabled": bool(params.get(f"{prefix}namping_first_enabled", True)),
+            "steps": [
+                {
+                    "enabled": bool(
+                        params.get(f"{prefix}namping_step1_enabled", True)
+                    ),
+                    "pips": float(params.get(f"{prefix}namping_step1_pips", 5.0))
+                    * PIP_SIZE,
+                    "lot": float(params.get(f"{prefix}namping_step1_lot", 2.0)),
+                    "label": "段階1",
+                },
+                {
+                    "enabled": bool(
+                        params.get(f"{prefix}namping_step2_enabled", True)
+                    ),
+                    "pips": float(params.get(f"{prefix}namping_step2_pips", 5.0))
+                    * PIP_SIZE,
+                    "lot": float(params.get(f"{prefix}namping_step2_lot", 4.0)),
+                    "label": "段階2",
+                },
+                {
+                    "enabled": bool(
+                        params.get(f"{prefix}namping_step3_enabled", False)
+                    ),
+                    "pips": float(params.get(f"{prefix}namping_step3_pips", 5.0))
+                    * PIP_SIZE,
+                    "lot": float(params.get(f"{prefix}namping_step3_lot", 8.0)),
+                    "label": "段階3",
+                },
+                {
+                    "enabled": bool(
+                        params.get(f"{prefix}namping_step4_enabled", False)
+                    ),
+                    "pips": float(params.get(f"{prefix}namping_step4_pips", 5.0))
+                    * PIP_SIZE,
+                    "lot": float(params.get(f"{prefix}namping_step4_lot", 16.0)),
+                    "label": "段階4",
+                },
+                {
+                    "enabled": bool(
+                        params.get(f"{prefix}namping_step5_enabled", False)
+                    ),
+                    "pips": float(params.get(f"{prefix}namping_step5_pips", 5.0))
+                    * PIP_SIZE,
+                    "lot": float(params.get(f"{prefix}namping_step5_lot", 32.0)),
+                    "label": "段階5",
+                },
+            ],
+        }
+
+    common_namping = build_namping("common_")
+    reverse_namping = build_namping("reverse_")
+    momentum_namping = build_namping("momentum_")
+    sr_namping = build_namping("sr_")
+    spike_namping = build_namping("spike_")
+
+    namping_map = {
+        "reverse": reverse_namping,
+        "momentum": momentum_namping,
+        "sr": sr_namping,
+        "spike": spike_namping,
+    }
+
+    def resolve_trade_params(kind):
+        stop_pips = (
+            common_stop_pips
+            if common_stop_override
+            else float(params.get(f"{kind}_stop_pips", common_stop_pips))
+        )
+        take_pips = (
+            common_take_pips
+            if common_take_override
+            else float(params.get(f"{kind}_take_pips", common_take_pips))
+        )
+        time_close_seconds = (
+            common_time_close_seconds
+            if common_time_override
+            else float(
+                params.get(f"{kind}_time_close_seconds", common_time_close_seconds)
+            )
+        )
+        fixed_exit_price = (
+            common_fixed_exit_price
+            if common_fixed_override
+            else bool(
+                params.get(f"{kind}_fixed_exit_price", common_fixed_exit_price)
+            )
+        )
+        namping = common_namping if common_namping_override else namping_map[kind]
+        return {
+            "stop": stop_pips * PIP_SIZE,
+            "take": take_pips * PIP_SIZE,
+            "time_close_seconds": time_close_seconds,
+            "fixed_exit_price": fixed_exit_price,
+            "namping_first_enabled": namping["first_enabled"],
+            "namping_steps": namping["steps"],
+        }
+
+    trade_params_by_kind = {
+        "reverse": resolve_trade_params("reverse"),
+        "momentum": resolve_trade_params("momentum"),
+        "sr": resolve_trade_params("sr"),
+        "spike": resolve_trade_params("spike"),
+    }
 
     candle_times = []
     ma_values = []
@@ -2302,50 +2402,20 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     i = entry_idx + 1
                     continue
 
+            trade_params = trade_params_by_kind["sr"]
             trade_result = simulate_namping_trade(
                 points_sorted,
                 entry_idx,
                 side,
                 entry_price,
                 spread,
-                stop,
-                take,
-                fixed_exit_price,
-                time_close_seconds,
+                trade_params["stop"],
+                trade_params["take"],
+                trade_params["fixed_exit_price"],
+                trade_params["time_close_seconds"],
                 None,
-                namping_first_enabled,
-                [
-                    {
-                        "enabled": namping_step1_enabled,
-                        "pips": namping_step1_pips,
-                        "lot": namping_step1_lot,
-                        "label": "段階1",
-                    },
-                    {
-                        "enabled": namping_step2_enabled,
-                        "pips": namping_step2_pips,
-                        "lot": namping_step2_lot,
-                        "label": "段階2",
-                    },
-                    {
-                        "enabled": namping_step3_enabled,
-                        "pips": namping_step3_pips,
-                        "lot": namping_step3_lot,
-                        "label": "段階3",
-                    },
-                    {
-                        "enabled": namping_step4_enabled,
-                        "pips": namping_step4_pips,
-                        "lot": namping_step4_lot,
-                        "label": "段階4",
-                    },
-                    {
-                        "enabled": namping_step5_enabled,
-                        "pips": namping_step5_pips,
-                        "lot": namping_step5_lot,
-                        "label": "段階5",
-                    },
-                ],
+                trade_params["namping_first_enabled"],
+                trade_params["namping_steps"],
                 should_cancel,
             )
             if not trade_result:
@@ -2493,50 +2563,20 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     i = entry_idx + 1
                     continue
 
+            trade_params = trade_params_by_kind["spike"]
             trade_result = simulate_namping_trade(
                 points_sorted,
                 entry_idx,
                 side,
                 entry_price,
                 spread,
-                stop,
-                take,
-                fixed_exit_price,
-                time_close_seconds,
+                trade_params["stop"],
+                trade_params["take"],
+                trade_params["fixed_exit_price"],
+                trade_params["time_close_seconds"],
                 None,
-                namping_first_enabled,
-                [
-                    {
-                        "enabled": namping_step1_enabled,
-                        "pips": namping_step1_pips,
-                        "lot": namping_step1_lot,
-                        "label": "段階1",
-                    },
-                    {
-                        "enabled": namping_step2_enabled,
-                        "pips": namping_step2_pips,
-                        "lot": namping_step2_lot,
-                        "label": "段階2",
-                    },
-                    {
-                        "enabled": namping_step3_enabled,
-                        "pips": namping_step3_pips,
-                        "lot": namping_step3_lot,
-                        "label": "段階3",
-                    },
-                    {
-                        "enabled": namping_step4_enabled,
-                        "pips": namping_step4_pips,
-                        "lot": namping_step4_lot,
-                        "label": "段階4",
-                    },
-                    {
-                        "enabled": namping_step5_enabled,
-                        "pips": namping_step5_pips,
-                        "lot": namping_step5_lot,
-                        "label": "段階5",
-                    },
-                ],
+                trade_params["namping_first_enabled"],
+                trade_params["namping_steps"],
                 should_cancel,
             )
             if not trade_result:
@@ -2642,50 +2682,20 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     i = entry_idx + 1
                     continue
 
+            trade_params = trade_params_by_kind["momentum"]
             trade_result = simulate_namping_trade(
                 points_sorted,
                 entry_idx,
                 side,
                 entry_price,
                 spread,
-                stop,
-                take,
-                fixed_exit_price,
-                time_close_seconds,
+                trade_params["stop"],
+                trade_params["take"],
+                trade_params["fixed_exit_price"],
+                trade_params["time_close_seconds"],
                 None,
-                namping_first_enabled,
-                [
-                    {
-                        "enabled": namping_step1_enabled,
-                        "pips": namping_step1_pips,
-                        "lot": namping_step1_lot,
-                        "label": "段階1",
-                    },
-                    {
-                        "enabled": namping_step2_enabled,
-                        "pips": namping_step2_pips,
-                        "lot": namping_step2_lot,
-                        "label": "段階2",
-                    },
-                    {
-                        "enabled": namping_step3_enabled,
-                        "pips": namping_step3_pips,
-                        "lot": namping_step3_lot,
-                        "label": "段階3",
-                    },
-                    {
-                        "enabled": namping_step4_enabled,
-                        "pips": namping_step4_pips,
-                        "lot": namping_step4_lot,
-                        "label": "段階4",
-                    },
-                    {
-                        "enabled": namping_step5_enabled,
-                        "pips": namping_step5_pips,
-                        "lot": namping_step5_lot,
-                        "label": "段階5",
-                    },
-                ],
+                trade_params["namping_first_enabled"],
+                trade_params["namping_steps"],
                 should_cancel,
             )
             if not trade_result:
@@ -2788,50 +2798,20 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     i = entry_idx + 1
                     continue
 
+            trade_params = trade_params_by_kind["reverse"]
             trade_result = simulate_namping_trade(
                 points_sorted,
                 entry_idx,
                 side,
                 entry_price,
                 spread,
-                stop,
-                take,
-                fixed_exit_price,
-                time_close_seconds,
+                trade_params["stop"],
+                trade_params["take"],
+                trade_params["fixed_exit_price"],
+                trade_params["time_close_seconds"],
                 None,
-                namping_first_enabled,
-                [
-                    {
-                        "enabled": namping_step1_enabled,
-                        "pips": namping_step1_pips,
-                        "lot": namping_step1_lot,
-                        "label": "段階1",
-                    },
-                    {
-                        "enabled": namping_step2_enabled,
-                        "pips": namping_step2_pips,
-                        "lot": namping_step2_lot,
-                        "label": "段階2",
-                    },
-                    {
-                        "enabled": namping_step3_enabled,
-                        "pips": namping_step3_pips,
-                        "lot": namping_step3_lot,
-                        "label": "段階3",
-                    },
-                    {
-                        "enabled": namping_step4_enabled,
-                        "pips": namping_step4_pips,
-                        "lot": namping_step4_lot,
-                        "label": "段階4",
-                    },
-                    {
-                        "enabled": namping_step5_enabled,
-                        "pips": namping_step5_pips,
-                        "lot": namping_step5_lot,
-                        "label": "段階5",
-                    },
-                ],
+                trade_params["namping_first_enabled"],
+                trade_params["namping_steps"],
                 should_cancel,
             )
             if not trade_result:
@@ -3104,6 +3084,27 @@ class Step1App:
         self.take_pips_var = tk.StringVar(value="10.0")
         self.time_close_seconds_var = tk.StringVar(value="0")
         self.fixed_exit_price_var = tk.BooleanVar(value=True)
+        self.common_stop_override_var = tk.BooleanVar(value=True)
+        self.common_take_override_var = tk.BooleanVar(value=True)
+        self.common_time_override_var = tk.BooleanVar(value=True)
+        self.common_fixed_override_var = tk.BooleanVar(value=True)
+        self.common_namping_override_var = tk.BooleanVar(value=True)
+        self.reverse_stop_pips_var = tk.StringVar(value="10.0")
+        self.reverse_take_pips_var = tk.StringVar(value="10.0")
+        self.reverse_time_close_seconds_var = tk.StringVar(value="0")
+        self.reverse_fixed_exit_price_var = tk.BooleanVar(value=True)
+        self.momentum_stop_pips_var = tk.StringVar(value="10.0")
+        self.momentum_take_pips_var = tk.StringVar(value="10.0")
+        self.momentum_time_close_seconds_var = tk.StringVar(value="0")
+        self.momentum_fixed_exit_price_var = tk.BooleanVar(value=True)
+        self.sr_stop_pips_var = tk.StringVar(value="10.0")
+        self.sr_take_pips_var = tk.StringVar(value="10.0")
+        self.sr_time_close_seconds_var = tk.StringVar(value="0")
+        self.sr_fixed_exit_price_var = tk.BooleanVar(value=True)
+        self.spike_stop_pips_var = tk.StringVar(value="10.0")
+        self.spike_take_pips_var = tk.StringVar(value="10.0")
+        self.spike_time_close_seconds_var = tk.StringVar(value="0")
+        self.spike_fixed_exit_price_var = tk.BooleanVar(value=True)
         self.allow_same_direction_var = tk.BooleanVar(value=False)
         self.allow_opposite_direction_var = tk.BooleanVar(value=False)
         self.namping_first_entry_var = tk.BooleanVar(value=True)
@@ -3122,6 +3123,70 @@ class Step1App:
         self.namping_step5_enabled_var = tk.BooleanVar(value=False)
         self.namping_step5_pips_var = tk.StringVar(value="5")
         self.namping_step5_lot_var = tk.StringVar(value="32")
+        self.reverse_namping_first_entry_var = tk.BooleanVar(value=True)
+        self.reverse_namping_step1_enabled_var = tk.BooleanVar(value=True)
+        self.reverse_namping_step1_pips_var = tk.StringVar(value="5")
+        self.reverse_namping_step1_lot_var = tk.StringVar(value="2")
+        self.reverse_namping_step2_enabled_var = tk.BooleanVar(value=True)
+        self.reverse_namping_step2_pips_var = tk.StringVar(value="5")
+        self.reverse_namping_step2_lot_var = tk.StringVar(value="4")
+        self.reverse_namping_step3_enabled_var = tk.BooleanVar(value=False)
+        self.reverse_namping_step3_pips_var = tk.StringVar(value="5")
+        self.reverse_namping_step3_lot_var = tk.StringVar(value="8")
+        self.reverse_namping_step4_enabled_var = tk.BooleanVar(value=False)
+        self.reverse_namping_step4_pips_var = tk.StringVar(value="5")
+        self.reverse_namping_step4_lot_var = tk.StringVar(value="16")
+        self.reverse_namping_step5_enabled_var = tk.BooleanVar(value=False)
+        self.reverse_namping_step5_pips_var = tk.StringVar(value="5")
+        self.reverse_namping_step5_lot_var = tk.StringVar(value="32")
+        self.momentum_namping_first_entry_var = tk.BooleanVar(value=True)
+        self.momentum_namping_step1_enabled_var = tk.BooleanVar(value=True)
+        self.momentum_namping_step1_pips_var = tk.StringVar(value="5")
+        self.momentum_namping_step1_lot_var = tk.StringVar(value="2")
+        self.momentum_namping_step2_enabled_var = tk.BooleanVar(value=True)
+        self.momentum_namping_step2_pips_var = tk.StringVar(value="5")
+        self.momentum_namping_step2_lot_var = tk.StringVar(value="4")
+        self.momentum_namping_step3_enabled_var = tk.BooleanVar(value=False)
+        self.momentum_namping_step3_pips_var = tk.StringVar(value="5")
+        self.momentum_namping_step3_lot_var = tk.StringVar(value="8")
+        self.momentum_namping_step4_enabled_var = tk.BooleanVar(value=False)
+        self.momentum_namping_step4_pips_var = tk.StringVar(value="5")
+        self.momentum_namping_step4_lot_var = tk.StringVar(value="16")
+        self.momentum_namping_step5_enabled_var = tk.BooleanVar(value=False)
+        self.momentum_namping_step5_pips_var = tk.StringVar(value="5")
+        self.momentum_namping_step5_lot_var = tk.StringVar(value="32")
+        self.sr_namping_first_entry_var = tk.BooleanVar(value=True)
+        self.sr_namping_step1_enabled_var = tk.BooleanVar(value=True)
+        self.sr_namping_step1_pips_var = tk.StringVar(value="5")
+        self.sr_namping_step1_lot_var = tk.StringVar(value="2")
+        self.sr_namping_step2_enabled_var = tk.BooleanVar(value=True)
+        self.sr_namping_step2_pips_var = tk.StringVar(value="5")
+        self.sr_namping_step2_lot_var = tk.StringVar(value="4")
+        self.sr_namping_step3_enabled_var = tk.BooleanVar(value=False)
+        self.sr_namping_step3_pips_var = tk.StringVar(value="5")
+        self.sr_namping_step3_lot_var = tk.StringVar(value="8")
+        self.sr_namping_step4_enabled_var = tk.BooleanVar(value=False)
+        self.sr_namping_step4_pips_var = tk.StringVar(value="5")
+        self.sr_namping_step4_lot_var = tk.StringVar(value="16")
+        self.sr_namping_step5_enabled_var = tk.BooleanVar(value=False)
+        self.sr_namping_step5_pips_var = tk.StringVar(value="5")
+        self.sr_namping_step5_lot_var = tk.StringVar(value="32")
+        self.spike_namping_first_entry_var = tk.BooleanVar(value=True)
+        self.spike_namping_step1_enabled_var = tk.BooleanVar(value=True)
+        self.spike_namping_step1_pips_var = tk.StringVar(value="5")
+        self.spike_namping_step1_lot_var = tk.StringVar(value="2")
+        self.spike_namping_step2_enabled_var = tk.BooleanVar(value=True)
+        self.spike_namping_step2_pips_var = tk.StringVar(value="5")
+        self.spike_namping_step2_lot_var = tk.StringVar(value="4")
+        self.spike_namping_step3_enabled_var = tk.BooleanVar(value=False)
+        self.spike_namping_step3_pips_var = tk.StringVar(value="5")
+        self.spike_namping_step3_lot_var = tk.StringVar(value="8")
+        self.spike_namping_step4_enabled_var = tk.BooleanVar(value=False)
+        self.spike_namping_step4_pips_var = tk.StringVar(value="5")
+        self.spike_namping_step4_lot_var = tk.StringVar(value="16")
+        self.spike_namping_step5_enabled_var = tk.BooleanVar(value=False)
+        self.spike_namping_step5_pips_var = tk.StringVar(value="5")
+        self.spike_namping_step5_lot_var = tk.StringVar(value="32")
         self.sr_zigzag_pips_var = tk.StringVar(value="10.0")
         self.sr_break_pips_var = tk.StringVar(value="0.01")
         self.sr_min_bars_var = tk.StringVar(value="10")
@@ -3164,11 +3229,164 @@ class Step1App:
         self.backtest_timer_running = False
         self.backtest_started_at = None
         self.last_view_range = None
+        self.namping_var_sets = {
+            "common": {
+                "first_var": self.namping_first_entry_var,
+                "step_enabled_vars": [
+                    self.namping_step1_enabled_var,
+                    self.namping_step2_enabled_var,
+                    self.namping_step3_enabled_var,
+                    self.namping_step4_enabled_var,
+                    self.namping_step5_enabled_var,
+                ],
+                "step_pips_vars": [
+                    self.namping_step1_pips_var,
+                    self.namping_step2_pips_var,
+                    self.namping_step3_pips_var,
+                    self.namping_step4_pips_var,
+                    self.namping_step5_pips_var,
+                ],
+                "step_lot_vars": [
+                    self.namping_step1_lot_var,
+                    self.namping_step2_lot_var,
+                    self.namping_step3_lot_var,
+                    self.namping_step4_lot_var,
+                    self.namping_step5_lot_var,
+                ],
+            },
+            "reverse": {
+                "first_var": self.reverse_namping_first_entry_var,
+                "step_enabled_vars": [
+                    self.reverse_namping_step1_enabled_var,
+                    self.reverse_namping_step2_enabled_var,
+                    self.reverse_namping_step3_enabled_var,
+                    self.reverse_namping_step4_enabled_var,
+                    self.reverse_namping_step5_enabled_var,
+                ],
+                "step_pips_vars": [
+                    self.reverse_namping_step1_pips_var,
+                    self.reverse_namping_step2_pips_var,
+                    self.reverse_namping_step3_pips_var,
+                    self.reverse_namping_step4_pips_var,
+                    self.reverse_namping_step5_pips_var,
+                ],
+                "step_lot_vars": [
+                    self.reverse_namping_step1_lot_var,
+                    self.reverse_namping_step2_lot_var,
+                    self.reverse_namping_step3_lot_var,
+                    self.reverse_namping_step4_lot_var,
+                    self.reverse_namping_step5_lot_var,
+                ],
+            },
+            "momentum": {
+                "first_var": self.momentum_namping_first_entry_var,
+                "step_enabled_vars": [
+                    self.momentum_namping_step1_enabled_var,
+                    self.momentum_namping_step2_enabled_var,
+                    self.momentum_namping_step3_enabled_var,
+                    self.momentum_namping_step4_enabled_var,
+                    self.momentum_namping_step5_enabled_var,
+                ],
+                "step_pips_vars": [
+                    self.momentum_namping_step1_pips_var,
+                    self.momentum_namping_step2_pips_var,
+                    self.momentum_namping_step3_pips_var,
+                    self.momentum_namping_step4_pips_var,
+                    self.momentum_namping_step5_pips_var,
+                ],
+                "step_lot_vars": [
+                    self.momentum_namping_step1_lot_var,
+                    self.momentum_namping_step2_lot_var,
+                    self.momentum_namping_step3_lot_var,
+                    self.momentum_namping_step4_lot_var,
+                    self.momentum_namping_step5_lot_var,
+                ],
+            },
+            "sr": {
+                "first_var": self.sr_namping_first_entry_var,
+                "step_enabled_vars": [
+                    self.sr_namping_step1_enabled_var,
+                    self.sr_namping_step2_enabled_var,
+                    self.sr_namping_step3_enabled_var,
+                    self.sr_namping_step4_enabled_var,
+                    self.sr_namping_step5_enabled_var,
+                ],
+                "step_pips_vars": [
+                    self.sr_namping_step1_pips_var,
+                    self.sr_namping_step2_pips_var,
+                    self.sr_namping_step3_pips_var,
+                    self.sr_namping_step4_pips_var,
+                    self.sr_namping_step5_pips_var,
+                ],
+                "step_lot_vars": [
+                    self.sr_namping_step1_lot_var,
+                    self.sr_namping_step2_lot_var,
+                    self.sr_namping_step3_lot_var,
+                    self.sr_namping_step4_lot_var,
+                    self.sr_namping_step5_lot_var,
+                ],
+            },
+            "spike": {
+                "first_var": self.spike_namping_first_entry_var,
+                "step_enabled_vars": [
+                    self.spike_namping_step1_enabled_var,
+                    self.spike_namping_step2_enabled_var,
+                    self.spike_namping_step3_enabled_var,
+                    self.spike_namping_step4_enabled_var,
+                    self.spike_namping_step5_enabled_var,
+                ],
+                "step_pips_vars": [
+                    self.spike_namping_step1_pips_var,
+                    self.spike_namping_step2_pips_var,
+                    self.spike_namping_step3_pips_var,
+                    self.spike_namping_step4_pips_var,
+                    self.spike_namping_step5_pips_var,
+                ],
+                "step_lot_vars": [
+                    self.spike_namping_step1_lot_var,
+                    self.spike_namping_step2_lot_var,
+                    self.spike_namping_step3_lot_var,
+                    self.spike_namping_step4_lot_var,
+                    self.spike_namping_step5_lot_var,
+                ],
+            },
+        }
+        self.namping_widget_groups = {}
+        self.entry_tab_info = {}
 
         self._load_persistent_state()
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self._poll_queue()
+
+    def _build_namping_rows(self, frame, key, row_start=0):
+        vars_set = self.namping_var_sets.get(key)
+        if not vars_set:
+            return
+        group = []
+        pady = (6, 0) if row_start > 0 else (0, 0)
+        ttk.Checkbutton(
+            frame, text="初回エントリー", variable=vars_set["first_var"]
+        ).grid(row=row_start, column=0, sticky="w", pady=pady)
+        for idx in range(5):
+            row = row_start + 1 + idx
+            enabled_var = vars_set["step_enabled_vars"][idx]
+            pips_var = vars_set["step_pips_vars"][idx]
+            lot_var = vars_set["step_lot_vars"][idx]
+            ttk.Checkbutton(
+                frame,
+                text=f"段階{idx + 1}",
+                variable=enabled_var,
+                command=lambda k=key: self._on_namping_toggle_group(k),
+            ).grid(row=row, column=0, sticky="w", pady=(6, 0))
+            ttk.Label(frame, text="幅pp").grid(row=row, column=1, sticky="w", pady=(6, 0))
+            pips_entry = ttk.Entry(frame, textvariable=pips_var, width=6)
+            pips_entry.grid(row=row, column=2, padx=(4, 12), pady=(6, 0), sticky="w")
+            ttk.Label(frame, text="ロット").grid(row=row, column=3, sticky="w", pady=(6, 0))
+            lot_entry = ttk.Entry(frame, textvariable=lot_var, width=6)
+            lot_entry.grid(row=row, column=4, padx=(4, 0), pady=(6, 0), sticky="w")
+            group.append((enabled_var, pips_entry, lot_entry))
+        self.namping_widget_groups[key] = group
 
     def _build_ui(self):
         self.root.columnconfigure(0, weight=1)
@@ -3404,287 +3622,315 @@ class Step1App:
         )
         self.candle_1440_radio.grid(row=3, column=5, sticky="w")
 
-        param_area = ttk.Frame(param_tab)
-        param_area.grid(row=3, column=0, sticky="nsew", pady=(4, 4))
-        param_area.columnconfigure(0, weight=1)
-        param_area.columnconfigure(1, weight=1)
-        param_area.columnconfigure(2, weight=1)
+        param_notebook = ttk.Notebook(param_tab)
+        param_notebook.grid(row=3, column=0, sticky="nsew", pady=(4, 4))
+        param_tab.rowconfigure(3, weight=1)
 
-        settings = ttk.LabelFrame(param_area, text="バックテスト条件")
-        settings.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        common_tab = ttk.Frame(param_notebook, padding=12)
+        reverse_tab = ttk.Frame(param_notebook, padding=12)
+        momentum_tab = ttk.Frame(param_notebook, padding=12)
+        sr_tab = ttk.Frame(param_notebook, padding=12)
+        spike_tab = ttk.Frame(param_notebook, padding=12)
+        param_notebook.add(common_tab, text="共通")
+        param_notebook.add(reverse_tab, text="秒逆張り")
+        param_notebook.add(momentum_tab, text="勢い追随")
+        param_notebook.add(sr_tab, text="水平線戻り")
+        param_notebook.add(spike_tab, text="スパイク")
 
-        ttk.Label(settings, text="スパイク時間（ミリ秒）").grid(row=0, column=0, sticky="w")
-        ttk.Entry(settings, textvariable=self.spike_window_var, width=8).grid(
+        for tab in (common_tab, reverse_tab, momentum_tab, sr_tab, spike_tab):
+            tab.columnconfigure(0, weight=1)
+
+        common_close = ttk.LabelFrame(common_tab, text="決済条件（共通）")
+        common_close.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(common_close, text="スプレッド（ピップス）").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Entry(common_close, textvariable=self.spread_var, width=8).grid(
             row=0, column=1, padx=(4, 12), sticky="w"
         )
-        ttk.Label(settings, text="スパイク幅（ピップス）").grid(row=0, column=2, sticky="w")
-        ttk.Entry(settings, textvariable=self.spike_pips_var, width=8).grid(
-            row=0, column=3, padx=(4, 12), sticky="w"
+        ttk.Label(common_close, text="損切幅（ピップス）").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
         )
-        ttk.Label(settings, text="最小戻し率（％）").grid(row=0, column=4, sticky="w")
-        ttk.Entry(settings, textvariable=self.retrace_var, width=8).grid(
-            row=0, column=5, padx=(4, 0), sticky="w"
-        )
-
-        ttk.Label(settings, text="逆張り時間（秒）").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(settings, textvariable=self.reverse_window_var, width=8).grid(
+        ttk.Entry(common_close, textvariable=self.stop_pips_var, width=8).grid(
             row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="逆張り幅（pp）").grid(row=1, column=2, sticky="w", pady=(6, 0))
-        ttk.Entry(settings, textvariable=self.reverse_pips_var, width=8).grid(
-            row=1, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        ttk.Checkbutton(
+            common_close, text="共通優先", variable=self.common_stop_override_var
+        ).grid(row=1, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
+        ttk.Label(common_close, text="利確幅（ピップス）").grid(
+            row=2, column=0, sticky="w", pady=(6, 0)
         )
-        ttk.Label(settings, text="停滞秒").grid(row=1, column=4, sticky="w", pady=(6, 0))
-        ttk.Entry(settings, textvariable=self.reverse_hold_seconds_var, width=8).grid(
-            row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
-        )
-        ttk.Label(settings, text="戻り上限（pp）").grid(
-            row=1, column=6, sticky="w", pady=(6, 0)
-        )
-        ttk.Entry(settings, textvariable=self.reverse_max_pullback_var, width=8).grid(
-            row=1, column=7, padx=(4, 0), pady=(6, 0), sticky="w"
-        )
-
-        ttk.Label(settings, text="スプレッド（ピップス）").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(settings, textvariable=self.spread_var, width=8).grid(
+        ttk.Entry(common_close, textvariable=self.take_pips_var, width=8).grid(
             row=2, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="損切幅（ピップス）").grid(row=2, column=2, sticky="w", pady=(6, 0))
-        ttk.Entry(settings, textvariable=self.stop_pips_var, width=8).grid(
-            row=2, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
-        )
-        ttk.Label(settings, text="利確幅（ピップス）").grid(row=2, column=4, sticky="w", pady=(6, 0))
-        ttk.Entry(settings, textvariable=self.take_pips_var, width=8).grid(
-            row=2, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
-        )
-
-        ttk.Label(settings, text="時間経過クローズ（秒）").grid(
+        ttk.Checkbutton(
+            common_close, text="共通優先", variable=self.common_take_override_var
+        ).grid(row=2, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
+        ttk.Label(common_close, text="時間経過クローズ（秒）").grid(
             row=3, column=0, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(settings, textvariable=self.time_close_seconds_var, width=8).grid(
-            row=3, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
-        )
+        ttk.Entry(
+            common_close, textvariable=self.time_close_seconds_var, width=8
+        ).grid(row=3, column=1, padx=(4, 12), pady=(6, 0), sticky="w")
+        ttk.Checkbutton(
+            common_close, text="共通優先", variable=self.common_time_override_var
+        ).grid(row=3, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
         self.fixed_exit_price_check = ttk.Checkbutton(
-            settings,
+            common_close,
             text="損切/利確を固定決済",
             variable=self.fixed_exit_price_var,
         )
-        self.fixed_exit_price_check.grid(row=3, column=2, padx=(8, 0), pady=(6, 0), sticky="w")
+        self.fixed_exit_price_check.grid(row=4, column=0, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Checkbutton(
+            common_close, text="共通優先", variable=self.common_fixed_override_var
+        ).grid(row=4, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
 
+        common_namping = ttk.LabelFrame(common_tab, text="ナンピン条件（共通）")
+        common_namping.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        ttk.Checkbutton(
+            common_namping, text="共通優先", variable=self.common_namping_override_var
+        ).grid(row=0, column=0, sticky="w")
+        self._build_namping_rows(common_namping, "common", row_start=1)
+
+        common_filter = ttk.LabelFrame(common_tab, text="共通フィルター")
+        common_filter.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         self.ma_check = ttk.Checkbutton(
-            settings,
+            common_filter,
             text="移動平均フィルター",
             variable=self.ma_filter_var,
             command=self._on_ma_filter_toggle,
         )
-        self.ma_check.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="期間").grid(row=4, column=2, sticky="w", pady=(6, 0))
+        self.ma_check.grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(common_filter, text="期間").grid(row=0, column=2, sticky="w")
         self.ma_period_entry = ttk.Entry(
-            settings, textvariable=self.ma_period_var, width=8
+            common_filter, textvariable=self.ma_period_var, width=8
         )
-        self.ma_period_entry.grid(row=4, column=3, padx=(4, 12), pady=(6, 0), sticky="w")
-        ttk.Label(settings, text="乖離率（％）").grid(row=4, column=4, sticky="w", pady=(6, 0))
+        self.ma_period_entry.grid(row=0, column=3, padx=(4, 12), sticky="w")
+        ttk.Label(common_filter, text="乖離率（％）").grid(row=0, column=4, sticky="w")
         self.ma_deviation_entry = ttk.Entry(
-            settings, textvariable=self.ma_deviation_var, width=8
+            common_filter, textvariable=self.ma_deviation_var, width=8
         )
-        self.ma_deviation_entry.grid(row=4, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
-
-        self.extreme_check = ttk.Checkbutton(
-            settings,
-            text="天底フィルター",
-            variable=self.extreme_filter_var,
-            command=self._on_extreme_filter_toggle,
-        )
-        self.extreme_check.grid(row=5, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="天底維持ms").grid(row=5, column=1, sticky="w", pady=(6, 0))
-        self.extreme_hold_entry = ttk.Entry(
-            settings, textvariable=self.extreme_hold_ms_var, width=8
-        )
-        self.extreme_hold_entry.grid(
-            row=5, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
-        )
-        ttk.Label(settings, text="天底距離pips").grid(row=5, column=3, sticky="w", pady=(6, 0))
-        self.extreme_distance_entry = ttk.Entry(
-            settings, textvariable=self.extreme_distance_pips_var, width=8
-        )
-        self.extreme_distance_entry.grid(
-            row=5, column=4, padx=(4, 12), pady=(6, 0), sticky="w"
-        )
-
+        self.ma_deviation_entry.grid(row=0, column=5, padx=(4, 0), sticky="w")
         self.backtest_exclude_check = ttk.Checkbutton(
-            settings,
+            common_filter,
             text="時間帯除外",
             variable=self.backtest_exclude_var,
             command=self._on_backtest_exclude_toggle,
         )
-        self.backtest_exclude_check.grid(row=6, column=0, sticky="w", pady=(6, 0))
+        self.backtest_exclude_check.grid(row=1, column=0, sticky="w", pady=(6, 0))
         self.backtest_exclude_button = ttk.Button(
-            settings, text="時間帯設定", command=self._open_backtest_exclude_hours
+            common_filter, text="時間帯設定", command=self._open_backtest_exclude_hours
         )
         self.backtest_exclude_button.grid(
-            row=6, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, textvariable=self.backtest_exclude_label_var).grid(
-            row=6, column=2, columnspan=4, sticky="w", pady=(6, 0)
+        ttk.Label(common_filter, textvariable=self.backtest_exclude_label_var).grid(
+            row=1, column=2, columnspan=4, sticky="w", pady=(6, 0)
         )
-
-        ttk.Label(settings, text="戦略").grid(row=7, column=0, sticky="w", pady=(6, 0))
-        self.strategy_spike_check = ttk.Checkbutton(
-            settings,
-            text="スパイク",
-            variable=self.entry_spike_var,
-        )
-        self.strategy_spike_check.grid(row=7, column=1, sticky="w", pady=(6, 0))
-        self.strategy_sr_check = ttk.Checkbutton(
-            settings,
-            text="水平線戻り",
-            variable=self.entry_sr_var,
-        )
-        self.strategy_sr_check.grid(row=7, column=2, sticky="w", pady=(6, 0))
-        self.strategy_momentum_check = ttk.Checkbutton(
-            settings,
-            text="勢い追随",
-            variable=self.entry_momentum_var,
-        )
-        self.strategy_momentum_check.grid(row=7, column=3, sticky="w", pady=(6, 0))
-        self.strategy_reverse_check = ttk.Checkbutton(
-            settings,
-            text="秒逆張り",
-            variable=self.entry_reverse_var,
-        )
-        self.strategy_reverse_check.grid(row=7, column=4, sticky="w", pady=(6, 0))
         self.allow_same_direction_check = ttk.Checkbutton(
-            settings,
+            common_filter,
             text="同方向同時保有",
             variable=self.allow_same_direction_var,
         )
-        self.allow_same_direction_check.grid(row=7, column=5, sticky="w", pady=(6, 0))
+        self.allow_same_direction_check.grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.allow_opposite_direction_check = ttk.Checkbutton(
-            settings,
+            common_filter,
             text="逆方向同時保有",
             variable=self.allow_opposite_direction_var,
         )
-        self.allow_opposite_direction_check.grid(row=7, column=6, sticky="w", pady=(6, 0))
+        self.allow_opposite_direction_check.grid(row=2, column=1, sticky="w", pady=(6, 0))
 
-        self.namping_first_check = ttk.Checkbutton(
-            settings,
-            text="初回エントリー",
-            variable=self.namping_first_entry_var,
+        signal_chain_settings = ttk.LabelFrame(common_tab, text="連続点灯条件")
+        signal_chain_settings.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(signal_chain_settings, text="正方向幅（pp）").grid(
+            row=0, column=0, sticky="w"
         )
-        self.namping_first_check.grid(row=8, column=0, sticky="w", pady=(6, 0))
-        self.namping_step1_check = ttk.Checkbutton(
-            settings,
-            text="段階1",
-            variable=self.namping_step1_enabled_var,
-            command=self._on_namping_toggle,
+        self.signal_chain_pos_entry = ttk.Entry(
+            signal_chain_settings, textvariable=self.signal_chain_pos_pips_var, width=8
         )
-        self.namping_step1_check.grid(row=8, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="幅pp").grid(row=8, column=2, sticky="w", pady=(6, 0))
-        self.namping_step1_pips_entry = ttk.Entry(
-            settings, textvariable=self.namping_step1_pips_var, width=6
+        self.signal_chain_pos_entry.grid(row=0, column=1, padx=(4, 12), sticky="w")
+        ttk.Label(signal_chain_settings, text="逆方向幅（pp）").grid(
+            row=0, column=2, sticky="w"
         )
-        self.namping_step1_pips_entry.grid(
-            row=8, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        self.signal_chain_neg_entry = ttk.Entry(
+            signal_chain_settings, textvariable=self.signal_chain_neg_pips_var, width=8
         )
-        ttk.Label(settings, text="ロット").grid(row=8, column=4, sticky="w", pady=(6, 0))
-        self.namping_step1_lot_entry = ttk.Entry(
-            settings, textvariable=self.namping_step1_lot_var, width=6
+        self.signal_chain_neg_entry.grid(row=0, column=3, padx=(4, 12), sticky="w")
+        ttk.Label(signal_chain_settings, text="連続回数").grid(
+            row=0, column=4, sticky="w"
         )
-        self.namping_step1_lot_entry.grid(
-            row=8, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        self.signal_chain_count_entry = ttk.Entry(
+            signal_chain_settings, textvariable=self.signal_chain_count_var, width=8
         )
-
-        self.namping_step2_check = ttk.Checkbutton(
-            settings,
-            text="段階2",
-            variable=self.namping_step2_enabled_var,
-            command=self._on_namping_toggle,
+        self.signal_chain_count_entry.grid(row=0, column=5, padx=(4, 0), sticky="w")
+        ttk.Label(signal_chain_settings, text="監視時間（分）").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
         )
-        self.namping_step2_check.grid(row=9, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="幅pp").grid(row=9, column=2, sticky="w", pady=(6, 0))
-        self.namping_step2_pips_entry = ttk.Entry(
-            settings, textvariable=self.namping_step2_pips_var, width=6
+        self.signal_chain_monitor_entry = ttk.Entry(
+            signal_chain_settings,
+            textvariable=self.signal_chain_monitor_minutes_var,
+            width=8,
         )
-        self.namping_step2_pips_entry.grid(
-            row=9, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        self.signal_chain_monitor_entry.grid(
+            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="ロット").grid(row=9, column=4, sticky="w", pady=(6, 0))
-        self.namping_step2_lot_entry = ttk.Entry(
-            settings, textvariable=self.namping_step2_lot_var, width=6
+        self.signal_chain_ignore_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="逆方向サインは無視",
+            variable=self.signal_chain_ignore_opposite_var,
         )
-        self.namping_step2_lot_entry.grid(
-            row=9, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        self.signal_chain_ignore_check.grid(
+            row=1, column=2, columnspan=2, sticky="w", pady=(6, 0)
         )
-
-        self.namping_step3_check = ttk.Checkbutton(
-            settings,
-            text="段階3",
-            variable=self.namping_step3_enabled_var,
-            command=self._on_namping_toggle,
+        self.signal_chain_enabled_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="連続点灯ON",
+            variable=self.signal_chain_enabled_var,
+            command=self._on_signal_chain_toggle,
         )
-        self.namping_step3_check.grid(row=10, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="幅pp").grid(row=10, column=2, sticky="w", pady=(6, 0))
-        self.namping_step3_pips_entry = ttk.Entry(
-            settings, textvariable=self.namping_step3_pips_var, width=6
-        )
-        self.namping_step3_pips_entry.grid(
-            row=10, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
-        )
-        ttk.Label(settings, text="ロット").grid(row=10, column=4, sticky="w", pady=(6, 0))
-        self.namping_step3_lot_entry = ttk.Entry(
-            settings, textvariable=self.namping_step3_lot_var, width=6
-        )
-        self.namping_step3_lot_entry.grid(
-            row=10, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        self.signal_chain_enabled_check.grid(
+            row=1, column=4, columnspan=2, sticky="w", pady=(6, 0)
         )
 
-        self.namping_step4_check = ttk.Checkbutton(
-            settings,
-            text="段階4",
-            variable=self.namping_step4_enabled_var,
-            command=self._on_namping_toggle,
-        )
-        self.namping_step4_check.grid(row=11, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="幅pp").grid(row=11, column=2, sticky="w", pady=(6, 0))
-        self.namping_step4_pips_entry = ttk.Entry(
-            settings, textvariable=self.namping_step4_pips_var, width=6
-        )
-        self.namping_step4_pips_entry.grid(
-            row=11, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
-        )
-        ttk.Label(settings, text="ロット").grid(row=11, column=4, sticky="w", pady=(6, 0))
-        self.namping_step4_lot_entry = ttk.Entry(
-            settings, textvariable=self.namping_step4_lot_var, width=6
-        )
-        self.namping_step4_lot_entry.grid(
-            row=11, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
-        )
+        def build_close_frame(parent, stop_var, take_var, time_var, fixed_var):
+            frame = ttk.LabelFrame(parent, text="決済条件")
+            ttk.Label(frame, text="損切幅（ピップス）").grid(
+                row=0, column=0, sticky="w"
+            )
+            ttk.Entry(frame, textvariable=stop_var, width=8).grid(
+                row=0, column=1, padx=(4, 12), sticky="w"
+            )
+            ttk.Label(frame, text="利確幅（ピップス）").grid(
+                row=1, column=0, sticky="w", pady=(6, 0)
+            )
+            ttk.Entry(frame, textvariable=take_var, width=8).grid(
+                row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+            )
+            ttk.Label(frame, text="時間経過クローズ（秒）").grid(
+                row=2, column=0, sticky="w", pady=(6, 0)
+            )
+            ttk.Entry(frame, textvariable=time_var, width=8).grid(
+                row=2, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+            )
+            ttk.Checkbutton(
+                frame, text="損切/利確を固定決済", variable=fixed_var
+            ).grid(row=3, column=0, columnspan=2, pady=(6, 0), sticky="w")
+            return frame
 
-        self.namping_step5_check = ttk.Checkbutton(
-            settings,
-            text="段階5",
-            variable=self.namping_step5_enabled_var,
-            command=self._on_namping_toggle,
+        self.entry_reverse_check = ttk.Checkbutton(
+            reverse_tab,
+            text="秒逆張り",
+            variable=self.entry_reverse_var,
+            command=lambda: self._on_entry_tab_toggle("reverse"),
         )
-        self.namping_step5_check.grid(row=12, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="幅pp").grid(row=12, column=2, sticky="w", pady=(6, 0))
-        self.namping_step5_pips_entry = ttk.Entry(
-            settings, textvariable=self.namping_step5_pips_var, width=6
+        self.entry_reverse_check.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        reverse_close = build_close_frame(
+            reverse_tab,
+            self.reverse_stop_pips_var,
+            self.reverse_take_pips_var,
+            self.reverse_time_close_seconds_var,
+            self.reverse_fixed_exit_price_var,
         )
-        self.namping_step5_pips_entry.grid(
-            row=12, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        reverse_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        reverse_namping = ttk.LabelFrame(reverse_tab, text="ナンピン条件")
+        reverse_namping.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        self._build_namping_rows(reverse_namping, "reverse", row_start=0)
+        reverse_settings = ttk.LabelFrame(reverse_tab, text="秒逆張り条件")
+        reverse_settings.grid(row=3, column=0, sticky="ew")
+        ttk.Label(reverse_settings, text="逆張り時間（秒）").grid(row=0, column=0, sticky="w")
+        ttk.Entry(reverse_settings, textvariable=self.reverse_window_var, width=8).grid(
+            row=0, column=1, padx=(4, 12), sticky="w"
         )
-        ttk.Label(settings, text="ロット").grid(row=12, column=4, sticky="w", pady=(6, 0))
-        self.namping_step5_lot_entry = ttk.Entry(
-            settings, textvariable=self.namping_step5_lot_var, width=6
+        ttk.Label(reverse_settings, text="逆張り幅（pp）").grid(row=0, column=2, sticky="w")
+        ttk.Entry(reverse_settings, textvariable=self.reverse_pips_var, width=8).grid(
+            row=0, column=3, padx=(4, 12), sticky="w"
         )
-        self.namping_step5_lot_entry.grid(
-            row=12, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
-        )
+        ttk.Label(reverse_settings, text="停滞秒").grid(row=0, column=4, sticky="w")
+        ttk.Entry(
+            reverse_settings, textvariable=self.reverse_hold_seconds_var, width=8
+        ).grid(row=0, column=5, padx=(4, 12), sticky="w")
+        ttk.Label(reverse_settings, text="戻り上限（pp）").grid(row=0, column=6, sticky="w")
+        ttk.Entry(
+            reverse_settings, textvariable=self.reverse_max_pullback_var, width=8
+        ).grid(row=0, column=7, padx=(4, 0), sticky="w")
 
-        sr_settings = ttk.LabelFrame(param_area, text="水平線条件")
-        sr_settings.grid(row=0, column=1, sticky="nsew", padx=(0, 6))
+        self.entry_momentum_check = ttk.Checkbutton(
+            momentum_tab,
+            text="勢い追随",
+            variable=self.entry_momentum_var,
+            command=lambda: self._on_entry_tab_toggle("momentum"),
+        )
+        self.entry_momentum_check.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        momentum_close = build_close_frame(
+            momentum_tab,
+            self.momentum_stop_pips_var,
+            self.momentum_take_pips_var,
+            self.momentum_time_close_seconds_var,
+            self.momentum_fixed_exit_price_var,
+        )
+        momentum_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        momentum_namping = ttk.LabelFrame(momentum_tab, text="ナンピン条件")
+        momentum_namping.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        self._build_namping_rows(momentum_namping, "momentum", row_start=0)
+        momentum_settings = ttk.LabelFrame(momentum_tab, text="勢い条件")
+        momentum_settings.grid(row=3, column=0, sticky="ew")
+        ttk.Label(momentum_settings, text="監視時間（ms）").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Entry(momentum_settings, textvariable=self.momentum_window_var, width=8).grid(
+            row=0, column=1, padx=(4, 12), sticky="w"
+        )
+        ttk.Label(momentum_settings, text="監視幅（pp）").grid(
+            row=0, column=2, sticky="w"
+        )
+        ttk.Entry(momentum_settings, textvariable=self.momentum_spike_pips_var, width=8).grid(
+            row=0, column=3, padx=(4, 12), sticky="w"
+        )
+        ttk.Label(momentum_settings, text="境界位置（％）").grid(
+            row=0, column=4, sticky="w"
+        )
+        ttk.Entry(momentum_settings, textvariable=self.momentum_boundary_pct_var, width=8).grid(
+            row=0, column=5, padx=(4, 0), sticky="w"
+        )
+        ttk.Label(momentum_settings, text="平均ティック/分下限").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(momentum_settings, textvariable=self.momentum_tick_min_var, width=8).grid(
+            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(momentum_settings, text="継続秒数").grid(
+            row=1, column=2, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(momentum_settings, textvariable=self.momentum_hold_seconds_var, width=8).grid(
+            row=1, column=3, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(momentum_settings, text="上限（pp）").grid(
+            row=1, column=4, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            momentum_settings, textvariable=self.momentum_max_pips_var, width=8
+        ).grid(row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
 
+        self.entry_sr_check = ttk.Checkbutton(
+            sr_tab,
+            text="水平線戻り",
+            variable=self.entry_sr_var,
+            command=lambda: self._on_entry_tab_toggle("sr"),
+        )
+        self.entry_sr_check.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        sr_close = build_close_frame(
+            sr_tab,
+            self.sr_stop_pips_var,
+            self.sr_take_pips_var,
+            self.sr_time_close_seconds_var,
+            self.sr_fixed_exit_price_var,
+        )
+        sr_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        sr_namping = ttk.LabelFrame(sr_tab, text="ナンピン条件")
+        sr_namping.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        self._build_namping_rows(sr_namping, "sr", row_start=0)
+        sr_settings = ttk.LabelFrame(sr_tab, text="水平線条件")
+        sr_settings.grid(row=3, column=0, sticky="ew", pady=(0, 6))
         ttk.Label(sr_settings, text="ジグザグ幅（ピップス）").grid(
             row=0, column=0, sticky="w"
         )
@@ -3706,8 +3952,8 @@ class Step1App:
             row=2, column=1, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
-        sr_reentry_settings = ttk.LabelFrame(param_area, text="水平線戻り条件")
-        sr_reentry_settings.grid(row=0, column=2, sticky="nsew")
+        sr_reentry_settings = ttk.LabelFrame(sr_tab, text="水平線戻り条件")
+        sr_reentry_settings.grid(row=4, column=0, sticky="ew")
         ttk.Label(sr_reentry_settings, text="抜け幅（pp）").grid(
             row=0, column=0, sticky="w"
         )
@@ -3858,97 +4104,88 @@ class Step1App:
             row=3, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
-        momentum_settings = ttk.LabelFrame(param_area, text="勢い条件")
-        momentum_settings.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
-        ttk.Label(momentum_settings, text="監視時間（ms）").grid(
+        self.entry_spike_check = ttk.Checkbutton(
+            spike_tab,
+            text="スパイク",
+            variable=self.entry_spike_var,
+            command=lambda: self._on_entry_tab_toggle("spike"),
+        )
+        self.entry_spike_check.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        spike_close = build_close_frame(
+            spike_tab,
+            self.spike_stop_pips_var,
+            self.spike_take_pips_var,
+            self.spike_time_close_seconds_var,
+            self.spike_fixed_exit_price_var,
+        )
+        spike_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        spike_namping = ttk.LabelFrame(spike_tab, text="ナンピン条件")
+        spike_namping.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        self._build_namping_rows(spike_namping, "spike", row_start=0)
+        spike_settings = ttk.LabelFrame(spike_tab, text="スパイク条件")
+        spike_settings.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(spike_settings, text="スパイク時間（ミリ秒）").grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Entry(momentum_settings, textvariable=self.momentum_window_var, width=8).grid(
+        ttk.Entry(spike_settings, textvariable=self.spike_window_var, width=8).grid(
             row=0, column=1, padx=(4, 12), sticky="w"
         )
-        ttk.Label(momentum_settings, text="監視幅（pp）").grid(
+        ttk.Label(spike_settings, text="スパイク幅（ピップス）").grid(
             row=0, column=2, sticky="w"
         )
-        ttk.Entry(momentum_settings, textvariable=self.momentum_spike_pips_var, width=8).grid(
+        ttk.Entry(spike_settings, textvariable=self.spike_pips_var, width=8).grid(
             row=0, column=3, padx=(4, 12), sticky="w"
         )
-        ttk.Label(momentum_settings, text="境界位置（％）").grid(
+        ttk.Label(spike_settings, text="最小戻し率（％）").grid(
             row=0, column=4, sticky="w"
         )
-        ttk.Entry(momentum_settings, textvariable=self.momentum_boundary_pct_var, width=8).grid(
+        ttk.Entry(spike_settings, textvariable=self.retrace_var, width=8).grid(
             row=0, column=5, padx=(4, 0), sticky="w"
         )
-        ttk.Label(momentum_settings, text="平均ティック/分下限").grid(
-            row=1, column=0, sticky="w", pady=(6, 0)
+        self.extreme_check = ttk.Checkbutton(
+            spike_settings,
+            text="天底フィルター",
+            variable=self.extreme_filter_var,
+            command=self._on_extreme_filter_toggle,
         )
-        ttk.Entry(momentum_settings, textvariable=self.momentum_tick_min_var, width=8).grid(
-            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        self.extreme_check.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(spike_settings, text="天底維持ms").grid(row=1, column=1, sticky="w", pady=(6, 0))
+        self.extreme_hold_entry = ttk.Entry(
+            spike_settings, textvariable=self.extreme_hold_ms_var, width=8
         )
-        ttk.Label(momentum_settings, text="継続秒数").grid(
-            row=1, column=2, sticky="w", pady=(6, 0)
+        self.extreme_hold_entry.grid(
+            row=1, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Entry(momentum_settings, textvariable=self.momentum_hold_seconds_var, width=8).grid(
-            row=1, column=3, padx=(4, 0), pady=(6, 0), sticky="w"
+        ttk.Label(spike_settings, text="天底距離pips").grid(row=1, column=3, sticky="w", pady=(6, 0))
+        self.extreme_distance_entry = ttk.Entry(
+            spike_settings, textvariable=self.extreme_distance_pips_var, width=8
         )
-        ttk.Label(momentum_settings, text="上限（pp）").grid(
-            row=1, column=4, sticky="w", pady=(6, 0)
-        )
-        ttk.Entry(
-            momentum_settings, textvariable=self.momentum_max_pips_var, width=8
-        ).grid(row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
-
-        signal_chain_settings = ttk.LabelFrame(param_area, text="連続点灯条件")
-        signal_chain_settings.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
-        ttk.Label(signal_chain_settings, text="正方向幅（pp）").grid(
-            row=0, column=0, sticky="w"
-        )
-        self.signal_chain_pos_entry = ttk.Entry(
-            signal_chain_settings, textvariable=self.signal_chain_pos_pips_var, width=8
-        )
-        self.signal_chain_pos_entry.grid(row=0, column=1, padx=(4, 12), sticky="w")
-        ttk.Label(signal_chain_settings, text="逆方向幅（pp）").grid(
-            row=0, column=2, sticky="w"
-        )
-        self.signal_chain_neg_entry = ttk.Entry(
-            signal_chain_settings, textvariable=self.signal_chain_neg_pips_var, width=8
-        )
-        self.signal_chain_neg_entry.grid(row=0, column=3, padx=(4, 12), sticky="w")
-        ttk.Label(signal_chain_settings, text="連続回数").grid(
-            row=0, column=4, sticky="w"
-        )
-        self.signal_chain_count_entry = ttk.Entry(
-            signal_chain_settings, textvariable=self.signal_chain_count_var, width=8
-        )
-        self.signal_chain_count_entry.grid(row=0, column=5, padx=(4, 0), sticky="w")
-        ttk.Label(signal_chain_settings, text="監視時間（分）").grid(
-            row=1, column=0, sticky="w", pady=(6, 0)
-        )
-        self.signal_chain_monitor_entry = ttk.Entry(
-            signal_chain_settings,
-            textvariable=self.signal_chain_monitor_minutes_var,
-            width=8,
-        )
-        self.signal_chain_monitor_entry.grid(
-            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
-        )
-        self.signal_chain_ignore_check = ttk.Checkbutton(
-            signal_chain_settings,
-            text="逆方向サインは無視",
-            variable=self.signal_chain_ignore_opposite_var,
-        )
-        self.signal_chain_ignore_check.grid(
-            row=1, column=2, columnspan=2, sticky="w", pady=(6, 0)
-        )
-        self.signal_chain_enabled_check = ttk.Checkbutton(
-            signal_chain_settings,
-            text="連続点灯ON",
-            variable=self.signal_chain_enabled_var,
-            command=self._on_signal_chain_toggle,
-        )
-        self.signal_chain_enabled_check.grid(
-            row=1, column=4, columnspan=2, sticky="w", pady=(6, 0)
+        self.extreme_distance_entry.grid(
+            row=1, column=4, padx=(4, 12), pady=(6, 0), sticky="w"
         )
 
+        self.entry_tab_info = {
+            "reverse": {
+                "frame": reverse_tab,
+                "var": self.entry_reverse_var,
+                "toggle": self.entry_reverse_check,
+            },
+            "momentum": {
+                "frame": momentum_tab,
+                "var": self.entry_momentum_var,
+                "toggle": self.entry_momentum_check,
+            },
+            "sr": {
+                "frame": sr_tab,
+                "var": self.entry_sr_var,
+                "toggle": self.entry_sr_check,
+            },
+            "spike": {
+                "frame": spike_tab,
+                "var": self.entry_spike_var,
+                "toggle": self.entry_spike_check,
+            },
+        }
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
         )
@@ -4017,7 +4254,11 @@ class Step1App:
         self._on_backtest_exclude_toggle()
         self._on_sr_reentry_filter_toggle()
         self._on_signal_chain_toggle()
-        self._on_namping_toggle()
+        self._on_namping_toggle_group("common")
+        self._on_entry_tab_toggle("reverse")
+        self._on_entry_tab_toggle("momentum")
+        self._on_entry_tab_toggle("sr")
+        self._on_entry_tab_toggle("spike")
         self._update_trade_nav_state()
 
     def _pick_start(self):
@@ -4054,6 +4295,16 @@ class Step1App:
         return float(filtered)
 
     def _get_backtest_params(self):
+        entry_spike_enabled = self.entry_spike_var.get()
+        entry_sr_enabled = self.entry_sr_var.get()
+        entry_momentum_enabled = self.entry_momentum_var.get()
+        entry_reverse_enabled = self.entry_reverse_var.get()
+        any_entry_enabled = (
+            entry_spike_enabled
+            or entry_sr_enabled
+            or entry_momentum_enabled
+            or entry_reverse_enabled
+        )
         try:
             window_ms = self._parse_number(self.spike_window_var.get())
             spike_pips = self._parse_number(self.spike_pips_var.get())
@@ -4065,10 +4316,37 @@ class Step1App:
                 self.reverse_max_pullback_var.get()
             )
             spread_pips = self._parse_number(self.spread_var.get())
-            stop_pips = self._parse_number(self.stop_pips_var.get())
-            take_pips = self._parse_number(self.take_pips_var.get())
-            time_close_seconds = self._parse_number(self.time_close_seconds_var.get())
-            fixed_exit_price = self.fixed_exit_price_var.get()
+            common_stop_pips = self._parse_number(self.stop_pips_var.get())
+            common_take_pips = self._parse_number(self.take_pips_var.get())
+            common_time_close_seconds = self._parse_number(self.time_close_seconds_var.get())
+            common_fixed_exit_price = self.fixed_exit_price_var.get()
+            common_stop_override = self.common_stop_override_var.get()
+            common_take_override = self.common_take_override_var.get()
+            common_time_override = self.common_time_override_var.get()
+            common_fixed_override = self.common_fixed_override_var.get()
+            common_namping_override = self.common_namping_override_var.get()
+            reverse_stop_pips = self._parse_number(self.reverse_stop_pips_var.get())
+            reverse_take_pips = self._parse_number(self.reverse_take_pips_var.get())
+            reverse_time_close_seconds = self._parse_number(
+                self.reverse_time_close_seconds_var.get()
+            )
+            reverse_fixed_exit_price = self.reverse_fixed_exit_price_var.get()
+            momentum_stop_pips = self._parse_number(self.momentum_stop_pips_var.get())
+            momentum_take_pips = self._parse_number(self.momentum_take_pips_var.get())
+            momentum_time_close_seconds = self._parse_number(
+                self.momentum_time_close_seconds_var.get()
+            )
+            momentum_fixed_exit_price = self.momentum_fixed_exit_price_var.get()
+            sr_stop_pips = self._parse_number(self.sr_stop_pips_var.get())
+            sr_take_pips = self._parse_number(self.sr_take_pips_var.get())
+            sr_time_close_seconds = self._parse_number(self.sr_time_close_seconds_var.get())
+            sr_fixed_exit_price = self.sr_fixed_exit_price_var.get()
+            spike_stop_pips = self._parse_number(self.spike_stop_pips_var.get())
+            spike_take_pips = self._parse_number(self.spike_take_pips_var.get())
+            spike_time_close_seconds = self._parse_number(
+                self.spike_time_close_seconds_var.get()
+            )
+            spike_fixed_exit_price = self.spike_fixed_exit_price_var.get()
             ma_enabled = self.ma_filter_var.get()
             ma_period = self._parse_number(self.ma_period_var.get())
             ma_deviation_pct = self._parse_number(self.ma_deviation_var.get())
@@ -4093,79 +4371,149 @@ class Step1App:
             exclude_hours = self._get_backtest_exclude_hours() if exclude_enabled else set()
             allow_same_direction = self.allow_same_direction_var.get()
             allow_opposite_direction = self.allow_opposite_direction_var.get()
-            namping_first_enabled = self.namping_first_entry_var.get()
-            namping_step1_enabled = self.namping_step1_enabled_var.get()
-            namping_step2_enabled = self.namping_step2_enabled_var.get()
-            namping_step3_enabled = self.namping_step3_enabled_var.get()
-            namping_step4_enabled = self.namping_step4_enabled_var.get()
-            namping_step5_enabled = self.namping_step5_enabled_var.get()
-            if namping_step1_enabled:
-                namping_step1_pips = self._parse_number(self.namping_step1_pips_var.get())
-                namping_step1_lot = self._parse_number(self.namping_step1_lot_var.get())
-            else:
-                namping_step1_pips = 0.0
-                namping_step1_lot = 0.0
-            if namping_step2_enabled:
-                namping_step2_pips = self._parse_number(self.namping_step2_pips_var.get())
-                namping_step2_lot = self._parse_number(self.namping_step2_lot_var.get())
-            else:
-                namping_step2_pips = 0.0
-                namping_step2_lot = 0.0
-            if namping_step3_enabled:
-                namping_step3_pips = self._parse_number(self.namping_step3_pips_var.get())
-                namping_step3_lot = self._parse_number(self.namping_step3_lot_var.get())
-            else:
-                namping_step3_pips = 0.0
-                namping_step3_lot = 0.0
-            if namping_step4_enabled:
-                namping_step4_pips = self._parse_number(self.namping_step4_pips_var.get())
-                namping_step4_lot = self._parse_number(self.namping_step4_lot_var.get())
-            else:
-                namping_step4_pips = 0.0
-                namping_step4_lot = 0.0
-            if namping_step5_enabled:
-                namping_step5_pips = self._parse_number(self.namping_step5_pips_var.get())
-                namping_step5_lot = self._parse_number(self.namping_step5_lot_var.get())
-            else:
-                namping_step5_pips = 0.0
-                namping_step5_lot = 0.0
+
+            def read_namping(key):
+                vars_set = self.namping_var_sets[key]
+                first_enabled = vars_set["first_var"].get()
+                step_enabled = [var.get() for var in vars_set["step_enabled_vars"]]
+                step_pips = [
+                    self._parse_number(var.get())
+                    for var in vars_set["step_pips_vars"]
+                ]
+                step_lots = [
+                    self._parse_number(var.get())
+                    for var in vars_set["step_lot_vars"]
+                ]
+                return first_enabled, step_enabled, step_pips, step_lots
+
+            common_namping = read_namping("common")
+            reverse_namping = read_namping("reverse")
+            momentum_namping = read_namping("momentum")
+            sr_namping = read_namping("sr")
+            spike_namping = read_namping("spike")
         except ValueError:
             messagebox.showerror("エラー", "数値の入力が正しくありません。")
             return None
 
-        if window_ms <= 0:
-            messagebox.showerror("エラー", "スパイク時間は0より大きくしてください。")
-            return None
-        if spike_pips <= 0:
-            messagebox.showerror("エラー", "スパイク幅は0より大きくしてください。")
-            return None
-        if retrace_pct < 0:
-            messagebox.showerror("エラー", "最小戻し率は0以上にしてください。")
-            return None
-        if reverse_window_seconds <= 0:
-            messagebox.showerror("エラー", "逆張り時間は0より大きくしてください。")
-            return None
-        if reverse_pips <= 0:
-            messagebox.showerror("エラー", "逆張り幅は0より大きくしてください。")
-            return None
-        if reverse_hold_seconds < 0:
-            messagebox.showerror("エラー", "停滞秒は0以上にしてください。")
-            return None
-        if reverse_max_pullback_pips < 0:
-            messagebox.showerror("エラー", "戻り上限は0以上にしてください。")
-            return None
+        if entry_spike_enabled:
+            if window_ms <= 0:
+                messagebox.showerror("エラー", "スパイク時間は0より大きくしてください。")
+                return None
+            if spike_pips <= 0:
+                messagebox.showerror("エラー", "スパイク幅は0より大きくしてください。")
+                return None
+            if retrace_pct < 0:
+                messagebox.showerror("エラー", "最小戻し率は0以上にしてください。")
+                return None
+        if entry_reverse_enabled:
+            if reverse_window_seconds <= 0:
+                messagebox.showerror("エラー", "逆張り時間は0より大きくしてください。")
+                return None
+            if reverse_pips <= 0:
+                messagebox.showerror("エラー", "逆張り幅は0より大きくしてください。")
+                return None
+            if reverse_hold_seconds < 0:
+                messagebox.showerror("エラー", "停滞秒は0以上にしてください。")
+                return None
+            if reverse_max_pullback_pips < 0:
+                messagebox.showerror("エラー", "戻り上限は0以上にしてください。")
+                return None
         if spread_pips < 0:
             messagebox.showerror("エラー", "スプレッドは0以上にしてください。")
             return None
-        if stop_pips <= 0:
-            messagebox.showerror("エラー", "損切幅は0より大きくしてください。")
-            return None
-        if take_pips <= 0:
-            messagebox.showerror("エラー", "利確幅は0より大きくしてください。")
-            return None
-        if time_close_seconds < 0:
-            messagebox.showerror("エラー", "時間経過クローズは0以上にしてください。")
-            return None
+
+        def validate_namping(label, data):
+            first_enabled, step_enabled, step_pips, step_lots = data
+            if not first_enabled and not any(step_enabled):
+                messagebox.showerror(
+                    "エラー", f"{label}の初回/段階のエントリーが全てオフです。"
+                )
+                return False
+            for idx, enabled in enumerate(step_enabled):
+                if not enabled:
+                    continue
+                if step_pips[idx] <= 0:
+                    messagebox.showerror(
+                        "エラー", f"{label}の段階{idx + 1}の幅は0より大きくしてください。"
+                    )
+                    return False
+                if step_lots[idx] <= 0:
+                    messagebox.showerror(
+                        "エラー", f"{label}の段階{idx + 1}のロットは0より大きくしてください。"
+                    )
+                    return False
+            return True
+
+        if any_entry_enabled:
+            if common_stop_override and common_stop_pips <= 0:
+                messagebox.showerror("エラー", "損切幅は0より大きくしてください。")
+                return None
+            if common_take_override and common_take_pips <= 0:
+                messagebox.showerror("エラー", "利確幅は0より大きくしてください。")
+                return None
+            if common_time_override and common_time_close_seconds < 0:
+                messagebox.showerror("エラー", "時間経過クローズは0以上にしてください。")
+                return None
+            if common_namping_override:
+                if not validate_namping("共通", common_namping):
+                    return None
+
+        if entry_reverse_enabled:
+            if not common_stop_override and reverse_stop_pips <= 0:
+                messagebox.showerror("エラー", "秒逆張りの損切幅は0より大きくしてください。")
+                return None
+            if not common_take_override and reverse_take_pips <= 0:
+                messagebox.showerror("エラー", "秒逆張りの利確幅は0より大きくしてください。")
+                return None
+            if not common_time_override and reverse_time_close_seconds < 0:
+                messagebox.showerror("エラー", "秒逆張りの時間経過クローズは0以上にしてください。")
+                return None
+            if not common_namping_override:
+                if not validate_namping("秒逆張り", reverse_namping):
+                    return None
+
+        if entry_momentum_enabled:
+            if not common_stop_override and momentum_stop_pips <= 0:
+                messagebox.showerror("エラー", "勢い追随の損切幅は0より大きくしてください。")
+                return None
+            if not common_take_override and momentum_take_pips <= 0:
+                messagebox.showerror("エラー", "勢い追随の利確幅は0より大きくしてください。")
+                return None
+            if not common_time_override and momentum_time_close_seconds < 0:
+                messagebox.showerror("エラー", "勢い追随の時間経過クローズは0以上にしてください。")
+                return None
+            if not common_namping_override:
+                if not validate_namping("勢い追随", momentum_namping):
+                    return None
+
+        if entry_sr_enabled:
+            if not common_stop_override and sr_stop_pips <= 0:
+                messagebox.showerror("エラー", "水平線戻りの損切幅は0より大きくしてください。")
+                return None
+            if not common_take_override and sr_take_pips <= 0:
+                messagebox.showerror("エラー", "水平線戻りの利確幅は0より大きくしてください。")
+                return None
+            if not common_time_override and sr_time_close_seconds < 0:
+                messagebox.showerror("エラー", "水平線戻りの時間経過クローズは0以上にしてください。")
+                return None
+            if not common_namping_override:
+                if not validate_namping("水平線戻り", sr_namping):
+                    return None
+
+        if entry_spike_enabled:
+            if not common_stop_override and spike_stop_pips <= 0:
+                messagebox.showerror("エラー", "スパイクの損切幅は0より大きくしてください。")
+                return None
+            if not common_take_override and spike_take_pips <= 0:
+                messagebox.showerror("エラー", "スパイクの利確幅は0より大きくしてください。")
+                return None
+            if not common_time_override and spike_time_close_seconds < 0:
+                messagebox.showerror("エラー", "スパイクの時間経過クローズは0以上にしてください。")
+                return None
+            if not common_namping_override:
+                if not validate_namping("スパイク", spike_namping):
+                    return None
+
         if signal_chain_enabled:
             if signal_chain_pos_pips < 0:
                 messagebox.showerror("エラー", "正方向幅は0以上にしてください。")
@@ -4192,48 +4540,17 @@ class Step1App:
         if extreme_distance_pips < 0:
             messagebox.showerror("エラー", "天底距離pipsは0以上にしてください。")
             return None
-        if (
-            not namping_first_enabled
-            and not namping_step1_enabled
-            and not namping_step2_enabled
-            and not namping_step3_enabled
-            and not namping_step4_enabled
-            and not namping_step5_enabled
-        ):
-            messagebox.showerror("エラー", "初回/段階のエントリーが全てオフです。")
-            return None
-        if namping_step1_enabled and namping_step1_pips <= 0:
-            messagebox.showerror("エラー", "段階1の幅は0より大きくしてください。")
-            return None
-        if namping_step2_enabled and namping_step2_pips <= 0:
-            messagebox.showerror("エラー", "段階2の幅は0より大きくしてください。")
-            return None
-        if namping_step3_enabled and namping_step3_pips <= 0:
-            messagebox.showerror("エラー", "段階3の幅は0より大きくしてください。")
-            return None
-        if namping_step4_enabled and namping_step4_pips <= 0:
-            messagebox.showerror("エラー", "段階4の幅は0より大きくしてください。")
-            return None
-        if namping_step5_enabled and namping_step5_pips <= 0:
-            messagebox.showerror("エラー", "段階5の幅は0より大きくしてください。")
-            return None
-        if namping_step1_enabled and namping_step1_lot <= 0:
-            messagebox.showerror("エラー", "段階1のロットは0より大きくしてください。")
-            return None
-        if namping_step2_enabled and namping_step2_lot <= 0:
-            messagebox.showerror("エラー", "段階2のロットは0より大きくしてください。")
-            return None
-        if namping_step3_enabled and namping_step3_lot <= 0:
-            messagebox.showerror("エラー", "段階3のロットは0より大きくしてください。")
-            return None
-        if namping_step4_enabled and namping_step4_lot <= 0:
-            messagebox.showerror("エラー", "段階4のロットは0より大きくしてください。")
-            return None
-        if namping_step5_enabled and namping_step5_lot <= 0:
-            messagebox.showerror("エラー", "段階5のロットは0より大きくしてください。")
-            return None
 
-        return {
+        def add_namping_params(prefix, data, params):
+            first_enabled, step_enabled, step_pips, step_lots = data
+            params[f"{prefix}namping_first_enabled"] = first_enabled
+            for idx in range(5):
+                step_no = idx + 1
+                params[f"{prefix}namping_step{step_no}_enabled"] = step_enabled[idx]
+                params[f"{prefix}namping_step{step_no}_pips"] = step_pips[idx]
+                params[f"{prefix}namping_step{step_no}_lot"] = step_lots[idx]
+
+        params = {
             "window_ms": window_ms,
             "spike_pips": spike_pips,
             "retrace_rate": retrace_pct / 100.0,
@@ -4242,10 +4559,35 @@ class Step1App:
             "reverse_hold_seconds": reverse_hold_seconds,
             "reverse_max_pullback_pips": reverse_max_pullback_pips,
             "spread_pips": spread_pips,
-            "stop_pips": stop_pips,
-            "take_pips": take_pips,
-            "time_close_seconds": time_close_seconds,
-            "fixed_exit_price": fixed_exit_price,
+            "stop_pips": common_stop_pips,
+            "take_pips": common_take_pips,
+            "time_close_seconds": common_time_close_seconds,
+            "fixed_exit_price": common_fixed_exit_price,
+            "common_stop_pips": common_stop_pips,
+            "common_take_pips": common_take_pips,
+            "common_time_close_seconds": common_time_close_seconds,
+            "common_fixed_exit_price": common_fixed_exit_price,
+            "common_stop_override": common_stop_override,
+            "common_take_override": common_take_override,
+            "common_time_override": common_time_override,
+            "common_fixed_override": common_fixed_override,
+            "common_namping_override": common_namping_override,
+            "reverse_stop_pips": reverse_stop_pips,
+            "reverse_take_pips": reverse_take_pips,
+            "reverse_time_close_seconds": reverse_time_close_seconds,
+            "reverse_fixed_exit_price": reverse_fixed_exit_price,
+            "momentum_stop_pips": momentum_stop_pips,
+            "momentum_take_pips": momentum_take_pips,
+            "momentum_time_close_seconds": momentum_time_close_seconds,
+            "momentum_fixed_exit_price": momentum_fixed_exit_price,
+            "sr_stop_pips": sr_stop_pips,
+            "sr_take_pips": sr_take_pips,
+            "sr_time_close_seconds": sr_time_close_seconds,
+            "sr_fixed_exit_price": sr_fixed_exit_price,
+            "spike_stop_pips": spike_stop_pips,
+            "spike_take_pips": spike_take_pips,
+            "spike_time_close_seconds": spike_time_close_seconds,
+            "spike_fixed_exit_price": spike_fixed_exit_price,
             "ma_enabled": ma_enabled,
             "ma_period": int(ma_period),
             "ma_deviation_rate": ma_deviation_pct / 100.0,
@@ -4262,23 +4604,15 @@ class Step1App:
             "exclude_hours": exclude_hours,
             "allow_same_direction": allow_same_direction,
             "allow_opposite_direction": allow_opposite_direction,
-            "namping_first_enabled": namping_first_enabled,
-            "namping_step1_enabled": namping_step1_enabled,
-            "namping_step2_enabled": namping_step2_enabled,
-            "namping_step1_pips": namping_step1_pips,
-            "namping_step2_pips": namping_step2_pips,
-            "namping_step1_lot": namping_step1_lot,
-            "namping_step2_lot": namping_step2_lot,
-            "namping_step3_enabled": namping_step3_enabled,
-            "namping_step4_enabled": namping_step4_enabled,
-            "namping_step5_enabled": namping_step5_enabled,
-            "namping_step3_pips": namping_step3_pips,
-            "namping_step4_pips": namping_step4_pips,
-            "namping_step5_pips": namping_step5_pips,
-            "namping_step3_lot": namping_step3_lot,
-            "namping_step4_lot": namping_step4_lot,
-            "namping_step5_lot": namping_step5_lot,
         }
+
+        add_namping_params("common_", common_namping, params)
+        add_namping_params("reverse_", reverse_namping, params)
+        add_namping_params("momentum_", momentum_namping, params)
+        add_namping_params("sr_", sr_namping, params)
+        add_namping_params("spike_", spike_namping, params)
+
+        return params
 
     def _get_sr_params(self):
         try:
@@ -4672,6 +5006,38 @@ class Step1App:
                     time_close_seconds = None
         set_var(self.time_close_seconds_var, time_close_seconds)
         set_bool(self.fixed_exit_price_var, data.get("fixed_exit_price"))
+        set_bool(self.common_stop_override_var, data.get("common_stop_override"))
+        set_bool(self.common_take_override_var, data.get("common_take_override"))
+        set_bool(self.common_time_override_var, data.get("common_time_override"))
+        set_bool(self.common_fixed_override_var, data.get("common_fixed_override"))
+        set_bool(self.common_namping_override_var, data.get("common_namping_override"))
+        set_var(self.reverse_stop_pips_var, data.get("reverse_stop_pips"))
+        set_var(self.reverse_take_pips_var, data.get("reverse_take_pips"))
+        set_var(
+            self.reverse_time_close_seconds_var,
+            data.get("reverse_time_close_seconds"),
+        )
+        set_bool(self.reverse_fixed_exit_price_var, data.get("reverse_fixed_exit_price"))
+        set_var(self.momentum_stop_pips_var, data.get("momentum_stop_pips"))
+        set_var(self.momentum_take_pips_var, data.get("momentum_take_pips"))
+        set_var(
+            self.momentum_time_close_seconds_var,
+            data.get("momentum_time_close_seconds"),
+        )
+        set_bool(
+            self.momentum_fixed_exit_price_var, data.get("momentum_fixed_exit_price")
+        )
+        set_var(self.sr_stop_pips_var, data.get("sr_stop_pips"))
+        set_var(self.sr_take_pips_var, data.get("sr_take_pips"))
+        set_var(self.sr_time_close_seconds_var, data.get("sr_time_close_seconds"))
+        set_bool(self.sr_fixed_exit_price_var, data.get("sr_fixed_exit_price"))
+        set_var(self.spike_stop_pips_var, data.get("spike_stop_pips"))
+        set_var(self.spike_take_pips_var, data.get("spike_take_pips"))
+        set_var(
+            self.spike_time_close_seconds_var,
+            data.get("spike_time_close_seconds"),
+        )
+        set_bool(self.spike_fixed_exit_price_var, data.get("spike_fixed_exit_price"))
         set_bool(self.allow_same_direction_var, data.get("allow_same_direction"))
         set_bool(self.allow_opposite_direction_var, data.get("allow_opposite_direction"))
         set_bool(self.namping_first_entry_var, data.get("namping_first_enabled"))
@@ -4690,6 +5056,262 @@ class Step1App:
         set_var(self.namping_step3_lot_var, data.get("namping_step3_lot"))
         set_var(self.namping_step4_lot_var, data.get("namping_step4_lot"))
         set_var(self.namping_step5_lot_var, data.get("namping_step5_lot"))
+        set_bool(
+            self.reverse_namping_first_entry_var,
+            data.get("reverse_namping_first_enabled"),
+        )
+        set_bool(
+            self.reverse_namping_step1_enabled_var,
+            data.get("reverse_namping_step1_enabled"),
+        )
+        set_bool(
+            self.reverse_namping_step2_enabled_var,
+            data.get("reverse_namping_step2_enabled"),
+        )
+        set_bool(
+            self.reverse_namping_step3_enabled_var,
+            data.get("reverse_namping_step3_enabled"),
+        )
+        set_bool(
+            self.reverse_namping_step4_enabled_var,
+            data.get("reverse_namping_step4_enabled"),
+        )
+        set_bool(
+            self.reverse_namping_step5_enabled_var,
+            data.get("reverse_namping_step5_enabled"),
+        )
+        set_var(
+            self.reverse_namping_step1_pips_var,
+            data.get("reverse_namping_step1_pips"),
+        )
+        set_var(
+            self.reverse_namping_step2_pips_var,
+            data.get("reverse_namping_step2_pips"),
+        )
+        set_var(
+            self.reverse_namping_step3_pips_var,
+            data.get("reverse_namping_step3_pips"),
+        )
+        set_var(
+            self.reverse_namping_step4_pips_var,
+            data.get("reverse_namping_step4_pips"),
+        )
+        set_var(
+            self.reverse_namping_step5_pips_var,
+            data.get("reverse_namping_step5_pips"),
+        )
+        set_var(
+            self.reverse_namping_step1_lot_var,
+            data.get("reverse_namping_step1_lot"),
+        )
+        set_var(
+            self.reverse_namping_step2_lot_var,
+            data.get("reverse_namping_step2_lot"),
+        )
+        set_var(
+            self.reverse_namping_step3_lot_var,
+            data.get("reverse_namping_step3_lot"),
+        )
+        set_var(
+            self.reverse_namping_step4_lot_var,
+            data.get("reverse_namping_step4_lot"),
+        )
+        set_var(
+            self.reverse_namping_step5_lot_var,
+            data.get("reverse_namping_step5_lot"),
+        )
+        set_bool(
+            self.momentum_namping_first_entry_var,
+            data.get("momentum_namping_first_enabled"),
+        )
+        set_bool(
+            self.momentum_namping_step1_enabled_var,
+            data.get("momentum_namping_step1_enabled"),
+        )
+        set_bool(
+            self.momentum_namping_step2_enabled_var,
+            data.get("momentum_namping_step2_enabled"),
+        )
+        set_bool(
+            self.momentum_namping_step3_enabled_var,
+            data.get("momentum_namping_step3_enabled"),
+        )
+        set_bool(
+            self.momentum_namping_step4_enabled_var,
+            data.get("momentum_namping_step4_enabled"),
+        )
+        set_bool(
+            self.momentum_namping_step5_enabled_var,
+            data.get("momentum_namping_step5_enabled"),
+        )
+        set_var(
+            self.momentum_namping_step1_pips_var,
+            data.get("momentum_namping_step1_pips"),
+        )
+        set_var(
+            self.momentum_namping_step2_pips_var,
+            data.get("momentum_namping_step2_pips"),
+        )
+        set_var(
+            self.momentum_namping_step3_pips_var,
+            data.get("momentum_namping_step3_pips"),
+        )
+        set_var(
+            self.momentum_namping_step4_pips_var,
+            data.get("momentum_namping_step4_pips"),
+        )
+        set_var(
+            self.momentum_namping_step5_pips_var,
+            data.get("momentum_namping_step5_pips"),
+        )
+        set_var(
+            self.momentum_namping_step1_lot_var,
+            data.get("momentum_namping_step1_lot"),
+        )
+        set_var(
+            self.momentum_namping_step2_lot_var,
+            data.get("momentum_namping_step2_lot"),
+        )
+        set_var(
+            self.momentum_namping_step3_lot_var,
+            data.get("momentum_namping_step3_lot"),
+        )
+        set_var(
+            self.momentum_namping_step4_lot_var,
+            data.get("momentum_namping_step4_lot"),
+        )
+        set_var(
+            self.momentum_namping_step5_lot_var,
+            data.get("momentum_namping_step5_lot"),
+        )
+        set_bool(
+            self.sr_namping_first_entry_var,
+            data.get("sr_namping_first_enabled"),
+        )
+        set_bool(
+            self.sr_namping_step1_enabled_var,
+            data.get("sr_namping_step1_enabled"),
+        )
+        set_bool(
+            self.sr_namping_step2_enabled_var,
+            data.get("sr_namping_step2_enabled"),
+        )
+        set_bool(
+            self.sr_namping_step3_enabled_var,
+            data.get("sr_namping_step3_enabled"),
+        )
+        set_bool(
+            self.sr_namping_step4_enabled_var,
+            data.get("sr_namping_step4_enabled"),
+        )
+        set_bool(
+            self.sr_namping_step5_enabled_var,
+            data.get("sr_namping_step5_enabled"),
+        )
+        set_var(
+            self.sr_namping_step1_pips_var,
+            data.get("sr_namping_step1_pips"),
+        )
+        set_var(
+            self.sr_namping_step2_pips_var,
+            data.get("sr_namping_step2_pips"),
+        )
+        set_var(
+            self.sr_namping_step3_pips_var,
+            data.get("sr_namping_step3_pips"),
+        )
+        set_var(
+            self.sr_namping_step4_pips_var,
+            data.get("sr_namping_step4_pips"),
+        )
+        set_var(
+            self.sr_namping_step5_pips_var,
+            data.get("sr_namping_step5_pips"),
+        )
+        set_var(
+            self.sr_namping_step1_lot_var,
+            data.get("sr_namping_step1_lot"),
+        )
+        set_var(
+            self.sr_namping_step2_lot_var,
+            data.get("sr_namping_step2_lot"),
+        )
+        set_var(
+            self.sr_namping_step3_lot_var,
+            data.get("sr_namping_step3_lot"),
+        )
+        set_var(
+            self.sr_namping_step4_lot_var,
+            data.get("sr_namping_step4_lot"),
+        )
+        set_var(
+            self.sr_namping_step5_lot_var,
+            data.get("sr_namping_step5_lot"),
+        )
+        set_bool(
+            self.spike_namping_first_entry_var,
+            data.get("spike_namping_first_enabled"),
+        )
+        set_bool(
+            self.spike_namping_step1_enabled_var,
+            data.get("spike_namping_step1_enabled"),
+        )
+        set_bool(
+            self.spike_namping_step2_enabled_var,
+            data.get("spike_namping_step2_enabled"),
+        )
+        set_bool(
+            self.spike_namping_step3_enabled_var,
+            data.get("spike_namping_step3_enabled"),
+        )
+        set_bool(
+            self.spike_namping_step4_enabled_var,
+            data.get("spike_namping_step4_enabled"),
+        )
+        set_bool(
+            self.spike_namping_step5_enabled_var,
+            data.get("spike_namping_step5_enabled"),
+        )
+        set_var(
+            self.spike_namping_step1_pips_var,
+            data.get("spike_namping_step1_pips"),
+        )
+        set_var(
+            self.spike_namping_step2_pips_var,
+            data.get("spike_namping_step2_pips"),
+        )
+        set_var(
+            self.spike_namping_step3_pips_var,
+            data.get("spike_namping_step3_pips"),
+        )
+        set_var(
+            self.spike_namping_step4_pips_var,
+            data.get("spike_namping_step4_pips"),
+        )
+        set_var(
+            self.spike_namping_step5_pips_var,
+            data.get("spike_namping_step5_pips"),
+        )
+        set_var(
+            self.spike_namping_step1_lot_var,
+            data.get("spike_namping_step1_lot"),
+        )
+        set_var(
+            self.spike_namping_step2_lot_var,
+            data.get("spike_namping_step2_lot"),
+        )
+        set_var(
+            self.spike_namping_step3_lot_var,
+            data.get("spike_namping_step3_lot"),
+        )
+        set_var(
+            self.spike_namping_step4_lot_var,
+            data.get("spike_namping_step4_lot"),
+        )
+        set_var(
+            self.spike_namping_step5_lot_var,
+            data.get("spike_namping_step5_lot"),
+        )
 
         set_var(self.sr_zigzag_pips_var, data.get("sr_zigzag_pips"))
         set_var(self.sr_break_pips_var, data.get("sr_break_pips"))
@@ -4801,6 +5423,27 @@ class Step1App:
             "take_pips": self.take_pips_var.get(),
             "time_close_seconds": self.time_close_seconds_var.get(),
             "fixed_exit_price": self.fixed_exit_price_var.get(),
+            "common_stop_override": self.common_stop_override_var.get(),
+            "common_take_override": self.common_take_override_var.get(),
+            "common_time_override": self.common_time_override_var.get(),
+            "common_fixed_override": self.common_fixed_override_var.get(),
+            "common_namping_override": self.common_namping_override_var.get(),
+            "reverse_stop_pips": self.reverse_stop_pips_var.get(),
+            "reverse_take_pips": self.reverse_take_pips_var.get(),
+            "reverse_time_close_seconds": self.reverse_time_close_seconds_var.get(),
+            "reverse_fixed_exit_price": self.reverse_fixed_exit_price_var.get(),
+            "momentum_stop_pips": self.momentum_stop_pips_var.get(),
+            "momentum_take_pips": self.momentum_take_pips_var.get(),
+            "momentum_time_close_seconds": self.momentum_time_close_seconds_var.get(),
+            "momentum_fixed_exit_price": self.momentum_fixed_exit_price_var.get(),
+            "sr_stop_pips": self.sr_stop_pips_var.get(),
+            "sr_take_pips": self.sr_take_pips_var.get(),
+            "sr_time_close_seconds": self.sr_time_close_seconds_var.get(),
+            "sr_fixed_exit_price": self.sr_fixed_exit_price_var.get(),
+            "spike_stop_pips": self.spike_stop_pips_var.get(),
+            "spike_take_pips": self.spike_take_pips_var.get(),
+            "spike_time_close_seconds": self.spike_time_close_seconds_var.get(),
+            "spike_fixed_exit_price": self.spike_fixed_exit_price_var.get(),
             "allow_same_direction": self.allow_same_direction_var.get(),
             "allow_opposite_direction": self.allow_opposite_direction_var.get(),
             "namping_first_enabled": self.namping_first_entry_var.get(),
@@ -4819,6 +5462,84 @@ class Step1App:
             "namping_step3_lot": self.namping_step3_lot_var.get(),
             "namping_step4_lot": self.namping_step4_lot_var.get(),
             "namping_step5_lot": self.namping_step5_lot_var.get(),
+            "reverse_namping_first_enabled": (
+                self.reverse_namping_first_entry_var.get()
+            ),
+            "reverse_namping_step1_enabled": self.reverse_namping_step1_enabled_var.get(),
+            "reverse_namping_step2_enabled": self.reverse_namping_step2_enabled_var.get(),
+            "reverse_namping_step3_enabled": self.reverse_namping_step3_enabled_var.get(),
+            "reverse_namping_step4_enabled": self.reverse_namping_step4_enabled_var.get(),
+            "reverse_namping_step5_enabled": self.reverse_namping_step5_enabled_var.get(),
+            "reverse_namping_step1_pips": self.reverse_namping_step1_pips_var.get(),
+            "reverse_namping_step2_pips": self.reverse_namping_step2_pips_var.get(),
+            "reverse_namping_step3_pips": self.reverse_namping_step3_pips_var.get(),
+            "reverse_namping_step4_pips": self.reverse_namping_step4_pips_var.get(),
+            "reverse_namping_step5_pips": self.reverse_namping_step5_pips_var.get(),
+            "reverse_namping_step1_lot": self.reverse_namping_step1_lot_var.get(),
+            "reverse_namping_step2_lot": self.reverse_namping_step2_lot_var.get(),
+            "reverse_namping_step3_lot": self.reverse_namping_step3_lot_var.get(),
+            "reverse_namping_step4_lot": self.reverse_namping_step4_lot_var.get(),
+            "reverse_namping_step5_lot": self.reverse_namping_step5_lot_var.get(),
+            "momentum_namping_first_enabled": (
+                self.momentum_namping_first_entry_var.get()
+            ),
+            "momentum_namping_step1_enabled": (
+                self.momentum_namping_step1_enabled_var.get()
+            ),
+            "momentum_namping_step2_enabled": (
+                self.momentum_namping_step2_enabled_var.get()
+            ),
+            "momentum_namping_step3_enabled": (
+                self.momentum_namping_step3_enabled_var.get()
+            ),
+            "momentum_namping_step4_enabled": (
+                self.momentum_namping_step4_enabled_var.get()
+            ),
+            "momentum_namping_step5_enabled": (
+                self.momentum_namping_step5_enabled_var.get()
+            ),
+            "momentum_namping_step1_pips": self.momentum_namping_step1_pips_var.get(),
+            "momentum_namping_step2_pips": self.momentum_namping_step2_pips_var.get(),
+            "momentum_namping_step3_pips": self.momentum_namping_step3_pips_var.get(),
+            "momentum_namping_step4_pips": self.momentum_namping_step4_pips_var.get(),
+            "momentum_namping_step5_pips": self.momentum_namping_step5_pips_var.get(),
+            "momentum_namping_step1_lot": self.momentum_namping_step1_lot_var.get(),
+            "momentum_namping_step2_lot": self.momentum_namping_step2_lot_var.get(),
+            "momentum_namping_step3_lot": self.momentum_namping_step3_lot_var.get(),
+            "momentum_namping_step4_lot": self.momentum_namping_step4_lot_var.get(),
+            "momentum_namping_step5_lot": self.momentum_namping_step5_lot_var.get(),
+            "sr_namping_first_enabled": self.sr_namping_first_entry_var.get(),
+            "sr_namping_step1_enabled": self.sr_namping_step1_enabled_var.get(),
+            "sr_namping_step2_enabled": self.sr_namping_step2_enabled_var.get(),
+            "sr_namping_step3_enabled": self.sr_namping_step3_enabled_var.get(),
+            "sr_namping_step4_enabled": self.sr_namping_step4_enabled_var.get(),
+            "sr_namping_step5_enabled": self.sr_namping_step5_enabled_var.get(),
+            "sr_namping_step1_pips": self.sr_namping_step1_pips_var.get(),
+            "sr_namping_step2_pips": self.sr_namping_step2_pips_var.get(),
+            "sr_namping_step3_pips": self.sr_namping_step3_pips_var.get(),
+            "sr_namping_step4_pips": self.sr_namping_step4_pips_var.get(),
+            "sr_namping_step5_pips": self.sr_namping_step5_pips_var.get(),
+            "sr_namping_step1_lot": self.sr_namping_step1_lot_var.get(),
+            "sr_namping_step2_lot": self.sr_namping_step2_lot_var.get(),
+            "sr_namping_step3_lot": self.sr_namping_step3_lot_var.get(),
+            "sr_namping_step4_lot": self.sr_namping_step4_lot_var.get(),
+            "sr_namping_step5_lot": self.sr_namping_step5_lot_var.get(),
+            "spike_namping_first_enabled": self.spike_namping_first_entry_var.get(),
+            "spike_namping_step1_enabled": self.spike_namping_step1_enabled_var.get(),
+            "spike_namping_step2_enabled": self.spike_namping_step2_enabled_var.get(),
+            "spike_namping_step3_enabled": self.spike_namping_step3_enabled_var.get(),
+            "spike_namping_step4_enabled": self.spike_namping_step4_enabled_var.get(),
+            "spike_namping_step5_enabled": self.spike_namping_step5_enabled_var.get(),
+            "spike_namping_step1_pips": self.spike_namping_step1_pips_var.get(),
+            "spike_namping_step2_pips": self.spike_namping_step2_pips_var.get(),
+            "spike_namping_step3_pips": self.spike_namping_step3_pips_var.get(),
+            "spike_namping_step4_pips": self.spike_namping_step4_pips_var.get(),
+            "spike_namping_step5_pips": self.spike_namping_step5_pips_var.get(),
+            "spike_namping_step1_lot": self.spike_namping_step1_lot_var.get(),
+            "spike_namping_step2_lot": self.spike_namping_step2_lot_var.get(),
+            "spike_namping_step3_lot": self.spike_namping_step3_lot_var.get(),
+            "spike_namping_step4_lot": self.spike_namping_step4_lot_var.get(),
+            "spike_namping_step5_lot": self.spike_namping_step5_lot_var.get(),
             "sr_zigzag_pips": self.sr_zigzag_pips_var.get(),
             "sr_break_pips": self.sr_break_pips_var.get(),
             "sr_min_bars": self.sr_min_bars_var.get(),
@@ -5619,27 +6340,47 @@ class Step1App:
         if hasattr(self, "signal_chain_ignore_check"):
             self.signal_chain_ignore_check.config(state=state)
 
+    def _set_widget_enabled(self, widget, enabled: bool):
+        try:
+            if enabled:
+                widget.state(["!disabled"])
+            else:
+                widget.state(["disabled"])
+            return
+        except Exception:
+            pass
+        try:
+            widget.config(state="normal" if enabled else "disabled")
+        except Exception:
+            pass
+
+    def _apply_state_recursive(self, parent, enabled: bool, skip=None):
+        for child in parent.winfo_children():
+            if child is skip:
+                continue
+            self._set_widget_enabled(child, enabled)
+            self._apply_state_recursive(child, enabled, skip)
+
+    def _on_entry_tab_toggle(self, key: str):
+        info = self.entry_tab_info.get(key)
+        if not info:
+            return
+        enabled = bool(info["var"].get())
+        self._apply_state_recursive(info["frame"], enabled, skip=info["toggle"])
+        if enabled:
+            self._on_namping_toggle_group(key)
+
+    def _on_namping_toggle_group(self, key: str):
+        group = self.namping_widget_groups.get(key)
+        if not group:
+            return
+        for enabled_var, pips_entry, lot_entry in group:
+            state = enabled_var.get()
+            self._set_widget_enabled(pips_entry, state)
+            self._set_widget_enabled(lot_entry, state)
+
     def _on_namping_toggle(self):
-        if hasattr(self, "namping_step1_pips_entry"):
-            state = "normal" if self.namping_step1_enabled_var.get() else "disabled"
-            self.namping_step1_pips_entry.config(state=state)
-            self.namping_step1_lot_entry.config(state=state)
-        if hasattr(self, "namping_step2_pips_entry"):
-            state = "normal" if self.namping_step2_enabled_var.get() else "disabled"
-            self.namping_step2_pips_entry.config(state=state)
-            self.namping_step2_lot_entry.config(state=state)
-        if hasattr(self, "namping_step3_pips_entry"):
-            state = "normal" if self.namping_step3_enabled_var.get() else "disabled"
-            self.namping_step3_pips_entry.config(state=state)
-            self.namping_step3_lot_entry.config(state=state)
-        if hasattr(self, "namping_step4_pips_entry"):
-            state = "normal" if self.namping_step4_enabled_var.get() else "disabled"
-            self.namping_step4_pips_entry.config(state=state)
-            self.namping_step4_lot_entry.config(state=state)
-        if hasattr(self, "namping_step5_pips_entry"):
-            state = "normal" if self.namping_step5_enabled_var.get() else "disabled"
-            self.namping_step5_pips_entry.config(state=state)
-            self.namping_step5_lot_entry.config(state=state)
+        self._on_namping_toggle_group("common")
 
     def _on_extreme_filter_toggle(self):
         enabled = self.extreme_filter_var.get()

@@ -3228,6 +3228,7 @@ class Step1App:
         self.analysis_cache = None
         self.backtest_timer_running = False
         self.backtest_started_at = None
+        self.backtest_elapsed_last_seconds = None
         self.last_view_range = None
         self.namping_var_sets = {
             "common": {
@@ -5589,29 +5590,37 @@ class Step1App:
         self.root.destroy()
 
     def _format_elapsed_text(self, seconds):
-        if seconds < 60:
-            return f"計算時間: {seconds:.1f}秒"
-        minutes = int(seconds // 60)
-        remain = seconds - minutes * 60
-        return f"計算時間: {minutes}分{remain:.1f}秒"
+        total_seconds = int(seconds)
+        if total_seconds < 60:
+            return f"計算時間: {total_seconds}秒"
+        minutes = total_seconds // 60
+        remain = total_seconds - minutes * 60
+        return f"計算時間: {minutes}分{remain}秒"
 
     def _start_backtest_timer(self):
         self.backtest_started_at = pytime.perf_counter()
         self.backtest_timer_running = True
-        self.backtest_elapsed_var.set("計算時間: 0.0秒")
+        self.backtest_elapsed_last_seconds = 0
+        self.backtest_elapsed_var.set("計算時間: 0秒")
 
     def _update_backtest_timer(self):
         if not self.backtest_timer_running or self.backtest_started_at is None:
             return
         elapsed = pytime.perf_counter() - self.backtest_started_at
-        self.backtest_elapsed_var.set(self._format_elapsed_text(elapsed))
+        elapsed_seconds = int(elapsed)
+        if elapsed_seconds == self.backtest_elapsed_last_seconds:
+            return
+        self.backtest_elapsed_last_seconds = elapsed_seconds
+        self.backtest_elapsed_var.set(self._format_elapsed_text(elapsed_seconds))
 
     def _stop_backtest_timer(self):
         if self.backtest_started_at is None:
             self.backtest_timer_running = False
             return
         elapsed = pytime.perf_counter() - self.backtest_started_at
-        self.backtest_elapsed_var.set(self._format_elapsed_text(elapsed))
+        elapsed_seconds = int(elapsed)
+        self.backtest_elapsed_last_seconds = elapsed_seconds
+        self.backtest_elapsed_var.set(self._format_elapsed_text(elapsed_seconds))
         self.backtest_timer_running = False
 
     def _show_chart(self):

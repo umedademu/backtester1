@@ -4560,6 +4560,12 @@ class Step1App:
         marker_kind = marker.get("kind")
         marker_text = "エントリー" if marker_kind == "entry" else "クローズ"
         entry_reason = trade.get("entry_reason") or "-"
+        ratio_labels = []
+        if trade.get("move_ratio_ok"):
+            ratio_labels.append("平均幅比率")
+        if trade.get("speed_ratio_ok"):
+            ratio_labels.append("速度比率")
+        ratio_text = f" 比率:{'/'.join(ratio_labels)}" if ratio_labels else ""
         exit_reason = trade.get("reason") or "-"
         pips = trade.get("pips")
         if isinstance(pips, (int, float)):
@@ -4568,7 +4574,7 @@ class Step1App:
             result_text = "-"
         return (
             f"{marker_text} {side_text} "
-            f"理由:{entry_reason} 決済:{exit_reason} 結果:{result_text}"
+            f"理由:{entry_reason}{ratio_text} 決済:{exit_reason} 結果:{result_text}"
         )
 
     def _on_mouse_move(self, event):

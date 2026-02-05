@@ -3808,39 +3808,52 @@ class Step1App:
         ttk.Label(signal_chain_settings, text="正方向幅（pp）").grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Entry(
+        self.signal_chain_pos_entry = ttk.Entry(
             signal_chain_settings, textvariable=self.signal_chain_pos_pips_var, width=8
-        ).grid(row=0, column=1, padx=(4, 12), sticky="w")
+        )
+        self.signal_chain_pos_entry.grid(row=0, column=1, padx=(4, 12), sticky="w")
         ttk.Label(signal_chain_settings, text="逆方向幅（pp）").grid(
             row=0, column=2, sticky="w"
         )
-        ttk.Entry(
+        self.signal_chain_neg_entry = ttk.Entry(
             signal_chain_settings, textvariable=self.signal_chain_neg_pips_var, width=8
-        ).grid(row=0, column=3, padx=(4, 12), sticky="w")
+        )
+        self.signal_chain_neg_entry.grid(row=0, column=3, padx=(4, 12), sticky="w")
         ttk.Label(signal_chain_settings, text="連続回数").grid(
             row=0, column=4, sticky="w"
         )
-        ttk.Entry(
+        self.signal_chain_count_entry = ttk.Entry(
             signal_chain_settings, textvariable=self.signal_chain_count_var, width=8
-        ).grid(row=0, column=5, padx=(4, 0), sticky="w")
+        )
+        self.signal_chain_count_entry.grid(row=0, column=5, padx=(4, 0), sticky="w")
         ttk.Label(signal_chain_settings, text="監視時間（分）").grid(
             row=1, column=0, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(
+        self.signal_chain_monitor_entry = ttk.Entry(
             signal_chain_settings,
             textvariable=self.signal_chain_monitor_minutes_var,
             width=8,
-        ).grid(row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w")
-        ttk.Checkbutton(
+        )
+        self.signal_chain_monitor_entry.grid(
+            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        self.signal_chain_ignore_check = ttk.Checkbutton(
             signal_chain_settings,
             text="逆方向サインは無視",
             variable=self.signal_chain_ignore_opposite_var,
-        ).grid(row=1, column=2, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(
+        )
+        self.signal_chain_ignore_check.grid(
+            row=1, column=2, columnspan=2, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_enabled_check = ttk.Checkbutton(
             signal_chain_settings,
             text="連続点灯ON",
             variable=self.signal_chain_enabled_var,
-        ).grid(row=1, column=4, columnspan=2, sticky="w", pady=(6, 0))
+            command=self._on_signal_chain_toggle,
+        )
+        self.signal_chain_enabled_check.grid(
+            row=1, column=4, columnspan=2, sticky="w", pady=(6, 0)
+        )
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
@@ -3915,6 +3928,7 @@ class Step1App:
         self._on_extreme_filter_toggle()
         self._on_backtest_exclude_toggle()
         self._on_sr_reentry_filter_toggle()
+        self._on_signal_chain_toggle()
         self._on_namping_toggle()
         self._update_trade_nav_state()
 
@@ -5486,6 +5500,20 @@ class Step1App:
                 else "disabled"
             )
             self.sr_reentry_favored_tick_min_entry.config(state=state)
+
+    def _on_signal_chain_toggle(self):
+        enabled = self.signal_chain_enabled_var.get()
+        state = "normal" if enabled else "disabled"
+        if hasattr(self, "signal_chain_pos_entry"):
+            self.signal_chain_pos_entry.config(state=state)
+        if hasattr(self, "signal_chain_neg_entry"):
+            self.signal_chain_neg_entry.config(state=state)
+        if hasattr(self, "signal_chain_count_entry"):
+            self.signal_chain_count_entry.config(state=state)
+        if hasattr(self, "signal_chain_monitor_entry"):
+            self.signal_chain_monitor_entry.config(state=state)
+        if hasattr(self, "signal_chain_ignore_check"):
+            self.signal_chain_ignore_check.config(state=state)
 
     def _on_namping_toggle(self):
         if hasattr(self, "namping_step1_pips_entry"):

@@ -1561,9 +1561,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     namping_first_enabled = bool(params.get("namping_first_enabled", True))
     namping_step1_enabled = bool(params.get("namping_step1_enabled", True))
     namping_step2_enabled = bool(params.get("namping_step2_enabled", True))
-    namping_step3_enabled = bool(params.get("namping_step3_enabled", True))
-    namping_step4_enabled = bool(params.get("namping_step4_enabled", True))
-    namping_step5_enabled = bool(params.get("namping_step5_enabled", True))
+    namping_step3_enabled = bool(params.get("namping_step3_enabled", False))
+    namping_step4_enabled = bool(params.get("namping_step4_enabled", False))
+    namping_step5_enabled = bool(params.get("namping_step5_enabled", False))
     namping_step1_pips = float(params.get("namping_step1_pips", 5.0)) * PIP_SIZE
     namping_step2_pips = float(params.get("namping_step2_pips", 5.0)) * PIP_SIZE
     namping_step3_pips = float(params.get("namping_step3_pips", 5.0)) * PIP_SIZE
@@ -1599,31 +1599,35 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             runtime_cache["minute_close_info"] = minute_close_info
 
     entry_mode = params.get("entry_mode", "spike")
+    entry_spike_enabled = bool(
+        params.get("entry_spike_enabled", entry_mode in ("spike", "both"))
+    )
+    entry_sr_enabled = bool(
+        params.get("entry_sr_enabled", entry_mode in ("sr_reentry", "both"))
+    )
 
     trades = []
-    active_positions = []
+    active_positions_sr = []
+    active_positions_spike = []
 
-    def can_open_position(entry_idx, side):
+    def can_open_position(entry_idx, side, positions):
         if not allow_overlap:
             return True
-        active_positions[:] = [
-            pos for pos in active_positions if pos["exit_idx"] > entry_idx
-        ]
-        has_same = any(pos["side"] == side for pos in active_positions)
-        has_opposite = any(pos["side"] != side for pos in active_positions)
+        positions[:] = [pos for pos in positions if pos["exit_idx"] > entry_idx]
+        has_same = any(pos["side"] == side for pos in positions)
+        has_opposite = any(pos["side"] != side for pos in positions)
         if has_same and not allow_same_direction:
             return False
         if has_opposite and not allow_opposite_direction:
             return False
         return True
 
-    def register_position(side, exit_idx):
+    def register_position(side, exit_idx, positions):
         if allow_overlap:
-            active_positions.append({"side": side, "exit_idx": exit_idx})
+            positions.append({"side": side, "exit_idx": exit_idx})
 
-    i = 0
     n = len(points_sorted)
-    if entry_mode == "sr_reentry":
+    if entry_sr_enabled:
         sr_break_pips = params.get("sr_break_pips", 5.0)
         sr_tick_limit = int(params.get("sr_tick_limit", 10))
         sr_tick_min = float(params.get("sr_tick_min", 0.0))
@@ -1697,6 +1701,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             start_limits = [start_time + wait_delta for start_time in line_start_times]
             start_limits_cache[sr_wait_bars] = start_limits
 
+        i = 0
         while i < n - 1:
             if is_cancel_requested(should_cancel):
                 raise InterruptedError("cancelled")
@@ -1812,7 +1817,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             if entry_idx_actual is None:
                 i = entry_idx + 1
                 continue
-            if not can_open_position(entry_idx_actual, side):
+            if not can_open_position(entry_idx_actual, side, active_positions_sr):
                 i = entry_idx + 1
                 continue
 
@@ -1860,9 +1865,10 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     "speed_ratio_ok": signal.get("speed_ratio_ok"),
                 }
             )
-            register_position(side, exit_idx)
+            register_position(side, exit_idx, active_positions_sr)
             i = entry_idx_actual + 1 if allow_overlap else exit_idx + 1
-    else:
+    if entry_spike_enabled:
+        i = 0
         while i < n - 1:
             if is_cancel_requested(should_cancel):
                 raise InterruptedError("cancelled")
@@ -1998,7 +2004,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             if entry_idx_actual is None:
                 i = entry_idx + 1
                 continue
-            if not can_open_position(entry_idx_actual, side):
+            if not can_open_position(entry_idx_actual, side, active_positions_spike):
                 i = entry_idx + 1
                 continue
 
@@ -2034,8 +2040,16 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     "reason": exit_reason,
                 }
             )
-            register_position(side, exit_idx)
+            register_position(side, exit_idx, active_positions_spike)
             i = entry_idx_actual + 1 if allow_overlap else exit_idx + 1
+
+    if trades:
+        trades.sort(
+            key=lambda t: (
+                t.get("entry_idx") if t.get("entry_idx") is not None else -1,
+                t.get("exit_idx") if t.get("exit_idx") is not None else -1,
+            )
+        )
 
     equity_curve = [(times[0], 0.0)]
     cumulative = 0.0
@@ -2050,6 +2064,13 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     if equity_curve and equity_curve[-1][0] != times[-1]:
         equity_curve.append((times[-1], cumulative))
 
+    if entry_spike_enabled and entry_sr_enabled:
+        entry_mode = "both"
+    elif entry_sr_enabled:
+        entry_mode = "sr_reentry"
+    elif entry_spike_enabled:
+        entry_mode = "spike"
+
     return {
         "trades": trades,
         "summary": summarize_trades(trades),
@@ -2060,6 +2081,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         "ma_deviation_rate": ma_deviation,
         "entry_mode": entry_mode,
         "sr_target": params.get("sr_target"),
+        "entry_spike_enabled": entry_spike_enabled,
+        "entry_sr_enabled": entry_sr_enabled,
         "sr_ratio_join_mode": params.get("sr_ratio_join_mode"),
         "sr_move_ratio_enabled": params.get("sr_move_ratio_enabled"),
         "sr_move_speed_ratio_enabled": params.get("sr_move_speed_ratio_enabled"),
@@ -2180,7 +2203,8 @@ class Step1App:
         self.x_axis_mode_var = tk.StringVar(value="time")
         self.chart_type_var = tk.StringVar(value="tick")
         self.candle_interval_var = tk.IntVar(value=1)
-        self.entry_mode_var = tk.StringVar(value="sr_reentry")
+        self.entry_spike_var = tk.BooleanVar(value=False)
+        self.entry_sr_var = tk.BooleanVar(value=True)
         self.hide_chart_var = tk.BooleanVar(value=False)
         self.ma_filter_var = tk.BooleanVar(value=True)
         self.ma_period_var = tk.StringVar(value="200")
@@ -2215,13 +2239,13 @@ class Step1App:
         self.namping_step2_enabled_var = tk.BooleanVar(value=True)
         self.namping_step2_pips_var = tk.StringVar(value="5")
         self.namping_step2_lot_var = tk.StringVar(value="4")
-        self.namping_step3_enabled_var = tk.BooleanVar(value=True)
+        self.namping_step3_enabled_var = tk.BooleanVar(value=False)
         self.namping_step3_pips_var = tk.StringVar(value="5")
         self.namping_step3_lot_var = tk.StringVar(value="8")
-        self.namping_step4_enabled_var = tk.BooleanVar(value=True)
+        self.namping_step4_enabled_var = tk.BooleanVar(value=False)
         self.namping_step4_pips_var = tk.StringVar(value="5")
         self.namping_step4_lot_var = tk.StringVar(value="16")
-        self.namping_step5_enabled_var = tk.BooleanVar(value=True)
+        self.namping_step5_enabled_var = tk.BooleanVar(value=False)
         self.namping_step5_pips_var = tk.StringVar(value="5")
         self.namping_step5_lot_var = tk.StringVar(value="32")
         self.sr_zigzag_pips_var = tk.StringVar(value="10.0")
@@ -2592,20 +2616,18 @@ class Step1App:
         )
 
         ttk.Label(settings, text="戦略").grid(row=5, column=0, sticky="w", pady=(6, 0))
-        self.strategy_spike_radio = ttk.Radiobutton(
+        self.strategy_spike_check = ttk.Checkbutton(
             settings,
             text="スパイク",
-            variable=self.entry_mode_var,
-            value="spike",
+            variable=self.entry_spike_var,
         )
-        self.strategy_spike_radio.grid(row=5, column=1, sticky="w", pady=(6, 0))
-        self.strategy_sr_radio = ttk.Radiobutton(
+        self.strategy_spike_check.grid(row=5, column=1, sticky="w", pady=(6, 0))
+        self.strategy_sr_check = ttk.Checkbutton(
             settings,
             text="水平線戻り",
-            variable=self.entry_mode_var,
-            value="sr_reentry",
+            variable=self.entry_sr_var,
         )
-        self.strategy_sr_radio.grid(row=5, column=2, sticky="w", pady=(6, 0))
+        self.strategy_sr_check.grid(row=5, column=2, sticky="w", pady=(6, 0))
         self.allow_same_direction_check = ttk.Checkbutton(
             settings,
             text="同方向同時保有",
@@ -3447,7 +3469,23 @@ class Step1App:
         set_var(self.x_axis_mode_var, data.get("x_axis_mode"))
         set_var(self.chart_type_var, data.get("chart_type"))
         set_var(self.candle_interval_var, data.get("candle_interval"))
-        set_var(self.entry_mode_var, data.get("entry_mode"))
+        entry_spike = data.get("entry_spike_enabled")
+        entry_sr = data.get("entry_sr_enabled")
+        if entry_spike is None and entry_sr is None:
+            entry_mode = data.get("entry_mode")
+            if entry_mode == "spike":
+                entry_spike = True
+                entry_sr = False
+            elif entry_mode == "sr_reentry":
+                entry_spike = False
+                entry_sr = True
+            elif entry_mode == "both":
+                entry_spike = True
+                entry_sr = True
+        if entry_spike is not None:
+            set_bool(self.entry_spike_var, entry_spike)
+        if entry_sr is not None:
+            set_bool(self.entry_sr_var, entry_sr)
         set_bool(self.hide_chart_var, data.get("hide_chart"))
         set_bool(self.ma_filter_var, data.get("ma_filter"))
         set_var(self.ma_period_var, data.get("ma_period"))
@@ -3551,7 +3589,8 @@ class Step1App:
             "x_axis_mode": self.x_axis_mode_var.get(),
             "chart_type": self.chart_type_var.get(),
             "candle_interval": int(self.candle_interval_var.get()),
-            "entry_mode": self.entry_mode_var.get(),
+            "entry_spike_enabled": self.entry_spike_var.get(),
+            "entry_sr_enabled": self.entry_sr_var.get(),
             "hide_chart": self.hide_chart_var.get(),
             "ma_filter": self.ma_filter_var.get(),
             "ma_period": self.ma_period_var.get(),
@@ -3673,9 +3712,13 @@ class Step1App:
         range_params = self._get_range_params()
         if not params or not sr_params or not range_params:
             return
-        entry_mode = self.entry_mode_var.get()
+        entry_spike_enabled = self.entry_spike_var.get()
+        entry_sr_enabled = self.entry_sr_var.get()
+        if not entry_spike_enabled and not entry_sr_enabled:
+            messagebox.showerror("エラー", "戦略は最低1つ選択してください。")
+            return
         sr_reentry_params = {}
-        if entry_mode == "sr_reentry":
+        if entry_sr_enabled:
             sr_reentry_params = self._get_sr_reentry_params()
             if not sr_reentry_params:
                 return
@@ -3683,7 +3726,15 @@ class Step1App:
             line_interval = int(self.candle_interval_var.get())
         except Exception:
             line_interval = 1
+        if entry_spike_enabled and entry_sr_enabled:
+            entry_mode = "both"
+        elif entry_sr_enabled:
+            entry_mode = "sr_reentry"
+        else:
+            entry_mode = "spike"
         params["entry_mode"] = entry_mode
+        params["entry_spike_enabled"] = entry_spike_enabled
+        params["entry_sr_enabled"] = entry_sr_enabled
         params["line_interval"] = max(1, line_interval)
         params["sr_params"] = sr_params
         params["range_params"] = range_params
@@ -3996,6 +4047,12 @@ class Step1App:
         win_rate = summary.get("win_rate", 0.0)
         entry_mode = payload.get("entry_mode")
         sr_target = payload.get("sr_target")
+        entry_spike_enabled = payload.get(
+            "entry_spike_enabled", entry_mode in ("spike", "both")
+        )
+        entry_sr_enabled = payload.get(
+            "entry_sr_enabled", entry_mode in ("sr_reentry", "both")
+        )
 
         if total == 0:
             self.backtest_info_var.set("バックテスト: 取引0件")
@@ -4013,7 +4070,7 @@ class Step1App:
                 f"（勝ち{wins} / 負け{losses}{draw_text_short}）"
             )
 
-        if entry_mode == "sr_reentry" and sr_target == "both":
+        if entry_sr_enabled and sr_target == "both":
             trades = payload.get("trades", [])
             sr_trades = [t for t in trades if t.get("line_source") == "sr"]
             range_trades = [t for t in trades if t.get("line_source") == "range"]
@@ -4029,7 +4086,7 @@ class Step1App:
         move_ratio_enabled = payload.get("sr_move_ratio_enabled")
         speed_ratio_enabled = payload.get("sr_move_speed_ratio_enabled")
         if (
-            entry_mode == "sr_reentry"
+            entry_sr_enabled
             and ratio_join_mode == "or"
             and move_ratio_enabled
             and speed_ratio_enabled
@@ -4044,6 +4101,18 @@ class Step1App:
                 f" / 速度OK 取引{len(speed_trades)}件 合計損益{speed_pips:.1f}ピップス"
             )
             self.pnl_info_var.set(self.pnl_info_var.get() + ratio_breakdown)
+
+        trades = payload.get("trades", [])
+        if trades:
+            long_trades = [t for t in trades if t.get("side") == "long"]
+            short_trades = [t for t in trades if t.get("side") == "short"]
+            long_pips = sum(t.get("pips", 0.0) for t in long_trades)
+            short_pips = sum(t.get("pips", 0.0) for t in short_trades)
+            side_breakdown = (
+                f"\n内訳: ロング 取引{len(long_trades)}件 合計損益{long_pips:.1f}ピップス"
+                f" / ショート 取引{len(short_trades)}件 合計損益{short_pips:.1f}ピップス"
+            )
+            self.pnl_info_var.set(self.pnl_info_var.get() + side_breakdown)
 
         self.pnl_data = payload.get("equity_curve") or []
         self.backtest_ready = True

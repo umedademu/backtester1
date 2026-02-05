@@ -4845,8 +4845,6 @@ class Step1App:
 
                 entry_x = time_to_x(entry_time)
                 exit_x = time_to_x(exit_time)
-                if entry_x is None or exit_x is None:
-                    continue
 
                 entry_y = price_to_y(entry_price)
                 exit_y = price_to_y(exit_price)
@@ -4860,22 +4858,25 @@ class Step1App:
                     entry_dir = "up"
                     exit_dir = "down"
 
-                canvas.create_line(
-                    entry_x,
-                    entry_y,
-                    exit_x,
-                    exit_y,
-                    fill=color,
-                    dash=(4, 3),
-                )
-                draw_triangle(entry_x, entry_y, size, entry_dir, color)
-                draw_triangle(exit_x, exit_y, size, exit_dir, color)
-                data["trade_markers"].append(
-                    {"x": entry_x, "y": entry_y, "kind": "entry", "trade": trade}
-                )
-                data["trade_markers"].append(
-                    {"x": exit_x, "y": exit_y, "kind": "exit", "trade": trade}
-                )
+                if entry_x is not None and exit_x is not None:
+                    canvas.create_line(
+                        entry_x,
+                        entry_y,
+                        exit_x,
+                        exit_y,
+                        fill=color,
+                        dash=(4, 3),
+                    )
+                if entry_x is not None:
+                    draw_triangle(entry_x, entry_y, size, entry_dir, color)
+                    data["trade_markers"].append(
+                        {"x": entry_x, "y": entry_y, "kind": "entry", "trade": trade}
+                    )
+                if exit_x is not None:
+                    draw_triangle(exit_x, exit_y, size, exit_dir, color)
+                    data["trade_markers"].append(
+                        {"x": exit_x, "y": exit_y, "kind": "exit", "trade": trade}
+                    )
 
                 extra_entries = trade.get("namping_entries") or []
                 if extra_entries:
@@ -4894,14 +4895,15 @@ class Step1App:
                         if extra_x is None:
                             continue
                         extra_y = price_to_y(entry_price)
-                        canvas.create_line(
-                            extra_x,
-                            extra_y,
-                            exit_x,
-                            exit_y,
-                            fill=color,
-                            dash=(4, 3),
-                        )
+                        if exit_x is not None:
+                            canvas.create_line(
+                                extra_x,
+                                extra_y,
+                                exit_x,
+                                exit_y,
+                                fill=color,
+                                dash=(4, 3),
+                            )
                         draw_triangle(extra_x, extra_y, size, entry_dir, color)
                         data["trade_markers"].append(
                             {"x": extra_x, "y": extra_y, "kind": "entry", "trade": trade}

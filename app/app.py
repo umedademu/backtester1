@@ -1340,6 +1340,8 @@ def simulate_namping_trade(
     if not first_entry_enabled and not enabled_steps:
         return None
 
+    stop_ready = False
+
     minute_times = []
     minute_close_prices = []
     minute_close_indices = []
@@ -1370,6 +1372,8 @@ def simulate_namping_trade(
 
     if first_entry_enabled:
         add_entry(signal_idx, base_entry_price, 1.0, "初回")
+        if not enabled_steps:
+            stop_ready = True
 
     forced_close_time = None
     if time_close_minutes and time_close_minutes > 0 and last_entry_time is not None:
@@ -1395,15 +1399,18 @@ def simulate_namping_trade(
                 step["done"] = True
                 if time_close_minutes and time_close_minutes > 0:
                     forced_close_time = ts + timedelta(minutes=time_close_minutes)
+        if enabled_steps and all(step["done"] for step in enabled_steps):
+            stop_ready = True
 
         if total_lot <= 0:
             j += 1
             continue
 
+        last_entry_price = entries[-1]["price"]
         if side == "long":
-            stop_price = avg_price - stop
+            stop_price = last_entry_price - stop
             take_price = avg_price + take
-            if bid <= stop_price:
+            if stop_ready and bid <= stop_price:
                 exit_price = stop_price if fixed_exit_price else bid
                 return {
                     "entry_idx": first_entry_idx,
@@ -1428,9 +1435,9 @@ def simulate_namping_trade(
                     "exit_reason": "利確",
                 }
         else:
-            stop_price = avg_price + stop
+            stop_price = last_entry_price + stop
             take_price = avg_price - take
-            if ask >= stop_price:
+            if stop_ready and ask >= stop_price:
                 exit_price = stop_price if fixed_exit_price else ask
                 return {
                     "entry_idx": first_entry_idx,

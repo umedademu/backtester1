@@ -1775,6 +1775,14 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         params.get("signal_chain_ignore_opposite", True)
     )
     signal_chain_enabled = bool(params.get("signal_chain_enabled", True))
+    signal_chain_count_reverse = bool(
+        params.get("signal_chain_count_reverse", True)
+    )
+    signal_chain_count_momentum = bool(
+        params.get("signal_chain_count_momentum", True)
+    )
+    signal_chain_count_sr = bool(params.get("signal_chain_count_sr", True))
+    signal_chain_count_spike = bool(params.get("signal_chain_count_spike", True))
     entry_mode = params.get("entry_mode", "spike")
     entry_spike_enabled = bool(
         params.get("entry_spike_enabled", entry_mode in ("spike", "both", "multi"))
@@ -1994,8 +2002,14 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             return set()
         allowed = set()
         pending = {"long": None, "short": None}
+        countable_sources = {
+            "reverse": signal_chain_count_reverse,
+            "momentum": signal_chain_count_momentum,
+            "sr": signal_chain_count_sr,
+            "spike": signal_chain_count_spike,
+        }
 
-        def new_state(side, idx, price, ts):
+        def new_state(side, idx, price, ts, countable):
             expires_at = None
             if signal_chain_monitor_minutes and signal_chain_monitor_minutes > 0:
                 expires_at = ts + timedelta(minutes=signal_chain_monitor_minutes)
@@ -2005,7 +2019,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 "first_price": price,
                 "max_price": price,
                 "min_price": price,
-                "count": 1,
+                "count": 1 if countable else 0,
                 "last_idx": idx,
                 "expires_at": expires_at,
             }
@@ -2032,6 +2046,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 continue
             idx = sig["entry_idx"]
             ts, price = points_sorted[idx]
+            countable = countable_sources.get(sig.get("source"), True)
 
             for side_key in ("long", "short"):
                 state = pending.get(side_key)
@@ -2049,10 +2064,11 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
 
             state = pending.get(side)
             if state is None:
-                state = new_state(side, idx, price, ts)
+                state = new_state(side, idx, price, ts, countable)
                 pending[side] = state
             else:
-                state["count"] += 1
+                if countable:
+                    state["count"] += 1
 
             if side == "long":
                 favorable = state["max_price"] - state["first_price"]
@@ -2062,14 +2078,18 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 adverse = price - state["first_price"]
 
             if signal_chain_pos_enabled and favorable >= signal_chain_pos_move:
-                pending[side] = new_state(side, idx, price, ts)
+                pending[side] = new_state(side, idx, price, ts, countable)
                 continue
+            if countable:
+                meets_count = state["count"] >= signal_chain_count
+            else:
+                meets_count = state["count"] + 1 >= signal_chain_count
             if signal_chain_neg_enabled:
-                if adverse >= signal_chain_neg_move and state["count"] >= signal_chain_count:
+                if adverse >= signal_chain_neg_move and meets_count:
                     allowed.add(signal_key(sig))
                     pending[side] = None
             else:
-                if state["count"] >= signal_chain_count:
+                if meets_count:
                     allowed.add(signal_key(sig))
                     pending[side] = None
 
@@ -3216,6 +3236,10 @@ class Step1App:
         self.signal_chain_count_var = tk.StringVar(value="3")
         self.signal_chain_ignore_opposite_var = tk.BooleanVar(value=True)
         self.signal_chain_monitor_minutes_var = tk.StringVar(value="240")
+        self.signal_chain_count_reverse_var = tk.BooleanVar(value=True)
+        self.signal_chain_count_momentum_var = tk.BooleanVar(value=True)
+        self.signal_chain_count_sr_var = tk.BooleanVar(value=True)
+        self.signal_chain_count_spike_var = tk.BooleanVar(value=True)
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.backtest_elapsed_var = tk.StringVar(value="計算時間: -")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
@@ -3805,6 +3829,41 @@ class Step1App:
         self.signal_chain_enabled_check.grid(
             row=1, column=4, columnspan=2, sticky="w", pady=(6, 0)
         )
+        ttk.Label(signal_chain_settings, text="カウント対象").grid(
+            row=2, column=0, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_count_reverse_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="秒逆張り",
+            variable=self.signal_chain_count_reverse_var,
+        )
+        self.signal_chain_count_reverse_check.grid(
+            row=2, column=1, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_count_momentum_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="勢い追随",
+            variable=self.signal_chain_count_momentum_var,
+        )
+        self.signal_chain_count_momentum_check.grid(
+            row=2, column=2, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_count_sr_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="水平線戻り",
+            variable=self.signal_chain_count_sr_var,
+        )
+        self.signal_chain_count_sr_check.grid(
+            row=2, column=3, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_count_spike_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="スパイク",
+            variable=self.signal_chain_count_spike_var,
+        )
+        self.signal_chain_count_spike_check.grid(
+            row=2, column=4, sticky="w", pady=(6, 0)
+        )
 
         def build_close_frame(parent, stop_var, take_var, time_var, fixed_var):
             frame = ttk.LabelFrame(parent, text="決済条件")
@@ -4372,6 +4431,10 @@ class Step1App:
             )
             signal_chain_ignore_opposite = self.signal_chain_ignore_opposite_var.get()
             signal_chain_enabled = self.signal_chain_enabled_var.get()
+            signal_chain_count_reverse = self.signal_chain_count_reverse_var.get()
+            signal_chain_count_momentum = self.signal_chain_count_momentum_var.get()
+            signal_chain_count_sr = self.signal_chain_count_sr_var.get()
+            signal_chain_count_spike = self.signal_chain_count_spike_var.get()
             extreme_enabled = self.extreme_filter_var.get()
             if extreme_enabled:
                 extreme_hold_ms = self._parse_number(self.extreme_hold_ms_var.get())
@@ -4611,6 +4674,10 @@ class Step1App:
             "signal_chain_monitor_minutes": signal_chain_monitor_minutes,
             "signal_chain_ignore_opposite": signal_chain_ignore_opposite,
             "signal_chain_enabled": signal_chain_enabled,
+            "signal_chain_count_reverse": signal_chain_count_reverse,
+            "signal_chain_count_momentum": signal_chain_count_momentum,
+            "signal_chain_count_sr": signal_chain_count_sr,
+            "signal_chain_count_spike": signal_chain_count_spike,
             "extreme_enabled": extreme_enabled,
             "extreme_hold_ms": extreme_hold_ms,
             "extreme_distance_pips": extreme_distance_pips,
@@ -5389,6 +5456,22 @@ class Step1App:
             self.signal_chain_enabled_var,
             data.get("signal_chain_enabled"),
         )
+        set_bool(
+            self.signal_chain_count_reverse_var,
+            data.get("signal_chain_count_reverse"),
+        )
+        set_bool(
+            self.signal_chain_count_momentum_var,
+            data.get("signal_chain_count_momentum"),
+        )
+        set_bool(
+            self.signal_chain_count_sr_var,
+            data.get("signal_chain_count_sr"),
+        )
+        set_bool(
+            self.signal_chain_count_spike_var,
+            data.get("signal_chain_count_spike"),
+        )
 
     def _collect_persistent_state(self):
         return {
@@ -5585,6 +5668,10 @@ class Step1App:
             "signal_chain_monitor_minutes": self.signal_chain_monitor_minutes_var.get(),
             "signal_chain_ignore_opposite": self.signal_chain_ignore_opposite_var.get(),
             "signal_chain_enabled": self.signal_chain_enabled_var.get(),
+            "signal_chain_count_reverse": self.signal_chain_count_reverse_var.get(),
+            "signal_chain_count_momentum": self.signal_chain_count_momentum_var.get(),
+            "signal_chain_count_sr": self.signal_chain_count_sr_var.get(),
+            "signal_chain_count_spike": self.signal_chain_count_spike_var.get(),
         }
 
     def _save_persistent_state(self):
@@ -6361,6 +6448,14 @@ class Step1App:
             self.signal_chain_monitor_entry.config(state=state)
         if hasattr(self, "signal_chain_ignore_check"):
             self.signal_chain_ignore_check.config(state=state)
+        if hasattr(self, "signal_chain_count_reverse_check"):
+            self.signal_chain_count_reverse_check.config(state=state)
+        if hasattr(self, "signal_chain_count_momentum_check"):
+            self.signal_chain_count_momentum_check.config(state=state)
+        if hasattr(self, "signal_chain_count_sr_check"):
+            self.signal_chain_count_sr_check.config(state=state)
+        if hasattr(self, "signal_chain_count_spike_check"):
+            self.signal_chain_count_spike_check.config(state=state)
 
     def _set_widget_enabled(self, widget, enabled: bool):
         try:

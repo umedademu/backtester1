@@ -3059,6 +3059,7 @@ class Step1App:
         self.end_var = tk.StringVar(value=self.end_date.isoformat())
         self.view_start_var = tk.StringVar(value=self.view_start_date.isoformat())
         self.view_end_var = tk.StringVar(value=self.view_end_date.isoformat())
+        self.view_range_months_var = tk.StringVar(value="1")
         self.exclude_weekends_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="準備完了")
         self.chart_info_var = tk.StringVar(value="")
@@ -3441,32 +3442,40 @@ class Step1App:
         param_tab.columnconfigure(0, weight=1)
         param_tab.rowconfigure(3, weight=1)
 
-        ttk.Label(param_tab, text="表示期間（JST）").grid(row=0, column=0, sticky="w")
-
         view_row = ttk.Frame(param_tab)
-        view_row.grid(row=1, column=0, sticky="ew")
-        view_row.columnconfigure(7, weight=1)
+        view_row.grid(row=0, column=0, sticky="ew")
+        view_row.columnconfigure(6, weight=1)
 
-        ttk.Label(view_row, text="開始日（JST）").grid(row=0, column=0, sticky="w")
+        ttk.Label(view_row, text="範囲").grid(row=0, column=0, sticky="w")
+        self.view_range_months_entry = ttk.Entry(
+            view_row, textvariable=self.view_range_months_var, width=6
+        )
+        self.view_range_months_entry.grid(row=0, column=1, padx=(4, 6), sticky="w")
+        ttk.Label(view_row, text="ヶ月").grid(row=0, column=2, sticky="w")
+        ttk.Button(view_row, text="前", command=self._move_view_prev).grid(
+            row=0, column=3, padx=(12, 0), sticky="w"
+        )
+        ttk.Button(view_row, text="次", command=self._move_view_next).grid(
+            row=0, column=4, padx=(6, 0), sticky="w"
+        )
+
+        ttk.Label(view_row, text="開始日（JST）").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
         view_start_entry = ttk.Entry(
             view_row, textvariable=self.view_start_var, width=12, state="readonly"
         )
-        view_start_entry.grid(row=0, column=1, padx=6)
-        ttk.Button(view_row, text="選択", command=self._pick_view_start).grid(
-            row=0, column=2
+        view_start_entry.grid(row=1, column=1, padx=(4, 6), pady=(6, 0), sticky="w")
+        ttk.Label(view_row, text="終了日（JST）").grid(
+            row=1, column=2, padx=(12, 0), sticky="w", pady=(6, 0)
         )
-
-        ttk.Label(view_row, text="終了日（JST）").grid(row=0, column=3, padx=(12, 0), sticky="w")
         view_end_entry = ttk.Entry(
             view_row, textvariable=self.view_end_var, width=12, state="readonly"
         )
-        view_end_entry.grid(row=0, column=4, padx=6)
-        ttk.Button(view_row, text="選択", command=self._pick_view_end).grid(
-            row=0, column=5
-        )
+        view_end_entry.grid(row=1, column=3, padx=(4, 6), pady=(6, 0), sticky="w")
 
         run_row = ttk.Frame(param_tab)
-        run_row.grid(row=2, column=0, sticky="w", pady=(6, 4))
+        run_row.grid(row=1, column=0, sticky="w", pady=(6, 4))
         self.chart_button = ttk.Button(run_row, text="実行", command=self._show_chart)
         self.chart_button.grid(row=0, column=0, sticky="w")
         self.chart_cancel_button = ttk.Button(
@@ -3648,8 +3657,8 @@ class Step1App:
         self.candle_1440_radio.grid(row=3, column=5, sticky="w")
 
         param_body = ttk.Frame(param_tab)
-        param_body.grid(row=3, column=0, sticky="nsew", pady=(4, 4))
-        param_tab.rowconfigure(3, weight=1)
+        param_body.grid(row=2, column=0, sticky="nsew", pady=(4, 4))
+        param_tab.rowconfigure(2, weight=1)
         param_body.columnconfigure(0, weight=1)
         param_body.columnconfigure(1, weight=2)
         param_body.rowconfigure(0, weight=1)
@@ -3780,46 +3789,6 @@ class Step1App:
 
         signal_chain_settings = ttk.LabelFrame(common_panel, text="連続点灯条件")
         signal_chain_settings.grid(row=3, column=0, sticky="ew", pady=(0, 6))
-        ttk.Label(signal_chain_settings, text="正方向幅（pp）").grid(
-            row=0, column=0, sticky="w"
-        )
-        self.signal_chain_pos_entry = ttk.Entry(
-            signal_chain_settings, textvariable=self.signal_chain_pos_pips_var, width=8
-        )
-        self.signal_chain_pos_entry.grid(row=0, column=1, padx=(4, 12), sticky="w")
-        ttk.Label(signal_chain_settings, text="逆方向幅（pp）").grid(
-            row=0, column=2, sticky="w"
-        )
-        self.signal_chain_neg_entry = ttk.Entry(
-            signal_chain_settings, textvariable=self.signal_chain_neg_pips_var, width=8
-        )
-        self.signal_chain_neg_entry.grid(row=0, column=3, padx=(4, 12), sticky="w")
-        ttk.Label(signal_chain_settings, text="連続回数").grid(
-            row=0, column=4, sticky="w"
-        )
-        self.signal_chain_count_entry = ttk.Entry(
-            signal_chain_settings, textvariable=self.signal_chain_count_var, width=8
-        )
-        self.signal_chain_count_entry.grid(row=0, column=5, padx=(4, 0), sticky="w")
-        ttk.Label(signal_chain_settings, text="監視時間（分）").grid(
-            row=1, column=0, sticky="w", pady=(6, 0)
-        )
-        self.signal_chain_monitor_entry = ttk.Entry(
-            signal_chain_settings,
-            textvariable=self.signal_chain_monitor_minutes_var,
-            width=8,
-        )
-        self.signal_chain_monitor_entry.grid(
-            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
-        )
-        self.signal_chain_ignore_check = ttk.Checkbutton(
-            signal_chain_settings,
-            text="逆方向サインは無視",
-            variable=self.signal_chain_ignore_opposite_var,
-        )
-        self.signal_chain_ignore_check.grid(
-            row=1, column=2, columnspan=2, sticky="w", pady=(6, 0)
-        )
         self.signal_chain_enabled_check = ttk.Checkbutton(
             signal_chain_settings,
             text="連続点灯ON",
@@ -3827,10 +3796,56 @@ class Step1App:
             command=self._on_signal_chain_toggle,
         )
         self.signal_chain_enabled_check.grid(
-            row=1, column=4, columnspan=2, sticky="w", pady=(6, 0)
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Label(signal_chain_settings, text="正方向幅（pp）").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_pos_entry = ttk.Entry(
+            signal_chain_settings, textvariable=self.signal_chain_pos_pips_var, width=8
+        )
+        self.signal_chain_pos_entry.grid(
+            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(signal_chain_settings, text="逆方向幅（pp）").grid(
+            row=1, column=2, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_neg_entry = ttk.Entry(
+            signal_chain_settings, textvariable=self.signal_chain_neg_pips_var, width=8
+        )
+        self.signal_chain_neg_entry.grid(
+            row=1, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(signal_chain_settings, text="連続回数").grid(
+            row=1, column=4, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_count_entry = ttk.Entry(
+            signal_chain_settings, textvariable=self.signal_chain_count_var, width=8
+        )
+        self.signal_chain_count_entry.grid(
+            row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(signal_chain_settings, text="監視時間（分）").grid(
+            row=2, column=0, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_monitor_entry = ttk.Entry(
+            signal_chain_settings,
+            textvariable=self.signal_chain_monitor_minutes_var,
+            width=8,
+        )
+        self.signal_chain_monitor_entry.grid(
+            row=2, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        self.signal_chain_ignore_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="逆方向サインは無視",
+            variable=self.signal_chain_ignore_opposite_var,
+        )
+        self.signal_chain_ignore_check.grid(
+            row=2, column=2, columnspan=2, sticky="w", pady=(6, 0)
         )
         ttk.Label(signal_chain_settings, text="カウント対象").grid(
-            row=2, column=0, sticky="w", pady=(6, 0)
+            row=3, column=0, sticky="w", pady=(6, 0)
         )
         self.signal_chain_count_reverse_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -3838,7 +3853,7 @@ class Step1App:
             variable=self.signal_chain_count_reverse_var,
         )
         self.signal_chain_count_reverse_check.grid(
-            row=2, column=1, sticky="w", pady=(6, 0)
+            row=3, column=1, sticky="w", pady=(6, 0)
         )
         self.signal_chain_count_momentum_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -3846,7 +3861,7 @@ class Step1App:
             variable=self.signal_chain_count_momentum_var,
         )
         self.signal_chain_count_momentum_check.grid(
-            row=2, column=2, sticky="w", pady=(6, 0)
+            row=3, column=2, sticky="w", pady=(6, 0)
         )
         self.signal_chain_count_sr_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -3854,7 +3869,7 @@ class Step1App:
             variable=self.signal_chain_count_sr_var,
         )
         self.signal_chain_count_sr_check.grid(
-            row=2, column=3, sticky="w", pady=(6, 0)
+            row=3, column=3, sticky="w", pady=(6, 0)
         )
         self.signal_chain_count_spike_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -3862,7 +3877,7 @@ class Step1App:
             variable=self.signal_chain_count_spike_var,
         )
         self.signal_chain_count_spike_check.grid(
-            row=2, column=4, sticky="w", pady=(6, 0)
+            row=3, column=4, sticky="w", pady=(6, 0)
         )
 
         def build_close_frame(parent, stop_var, take_var, time_var, fixed_var):
@@ -4361,6 +4376,52 @@ class Step1App:
     def _set_view_end(self, picked: date):
         self.view_end_date = picked
         self.view_end_var.set(picked.isoformat())
+
+    def _get_view_range_months(self):
+        try:
+            raw = self._parse_number(self.view_range_months_var.get())
+        except Exception:
+            messagebox.showerror("エラー", "範囲（月）は1以上にしてください。")
+            return None
+        months = int(raw)
+        if months < 1 or abs(raw - months) > 1e-9:
+            messagebox.showerror("エラー", "範囲（月）は1以上の整数にしてください。")
+            return None
+        return months
+
+    def _add_months(self, base_date: date, months: int) -> date:
+        month_index = base_date.month - 1 + months
+        year = base_date.year + month_index // 12
+        month = month_index % 12 + 1
+        return date(year, month, 1)
+
+    def _month_end(self, base_date: date) -> date:
+        last_day = calendar.monthrange(base_date.year, base_date.month)[1]
+        return date(base_date.year, base_date.month, last_day)
+
+    def _apply_view_month_range(self, start_date: date, months: int):
+        start = start_date.replace(day=1)
+        end_month_start = self._add_months(start, months - 1)
+        end = self._month_end(end_month_start)
+        self.view_start_date = start
+        self.view_end_date = end
+        self.view_start_var.set(start.isoformat())
+        self.view_end_var.set(end.isoformat())
+
+    def _shift_view_month_range(self, direction: int):
+        months = self._get_view_range_months()
+        if months is None:
+            return
+        base_date = self.view_start_date or date.today()
+        start = base_date.replace(day=1)
+        new_start = self._add_months(start, months * direction)
+        self._apply_view_month_range(new_start, months)
+
+    def _move_view_prev(self):
+        self._shift_view_month_range(-1)
+
+    def _move_view_next(self):
+        self._shift_view_month_range(1)
 
     def _parse_number(self, value: str) -> float:
         cleaned = value.strip().replace(",", ".").replace("，", ".")
@@ -4979,6 +5040,7 @@ class Step1App:
         set_date_value("end_date", "end_date", self.end_var)
         set_date_value("view_start_date", "view_start_date", self.view_start_var)
         set_date_value("view_end_date", "view_end_date", self.view_end_var)
+        set_var(self.view_range_months_var, data.get("view_range_months"))
 
         set_bool(self.exclude_weekends_var, data.get("exclude_weekends"))
         set_var(self.x_axis_mode_var, data.get("x_axis_mode"))
@@ -5479,6 +5541,7 @@ class Step1App:
             "end_date": self.end_date.isoformat(),
             "view_start_date": self.view_start_date.isoformat(),
             "view_end_date": self.view_end_date.isoformat(),
+            "view_range_months": self.view_range_months_var.get(),
             "exclude_weekends": self.exclude_weekends_var.get(),
             "x_axis_mode": self.x_axis_mode_var.get(),
             "chart_type": self.chart_type_var.get(),
@@ -5727,6 +5790,10 @@ class Step1App:
         if self.chart_worker and self.chart_worker.is_alive():
             messagebox.showinfo("お知らせ", "表示処理中です。")
             return
+        months = self._get_view_range_months()
+        if months is None:
+            return
+        self._apply_view_month_range(self.view_start_date or date.today(), months)
         if self.view_end_date < self.view_start_date:
             messagebox.showerror("エラー", "終了日は開始日より後にしてください。")
             return

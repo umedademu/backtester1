@@ -1005,6 +1005,8 @@ def find_sr_reentry_signal(
                                     "down_move_speed": down_speed,
                                     "max_up_tick_move": state["max_up_tick_move"],
                                     "max_down_tick_move": state["max_down_tick_move"],
+                                    "move_ratio_ok": move_ok,
+                                    "speed_ratio_ok": speed_ok,
                                 }
                         finished.append(idx)
                     else:
@@ -1081,6 +1083,8 @@ def find_sr_reentry_signal(
                                     "down_move_speed": down_speed,
                                     "max_up_tick_move": state["max_up_tick_move"],
                                     "max_down_tick_move": state["max_down_tick_move"],
+                                    "move_ratio_ok": move_ok,
+                                    "speed_ratio_ok": speed_ok,
                                 }
                         finished.append(idx)
                     else:
@@ -1301,12 +1305,7 @@ def simulate_namping_trade(
     time_close_minutes=0.0,
     minute_close_info=None,
     first_entry_enabled=True,
-    step1_enabled=False,
-    step2_enabled=False,
-    step1_pips=0.0,
-    step2_pips=0.0,
-    step1_lot=1.0,
-    step2_lot=1.0,
+    steps=None,
     should_cancel=None,
 ):
     if not points:
@@ -1316,7 +1315,29 @@ def simulate_namping_trade(
     if signal_idx < 0 or signal_idx >= n:
         return None
 
-    if not first_entry_enabled and not step1_enabled and not step2_enabled:
+    if steps is None:
+        steps = []
+
+    enabled_steps = []
+    for step in steps:
+        if not step.get("enabled", False):
+            continue
+        enabled_steps.append(
+            {
+                "pips": float(step.get("pips", 0.0)),
+                "lot": float(step.get("lot", 0.0)),
+                "label": step.get("label") or "段階",
+                "done": False,
+                "trigger": 0.0,
+            }
+        )
+
+    cumulative = 0.0
+    for step in enabled_steps:
+        cumulative += step["pips"]
+        step["trigger"] = cumulative
+
+    if not first_entry_enabled and not enabled_steps:
         return None
 
     minute_times = []
@@ -1350,14 +1371,6 @@ def simulate_namping_trade(
     if first_entry_enabled:
         add_entry(signal_idx, base_entry_price, 1.0, "初回")
 
-    step1_done = not step1_enabled
-    step2_done = not step2_enabled
-    trigger1 = step1_pips if step1_enabled else None
-    if step2_enabled:
-        trigger2 = step2_pips + (step1_pips if step1_enabled else 0.0)
-    else:
-        trigger2 = None
-
     forced_close_time = None
     if time_close_minutes and time_close_minutes > 0 and last_entry_time is not None:
         forced_close_time = last_entry_time + timedelta(minutes=time_close_minutes)
@@ -1374,20 +1387,14 @@ def simulate_namping_trade(
         else:
             adverse_move = current_entry_price - base_entry_price
 
-        if not step1_done and trigger1 is not None and adverse_move >= trigger1:
-            add_entry(j, current_entry_price, step1_lot, "段階1")
-            step1_done = True
-            if time_close_minutes and time_close_minutes > 0:
-                forced_close_time = ts + timedelta(minutes=time_close_minutes)
-
-        if not step2_done and trigger2 is not None and adverse_move >= trigger2:
-            if step1_enabled and not step1_done:
-                add_entry(j, current_entry_price, step1_lot, "段階1")
-                step1_done = True
-            add_entry(j, current_entry_price, step2_lot, "段階2")
-            step2_done = True
-            if time_close_minutes and time_close_minutes > 0:
-                forced_close_time = ts + timedelta(minutes=time_close_minutes)
+        for step in enabled_steps:
+            if step["done"]:
+                continue
+            if adverse_move >= step["trigger"]:
+                add_entry(j, current_entry_price, step["lot"], step["label"])
+                step["done"] = True
+                if time_close_minutes and time_close_minutes > 0:
+                    forced_close_time = ts + timedelta(minutes=time_close_minutes)
 
         if total_lot <= 0:
             j += 1
@@ -1547,10 +1554,19 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     namping_first_enabled = bool(params.get("namping_first_enabled", True))
     namping_step1_enabled = bool(params.get("namping_step1_enabled", True))
     namping_step2_enabled = bool(params.get("namping_step2_enabled", True))
+    namping_step3_enabled = bool(params.get("namping_step3_enabled", True))
+    namping_step4_enabled = bool(params.get("namping_step4_enabled", True))
+    namping_step5_enabled = bool(params.get("namping_step5_enabled", True))
     namping_step1_pips = float(params.get("namping_step1_pips", 5.0)) * PIP_SIZE
     namping_step2_pips = float(params.get("namping_step2_pips", 5.0)) * PIP_SIZE
+    namping_step3_pips = float(params.get("namping_step3_pips", 5.0)) * PIP_SIZE
+    namping_step4_pips = float(params.get("namping_step4_pips", 5.0)) * PIP_SIZE
+    namping_step5_pips = float(params.get("namping_step5_pips", 5.0)) * PIP_SIZE
     namping_step1_lot = float(params.get("namping_step1_lot", 2.0))
     namping_step2_lot = float(params.get("namping_step2_lot", 4.0))
+    namping_step3_lot = float(params.get("namping_step3_lot", 8.0))
+    namping_step4_lot = float(params.get("namping_step4_lot", 16.0))
+    namping_step5_lot = float(params.get("namping_step5_lot", 32.0))
 
     candle_times = []
     ma_values = []
@@ -1747,12 +1763,38 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 time_close_minutes,
                 minute_close_info,
                 namping_first_enabled,
-                namping_step1_enabled,
-                namping_step2_enabled,
-                namping_step1_pips,
-                namping_step2_pips,
-                namping_step1_lot,
-                namping_step2_lot,
+                [
+                    {
+                        "enabled": namping_step1_enabled,
+                        "pips": namping_step1_pips,
+                        "lot": namping_step1_lot,
+                        "label": "段階1",
+                    },
+                    {
+                        "enabled": namping_step2_enabled,
+                        "pips": namping_step2_pips,
+                        "lot": namping_step2_lot,
+                        "label": "段階2",
+                    },
+                    {
+                        "enabled": namping_step3_enabled,
+                        "pips": namping_step3_pips,
+                        "lot": namping_step3_lot,
+                        "label": "段階3",
+                    },
+                    {
+                        "enabled": namping_step4_enabled,
+                        "pips": namping_step4_pips,
+                        "lot": namping_step4_lot,
+                        "label": "段階4",
+                    },
+                    {
+                        "enabled": namping_step5_enabled,
+                        "pips": namping_step5_pips,
+                        "lot": namping_step5_lot,
+                        "label": "段階5",
+                    },
+                ],
                 should_cancel,
             )
             if not trade_result:
@@ -1807,6 +1849,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     "down_avg_move": signal.get("down_avg_move"),
                     "up_move_speed": signal.get("up_move_speed"),
                     "down_move_speed": signal.get("down_move_speed"),
+                    "move_ratio_ok": signal.get("move_ratio_ok"),
+                    "speed_ratio_ok": signal.get("speed_ratio_ok"),
                 }
             )
             register_position(side, exit_idx)
@@ -1905,12 +1949,38 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 time_close_minutes,
                 minute_close_info,
                 namping_first_enabled,
-                namping_step1_enabled,
-                namping_step2_enabled,
-                namping_step1_pips,
-                namping_step2_pips,
-                namping_step1_lot,
-                namping_step2_lot,
+                [
+                    {
+                        "enabled": namping_step1_enabled,
+                        "pips": namping_step1_pips,
+                        "lot": namping_step1_lot,
+                        "label": "段階1",
+                    },
+                    {
+                        "enabled": namping_step2_enabled,
+                        "pips": namping_step2_pips,
+                        "lot": namping_step2_lot,
+                        "label": "段階2",
+                    },
+                    {
+                        "enabled": namping_step3_enabled,
+                        "pips": namping_step3_pips,
+                        "lot": namping_step3_lot,
+                        "label": "段階3",
+                    },
+                    {
+                        "enabled": namping_step4_enabled,
+                        "pips": namping_step4_pips,
+                        "lot": namping_step4_lot,
+                        "label": "段階4",
+                    },
+                    {
+                        "enabled": namping_step5_enabled,
+                        "pips": namping_step5_pips,
+                        "lot": namping_step5_lot,
+                        "label": "段階5",
+                    },
+                ],
                 should_cancel,
             )
             if not trade_result:
@@ -1983,6 +2053,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         "ma_deviation_rate": ma_deviation,
         "entry_mode": entry_mode,
         "sr_target": params.get("sr_target"),
+        "sr_ratio_join_mode": params.get("sr_ratio_join_mode"),
+        "sr_move_ratio_enabled": params.get("sr_move_ratio_enabled"),
+        "sr_move_speed_ratio_enabled": params.get("sr_move_speed_ratio_enabled"),
     }
 
 
@@ -2135,6 +2208,15 @@ class Step1App:
         self.namping_step2_enabled_var = tk.BooleanVar(value=True)
         self.namping_step2_pips_var = tk.StringVar(value="5")
         self.namping_step2_lot_var = tk.StringVar(value="4")
+        self.namping_step3_enabled_var = tk.BooleanVar(value=True)
+        self.namping_step3_pips_var = tk.StringVar(value="5")
+        self.namping_step3_lot_var = tk.StringVar(value="8")
+        self.namping_step4_enabled_var = tk.BooleanVar(value=True)
+        self.namping_step4_pips_var = tk.StringVar(value="5")
+        self.namping_step4_lot_var = tk.StringVar(value="16")
+        self.namping_step5_enabled_var = tk.BooleanVar(value=True)
+        self.namping_step5_pips_var = tk.StringVar(value="5")
+        self.namping_step5_lot_var = tk.StringVar(value="32")
         self.sr_zigzag_pips_var = tk.StringVar(value="10.0")
         self.sr_break_pips_var = tk.StringVar(value="0.01")
         self.sr_min_bars_var = tk.StringVar(value="10")
@@ -2580,6 +2662,72 @@ class Step1App:
             row=7, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
+        self.namping_step3_check = ttk.Checkbutton(
+            settings,
+            text="段階3",
+            variable=self.namping_step3_enabled_var,
+            command=self._on_namping_toggle,
+        )
+        self.namping_step3_check.grid(row=8, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="幅pp").grid(row=8, column=2, sticky="w", pady=(6, 0))
+        self.namping_step3_pips_entry = ttk.Entry(
+            settings, textvariable=self.namping_step3_pips_var, width=6
+        )
+        self.namping_step3_pips_entry.grid(
+            row=8, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="ロット").grid(row=8, column=4, sticky="w", pady=(6, 0))
+        self.namping_step3_lot_entry = ttk.Entry(
+            settings, textvariable=self.namping_step3_lot_var, width=6
+        )
+        self.namping_step3_lot_entry.grid(
+            row=8, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+
+        self.namping_step4_check = ttk.Checkbutton(
+            settings,
+            text="段階4",
+            variable=self.namping_step4_enabled_var,
+            command=self._on_namping_toggle,
+        )
+        self.namping_step4_check.grid(row=9, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="幅pp").grid(row=9, column=2, sticky="w", pady=(6, 0))
+        self.namping_step4_pips_entry = ttk.Entry(
+            settings, textvariable=self.namping_step4_pips_var, width=6
+        )
+        self.namping_step4_pips_entry.grid(
+            row=9, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="ロット").grid(row=9, column=4, sticky="w", pady=(6, 0))
+        self.namping_step4_lot_entry = ttk.Entry(
+            settings, textvariable=self.namping_step4_lot_var, width=6
+        )
+        self.namping_step4_lot_entry.grid(
+            row=9, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+
+        self.namping_step5_check = ttk.Checkbutton(
+            settings,
+            text="段階5",
+            variable=self.namping_step5_enabled_var,
+            command=self._on_namping_toggle,
+        )
+        self.namping_step5_check.grid(row=10, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="幅pp").grid(row=10, column=2, sticky="w", pady=(6, 0))
+        self.namping_step5_pips_entry = ttk.Entry(
+            settings, textvariable=self.namping_step5_pips_var, width=6
+        )
+        self.namping_step5_pips_entry.grid(
+            row=10, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="ロット").grid(row=10, column=4, sticky="w", pady=(6, 0))
+        self.namping_step5_lot_entry = ttk.Entry(
+            settings, textvariable=self.namping_step5_lot_var, width=6
+        )
+        self.namping_step5_lot_entry.grid(
+            row=10, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+
         sr_settings = ttk.LabelFrame(param_area, text="水平線条件")
         sr_settings.grid(row=0, column=1, sticky="nsew", padx=(0, 6))
 
@@ -2894,6 +3042,9 @@ class Step1App:
             namping_first_enabled = self.namping_first_entry_var.get()
             namping_step1_enabled = self.namping_step1_enabled_var.get()
             namping_step2_enabled = self.namping_step2_enabled_var.get()
+            namping_step3_enabled = self.namping_step3_enabled_var.get()
+            namping_step4_enabled = self.namping_step4_enabled_var.get()
+            namping_step5_enabled = self.namping_step5_enabled_var.get()
             if namping_step1_enabled:
                 namping_step1_pips = self._parse_number(self.namping_step1_pips_var.get())
                 namping_step1_lot = self._parse_number(self.namping_step1_lot_var.get())
@@ -2906,6 +3057,24 @@ class Step1App:
             else:
                 namping_step2_pips = 0.0
                 namping_step2_lot = 0.0
+            if namping_step3_enabled:
+                namping_step3_pips = self._parse_number(self.namping_step3_pips_var.get())
+                namping_step3_lot = self._parse_number(self.namping_step3_lot_var.get())
+            else:
+                namping_step3_pips = 0.0
+                namping_step3_lot = 0.0
+            if namping_step4_enabled:
+                namping_step4_pips = self._parse_number(self.namping_step4_pips_var.get())
+                namping_step4_lot = self._parse_number(self.namping_step4_lot_var.get())
+            else:
+                namping_step4_pips = 0.0
+                namping_step4_lot = 0.0
+            if namping_step5_enabled:
+                namping_step5_pips = self._parse_number(self.namping_step5_pips_var.get())
+                namping_step5_lot = self._parse_number(self.namping_step5_lot_var.get())
+            else:
+                namping_step5_pips = 0.0
+                namping_step5_lot = 0.0
         except ValueError:
             messagebox.showerror("エラー", "数値の入力が正しくありません。")
             return None
@@ -2944,7 +3113,14 @@ class Step1App:
         if extreme_distance_pips < 0:
             messagebox.showerror("エラー", "天底距離pipsは0以上にしてください。")
             return None
-        if not namping_first_enabled and not namping_step1_enabled and not namping_step2_enabled:
+        if (
+            not namping_first_enabled
+            and not namping_step1_enabled
+            and not namping_step2_enabled
+            and not namping_step3_enabled
+            and not namping_step4_enabled
+            and not namping_step5_enabled
+        ):
             messagebox.showerror("エラー", "初回/段階のエントリーが全てオフです。")
             return None
         if namping_step1_enabled and namping_step1_pips <= 0:
@@ -2953,11 +3129,29 @@ class Step1App:
         if namping_step2_enabled and namping_step2_pips <= 0:
             messagebox.showerror("エラー", "段階2の幅は0より大きくしてください。")
             return None
+        if namping_step3_enabled and namping_step3_pips <= 0:
+            messagebox.showerror("エラー", "段階3の幅は0より大きくしてください。")
+            return None
+        if namping_step4_enabled and namping_step4_pips <= 0:
+            messagebox.showerror("エラー", "段階4の幅は0より大きくしてください。")
+            return None
+        if namping_step5_enabled and namping_step5_pips <= 0:
+            messagebox.showerror("エラー", "段階5の幅は0より大きくしてください。")
+            return None
         if namping_step1_enabled and namping_step1_lot <= 0:
             messagebox.showerror("エラー", "段階1のロットは0より大きくしてください。")
             return None
         if namping_step2_enabled and namping_step2_lot <= 0:
             messagebox.showerror("エラー", "段階2のロットは0より大きくしてください。")
+            return None
+        if namping_step3_enabled and namping_step3_lot <= 0:
+            messagebox.showerror("エラー", "段階3のロットは0より大きくしてください。")
+            return None
+        if namping_step4_enabled and namping_step4_lot <= 0:
+            messagebox.showerror("エラー", "段階4のロットは0より大きくしてください。")
+            return None
+        if namping_step5_enabled and namping_step5_lot <= 0:
+            messagebox.showerror("エラー", "段階5のロットは0より大きくしてください。")
             return None
 
         return {
@@ -2986,6 +3180,15 @@ class Step1App:
             "namping_step2_pips": namping_step2_pips,
             "namping_step1_lot": namping_step1_lot,
             "namping_step2_lot": namping_step2_lot,
+            "namping_step3_enabled": namping_step3_enabled,
+            "namping_step4_enabled": namping_step4_enabled,
+            "namping_step5_enabled": namping_step5_enabled,
+            "namping_step3_pips": namping_step3_pips,
+            "namping_step4_pips": namping_step4_pips,
+            "namping_step5_pips": namping_step5_pips,
+            "namping_step3_lot": namping_step3_lot,
+            "namping_step4_lot": namping_step4_lot,
+            "namping_step5_lot": namping_step5_lot,
         }
 
     def _get_sr_params(self):
@@ -3273,6 +3476,15 @@ class Step1App:
         set_var(self.namping_step2_pips_var, data.get("namping_step2_pips"))
         set_var(self.namping_step1_lot_var, data.get("namping_step1_lot"))
         set_var(self.namping_step2_lot_var, data.get("namping_step2_lot"))
+        set_bool(self.namping_step3_enabled_var, data.get("namping_step3_enabled"))
+        set_bool(self.namping_step4_enabled_var, data.get("namping_step4_enabled"))
+        set_bool(self.namping_step5_enabled_var, data.get("namping_step5_enabled"))
+        set_var(self.namping_step3_pips_var, data.get("namping_step3_pips"))
+        set_var(self.namping_step4_pips_var, data.get("namping_step4_pips"))
+        set_var(self.namping_step5_pips_var, data.get("namping_step5_pips"))
+        set_var(self.namping_step3_lot_var, data.get("namping_step3_lot"))
+        set_var(self.namping_step4_lot_var, data.get("namping_step4_lot"))
+        set_var(self.namping_step5_lot_var, data.get("namping_step5_lot"))
 
         set_var(self.sr_zigzag_pips_var, data.get("sr_zigzag_pips"))
         set_var(self.sr_break_pips_var, data.get("sr_break_pips"))
@@ -3365,6 +3577,15 @@ class Step1App:
             "namping_step2_pips": self.namping_step2_pips_var.get(),
             "namping_step1_lot": self.namping_step1_lot_var.get(),
             "namping_step2_lot": self.namping_step2_lot_var.get(),
+            "namping_step3_enabled": self.namping_step3_enabled_var.get(),
+            "namping_step4_enabled": self.namping_step4_enabled_var.get(),
+            "namping_step5_enabled": self.namping_step5_enabled_var.get(),
+            "namping_step3_pips": self.namping_step3_pips_var.get(),
+            "namping_step4_pips": self.namping_step4_pips_var.get(),
+            "namping_step5_pips": self.namping_step5_pips_var.get(),
+            "namping_step3_lot": self.namping_step3_lot_var.get(),
+            "namping_step4_lot": self.namping_step4_lot_var.get(),
+            "namping_step5_lot": self.namping_step5_lot_var.get(),
             "sr_zigzag_pips": self.sr_zigzag_pips_var.get(),
             "sr_break_pips": self.sr_break_pips_var.get(),
             "sr_min_bars": self.sr_min_bars_var.get(),
@@ -3797,6 +4018,26 @@ class Step1App:
             )
             self.pnl_info_var.set(self.pnl_info_var.get() + breakdown)
 
+        ratio_join_mode = payload.get("sr_ratio_join_mode")
+        move_ratio_enabled = payload.get("sr_move_ratio_enabled")
+        speed_ratio_enabled = payload.get("sr_move_speed_ratio_enabled")
+        if (
+            entry_mode == "sr_reentry"
+            and ratio_join_mode == "or"
+            and move_ratio_enabled
+            and speed_ratio_enabled
+        ):
+            trades = payload.get("trades", [])
+            move_trades = [t for t in trades if t.get("move_ratio_ok")]
+            speed_trades = [t for t in trades if t.get("speed_ratio_ok")]
+            move_pips = sum(t.get("pips", 0.0) for t in move_trades)
+            speed_pips = sum(t.get("pips", 0.0) for t in speed_trades)
+            ratio_breakdown = (
+                f"\n比率内訳: 平均幅OK 取引{len(move_trades)}件 合計損益{move_pips:.1f}ピップス"
+                f" / 速度OK 取引{len(speed_trades)}件 合計損益{speed_pips:.1f}ピップス"
+            )
+            self.pnl_info_var.set(self.pnl_info_var.get() + ratio_breakdown)
+
         self.pnl_data = payload.get("equity_curve") or []
         self.backtest_ready = True
         if self.chart_data is not None:
@@ -4061,6 +4302,18 @@ class Step1App:
             state = "normal" if self.namping_step2_enabled_var.get() else "disabled"
             self.namping_step2_pips_entry.config(state=state)
             self.namping_step2_lot_entry.config(state=state)
+        if hasattr(self, "namping_step3_pips_entry"):
+            state = "normal" if self.namping_step3_enabled_var.get() else "disabled"
+            self.namping_step3_pips_entry.config(state=state)
+            self.namping_step3_lot_entry.config(state=state)
+        if hasattr(self, "namping_step4_pips_entry"):
+            state = "normal" if self.namping_step4_enabled_var.get() else "disabled"
+            self.namping_step4_pips_entry.config(state=state)
+            self.namping_step4_lot_entry.config(state=state)
+        if hasattr(self, "namping_step5_pips_entry"):
+            state = "normal" if self.namping_step5_enabled_var.get() else "disabled"
+            self.namping_step5_pips_entry.config(state=state)
+            self.namping_step5_lot_entry.config(state=state)
 
     def _on_extreme_filter_toggle(self):
         enabled = self.extreme_filter_var.get()

@@ -1289,6 +1289,209 @@ def simulate_exit(
     return exit_idx, exit_price, exit_reason
 
 
+def simulate_namping_trade(
+    points,
+    signal_idx,
+    side,
+    base_entry_price,
+    spread,
+    stop,
+    take,
+    fixed_exit_price=True,
+    time_close_minutes=0.0,
+    minute_close_info=None,
+    first_entry_enabled=True,
+    step1_enabled=False,
+    step2_enabled=False,
+    step1_pips=0.0,
+    step2_pips=0.0,
+    step1_lot=1.0,
+    step2_lot=1.0,
+    should_cancel=None,
+):
+    if not points:
+        return None
+
+    n = len(points)
+    if signal_idx < 0 or signal_idx >= n:
+        return None
+
+    if not first_entry_enabled and not step1_enabled and not step2_enabled:
+        return None
+
+    minute_times = []
+    minute_close_prices = []
+    minute_close_indices = []
+    if minute_close_info:
+        minute_times, minute_close_prices, minute_close_indices = minute_close_info
+
+    entries = []
+    total_lot = 0.0
+    avg_price = None
+    first_entry_idx = None
+    last_entry_time = None
+
+    def add_entry(idx, price, lot, kind):
+        nonlocal total_lot, avg_price, first_entry_idx, last_entry_time
+        if lot <= 0:
+            return
+        if avg_price is None:
+            avg_price = price
+            total_lot = lot
+        else:
+            new_total = total_lot + lot
+            avg_price = (avg_price * total_lot + price * lot) / new_total
+            total_lot = new_total
+        if first_entry_idx is None:
+            first_entry_idx = idx
+        last_entry_time = points[idx][0]
+        entries.append({"idx": idx, "price": price, "lot": lot, "kind": kind})
+
+    if first_entry_enabled:
+        add_entry(signal_idx, base_entry_price, 1.0, "初回")
+
+    step1_done = not step1_enabled
+    step2_done = not step2_enabled
+    trigger1 = step1_pips if step1_enabled else None
+    if step2_enabled:
+        trigger2 = step2_pips + (step1_pips if step1_enabled else 0.0)
+    else:
+        trigger2 = None
+
+    forced_close_time = None
+    if time_close_minutes and time_close_minutes > 0 and last_entry_time is not None:
+        forced_close_time = last_entry_time + timedelta(minutes=time_close_minutes)
+
+    j = signal_idx + 1
+    while j < n:
+        if is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
+        ts, bid = points[j]
+        ask = bid + spread
+        current_entry_price = ask if side == "long" else bid
+        if side == "long":
+            adverse_move = base_entry_price - current_entry_price
+        else:
+            adverse_move = current_entry_price - base_entry_price
+
+        if not step1_done and trigger1 is not None and adverse_move >= trigger1:
+            add_entry(j, current_entry_price, step1_lot, "段階1")
+            step1_done = True
+            if time_close_minutes and time_close_minutes > 0:
+                forced_close_time = ts + timedelta(minutes=time_close_minutes)
+
+        if not step2_done and trigger2 is not None and adverse_move >= trigger2:
+            if step1_enabled and not step1_done:
+                add_entry(j, current_entry_price, step1_lot, "段階1")
+                step1_done = True
+            add_entry(j, current_entry_price, step2_lot, "段階2")
+            step2_done = True
+            if time_close_minutes and time_close_minutes > 0:
+                forced_close_time = ts + timedelta(minutes=time_close_minutes)
+
+        if total_lot <= 0:
+            j += 1
+            continue
+
+        if side == "long":
+            stop_price = avg_price - stop
+            take_price = avg_price + take
+            if bid <= stop_price:
+                exit_price = stop_price if fixed_exit_price else bid
+                return {
+                    "entry_idx": first_entry_idx,
+                    "entry_price": entries[0]["price"],
+                    "avg_entry_price": avg_price,
+                    "lot_total": total_lot,
+                    "entries": entries,
+                    "exit_idx": j,
+                    "exit_price": exit_price,
+                    "exit_reason": "損切",
+                }
+            if bid >= take_price:
+                exit_price = take_price if fixed_exit_price else bid
+                return {
+                    "entry_idx": first_entry_idx,
+                    "entry_price": entries[0]["price"],
+                    "avg_entry_price": avg_price,
+                    "lot_total": total_lot,
+                    "entries": entries,
+                    "exit_idx": j,
+                    "exit_price": exit_price,
+                    "exit_reason": "利確",
+                }
+        else:
+            stop_price = avg_price + stop
+            take_price = avg_price - take
+            if ask >= stop_price:
+                exit_price = stop_price if fixed_exit_price else ask
+                return {
+                    "entry_idx": first_entry_idx,
+                    "entry_price": entries[0]["price"],
+                    "avg_entry_price": avg_price,
+                    "lot_total": total_lot,
+                    "entries": entries,
+                    "exit_idx": j,
+                    "exit_price": exit_price,
+                    "exit_reason": "損切",
+                }
+            if ask <= take_price:
+                exit_price = take_price if fixed_exit_price else ask
+                return {
+                    "entry_idx": first_entry_idx,
+                    "entry_price": entries[0]["price"],
+                    "avg_entry_price": avg_price,
+                    "lot_total": total_lot,
+                    "entries": entries,
+                    "exit_idx": j,
+                    "exit_price": exit_price,
+                    "exit_reason": "利確",
+                }
+
+        if forced_close_time is not None and ts >= forced_close_time:
+            close_bid = bid
+            close_idx = j
+            if minute_times:
+                minute_start = ts.replace(second=0, microsecond=0)
+                minute_pos = bisect_left(minute_times, minute_start)
+                if (
+                    0 <= minute_pos < len(minute_times)
+                    and minute_times[minute_pos] == minute_start
+                ):
+                    close_bid = minute_close_prices[minute_pos]
+                    close_idx = minute_close_indices[minute_pos]
+            exit_price = close_bid if side == "long" else close_bid + spread
+            return {
+                "entry_idx": first_entry_idx,
+                "entry_price": entries[0]["price"],
+                "avg_entry_price": avg_price,
+                "lot_total": total_lot,
+                "entries": entries,
+                "exit_idx": close_idx,
+                "exit_price": exit_price,
+                "exit_reason": "時間",
+            }
+
+        j += 1
+
+    if total_lot <= 0 or not entries:
+        return None
+
+    exit_idx = n - 1
+    _t, last_bid = points[-1]
+    exit_price = last_bid + spread if side == "short" else last_bid
+    return {
+        "entry_idx": first_entry_idx,
+        "entry_price": entries[0]["price"],
+        "avg_entry_price": avg_price,
+        "lot_total": total_lot,
+        "entries": entries,
+        "exit_idx": exit_idx,
+        "exit_price": exit_price,
+        "exit_reason": "終了",
+    }
+
+
 def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     if not points:
         return {
@@ -1341,6 +1544,13 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     allow_same_direction = bool(params.get("allow_same_direction", False))
     allow_opposite_direction = bool(params.get("allow_opposite_direction", False))
     allow_overlap = allow_same_direction or allow_opposite_direction
+    namping_first_enabled = bool(params.get("namping_first_enabled", True))
+    namping_step1_enabled = bool(params.get("namping_step1_enabled", True))
+    namping_step2_enabled = bool(params.get("namping_step2_enabled", True))
+    namping_step1_pips = float(params.get("namping_step1_pips", 5.0)) * PIP_SIZE
+    namping_step2_pips = float(params.get("namping_step2_pips", 5.0)) * PIP_SIZE
+    namping_step1_lot = float(params.get("namping_step1_lot", 2.0))
+    namping_step2_lot = float(params.get("namping_step2_lot", 4.0))
 
     candle_times = []
     ma_values = []
@@ -1525,11 +1735,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     i = entry_idx + 1
                     continue
 
-            if not can_open_position(entry_idx, side):
-                i = entry_idx + 1
-                continue
-
-            exit_idx, exit_price, exit_reason = simulate_exit(
+            trade_result = simulate_namping_trade(
                 points_sorted,
                 entry_idx,
                 side,
@@ -1540,21 +1746,52 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 fixed_exit_price,
                 time_close_minutes,
                 minute_close_info,
+                namping_first_enabled,
+                namping_step1_enabled,
+                namping_step2_enabled,
+                namping_step1_pips,
+                namping_step2_pips,
+                namping_step1_lot,
+                namping_step2_lot,
                 should_cancel,
             )
+            if not trade_result:
+                i = entry_idx + 1
+                continue
+
+            entry_idx_actual = trade_result["entry_idx"]
+            if entry_idx_actual is None:
+                i = entry_idx + 1
+                continue
+            if not can_open_position(entry_idx_actual, side):
+                i = entry_idx + 1
+                continue
+
+            entry_time = points_sorted[entry_idx_actual][0]
+            entry_price_actual = trade_result["entry_price"]
+            avg_entry_price = trade_result["avg_entry_price"]
+            total_lot = trade_result["lot_total"]
+            exit_idx = trade_result["exit_idx"]
+            exit_price = trade_result["exit_price"]
+            exit_reason = trade_result["exit_reason"]
 
             if side == "long":
-                pips = (exit_price - entry_price) / PIP_SIZE
+                pips_per_lot = (exit_price - avg_entry_price) / PIP_SIZE
             else:
-                pips = (entry_price - exit_price) / PIP_SIZE
+                pips_per_lot = (avg_entry_price - exit_price) / PIP_SIZE
+            pips = pips_per_lot * total_lot
 
             trades.append(
                 {
                     "side": side,
                     "entry_reason": signal.get("entry_reason", "水平線戻り"),
-                    "entry_idx": entry_idx,
+                    "entry_idx": entry_idx_actual,
                     "entry_time": entry_time,
-                    "entry_price": entry_price,
+                    "entry_price": entry_price_actual,
+                    "avg_entry_price": avg_entry_price,
+                    "lot_total": total_lot,
+                    "pips_per_lot": pips_per_lot,
+                    "namping_entries": trade_result.get("entries") or [],
                     "exit_idx": exit_idx,
                     "exit_time": points_sorted[exit_idx][0],
                     "exit_price": exit_price,
@@ -1573,7 +1810,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 }
             )
             register_position(side, exit_idx)
-            i = entry_idx + 1 if allow_overlap else exit_idx + 1
+            i = entry_idx_actual + 1 if allow_overlap else exit_idx + 1
     else:
         while i < n - 1:
             if is_cancel_requested(should_cancel):
@@ -1656,11 +1893,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     i = entry_idx + 1
                     continue
 
-            if not can_open_position(entry_idx, side):
-                i = entry_idx + 1
-                continue
-
-            exit_idx, exit_price, exit_reason = simulate_exit(
+            trade_result = simulate_namping_trade(
                 points_sorted,
                 entry_idx,
                 side,
@@ -1671,21 +1904,52 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 fixed_exit_price,
                 time_close_minutes,
                 minute_close_info,
+                namping_first_enabled,
+                namping_step1_enabled,
+                namping_step2_enabled,
+                namping_step1_pips,
+                namping_step2_pips,
+                namping_step1_lot,
+                namping_step2_lot,
                 should_cancel,
             )
+            if not trade_result:
+                i = entry_idx + 1
+                continue
+
+            entry_idx_actual = trade_result["entry_idx"]
+            if entry_idx_actual is None:
+                i = entry_idx + 1
+                continue
+            if not can_open_position(entry_idx_actual, side):
+                i = entry_idx + 1
+                continue
+
+            entry_time = points_sorted[entry_idx_actual][0]
+            entry_price_actual = trade_result["entry_price"]
+            avg_entry_price = trade_result["avg_entry_price"]
+            total_lot = trade_result["lot_total"]
+            exit_idx = trade_result["exit_idx"]
+            exit_price = trade_result["exit_price"]
+            exit_reason = trade_result["exit_reason"]
 
             if side == "long":
-                pips = (exit_price - entry_price) / PIP_SIZE
+                pips_per_lot = (exit_price - avg_entry_price) / PIP_SIZE
             else:
-                pips = (entry_price - exit_price) / PIP_SIZE
+                pips_per_lot = (avg_entry_price - exit_price) / PIP_SIZE
+            pips = pips_per_lot * total_lot
 
             trades.append(
                 {
                     "side": side,
                     "entry_reason": "スパイク戻り",
-                    "entry_idx": entry_idx,
+                    "entry_idx": entry_idx_actual,
                     "entry_time": entry_time,
-                    "entry_price": entry_price,
+                    "entry_price": entry_price_actual,
+                    "avg_entry_price": avg_entry_price,
+                    "lot_total": total_lot,
+                    "pips_per_lot": pips_per_lot,
+                    "namping_entries": trade_result.get("entries") or [],
                     "exit_idx": exit_idx,
                     "exit_time": points_sorted[exit_idx][0],
                     "exit_price": exit_price,
@@ -1694,7 +1958,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 }
             )
             register_position(side, exit_idx)
-            i = entry_idx + 1 if allow_overlap else exit_idx + 1
+            i = entry_idx_actual + 1 if allow_overlap else exit_idx + 1
 
     equity_curve = [(times[0], 0.0)]
     cumulative = 0.0
@@ -1864,6 +2128,13 @@ class Step1App:
         self.fixed_exit_price_var = tk.BooleanVar(value=True)
         self.allow_same_direction_var = tk.BooleanVar(value=False)
         self.allow_opposite_direction_var = tk.BooleanVar(value=False)
+        self.namping_first_entry_var = tk.BooleanVar(value=True)
+        self.namping_step1_enabled_var = tk.BooleanVar(value=True)
+        self.namping_step1_pips_var = tk.StringVar(value="5")
+        self.namping_step1_lot_var = tk.StringVar(value="2")
+        self.namping_step2_enabled_var = tk.BooleanVar(value=True)
+        self.namping_step2_pips_var = tk.StringVar(value="5")
+        self.namping_step2_lot_var = tk.StringVar(value="4")
         self.sr_zigzag_pips_var = tk.StringVar(value="10.0")
         self.sr_break_pips_var = tk.StringVar(value="0.01")
         self.sr_min_bars_var = tk.StringVar(value="10")
@@ -2259,6 +2530,56 @@ class Step1App:
         )
         self.allow_opposite_direction_check.grid(row=5, column=4, sticky="w", pady=(6, 0))
 
+        self.namping_first_check = ttk.Checkbutton(
+            settings,
+            text="初回エントリー",
+            variable=self.namping_first_entry_var,
+        )
+        self.namping_first_check.grid(row=6, column=0, sticky="w", pady=(6, 0))
+        self.namping_step1_check = ttk.Checkbutton(
+            settings,
+            text="段階1",
+            variable=self.namping_step1_enabled_var,
+            command=self._on_namping_toggle,
+        )
+        self.namping_step1_check.grid(row=6, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="幅pp").grid(row=6, column=2, sticky="w", pady=(6, 0))
+        self.namping_step1_pips_entry = ttk.Entry(
+            settings, textvariable=self.namping_step1_pips_var, width=6
+        )
+        self.namping_step1_pips_entry.grid(
+            row=6, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="ロット").grid(row=6, column=4, sticky="w", pady=(6, 0))
+        self.namping_step1_lot_entry = ttk.Entry(
+            settings, textvariable=self.namping_step1_lot_var, width=6
+        )
+        self.namping_step1_lot_entry.grid(
+            row=6, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+
+        self.namping_step2_check = ttk.Checkbutton(
+            settings,
+            text="段階2",
+            variable=self.namping_step2_enabled_var,
+            command=self._on_namping_toggle,
+        )
+        self.namping_step2_check.grid(row=7, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="幅pp").grid(row=7, column=2, sticky="w", pady=(6, 0))
+        self.namping_step2_pips_entry = ttk.Entry(
+            settings, textvariable=self.namping_step2_pips_var, width=6
+        )
+        self.namping_step2_pips_entry.grid(
+            row=7, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="ロット").grid(row=7, column=4, sticky="w", pady=(6, 0))
+        self.namping_step2_lot_entry = ttk.Entry(
+            settings, textvariable=self.namping_step2_lot_var, width=6
+        )
+        self.namping_step2_lot_entry.grid(
+            row=7, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+
         sr_settings = ttk.LabelFrame(param_area, text="水平線条件")
         sr_settings.grid(row=0, column=1, sticky="nsew", padx=(0, 6))
 
@@ -2508,6 +2829,7 @@ class Step1App:
         self._on_extreme_filter_toggle()
         self._on_backtest_exclude_toggle()
         self._on_sr_reentry_filter_toggle()
+        self._on_namping_toggle()
         self._update_trade_nav_state()
 
     def _pick_start(self):
@@ -2569,6 +2891,21 @@ class Step1App:
             exclude_hours = self._get_backtest_exclude_hours() if exclude_enabled else set()
             allow_same_direction = self.allow_same_direction_var.get()
             allow_opposite_direction = self.allow_opposite_direction_var.get()
+            namping_first_enabled = self.namping_first_entry_var.get()
+            namping_step1_enabled = self.namping_step1_enabled_var.get()
+            namping_step2_enabled = self.namping_step2_enabled_var.get()
+            if namping_step1_enabled:
+                namping_step1_pips = self._parse_number(self.namping_step1_pips_var.get())
+                namping_step1_lot = self._parse_number(self.namping_step1_lot_var.get())
+            else:
+                namping_step1_pips = 0.0
+                namping_step1_lot = 0.0
+            if namping_step2_enabled:
+                namping_step2_pips = self._parse_number(self.namping_step2_pips_var.get())
+                namping_step2_lot = self._parse_number(self.namping_step2_lot_var.get())
+            else:
+                namping_step2_pips = 0.0
+                namping_step2_lot = 0.0
         except ValueError:
             messagebox.showerror("エラー", "数値の入力が正しくありません。")
             return None
@@ -2607,6 +2944,21 @@ class Step1App:
         if extreme_distance_pips < 0:
             messagebox.showerror("エラー", "天底距離pipsは0以上にしてください。")
             return None
+        if not namping_first_enabled and not namping_step1_enabled and not namping_step2_enabled:
+            messagebox.showerror("エラー", "初回/段階のエントリーが全てオフです。")
+            return None
+        if namping_step1_enabled and namping_step1_pips <= 0:
+            messagebox.showerror("エラー", "段階1の幅は0より大きくしてください。")
+            return None
+        if namping_step2_enabled and namping_step2_pips <= 0:
+            messagebox.showerror("エラー", "段階2の幅は0より大きくしてください。")
+            return None
+        if namping_step1_enabled and namping_step1_lot <= 0:
+            messagebox.showerror("エラー", "段階1のロットは0より大きくしてください。")
+            return None
+        if namping_step2_enabled and namping_step2_lot <= 0:
+            messagebox.showerror("エラー", "段階2のロットは0より大きくしてください。")
+            return None
 
         return {
             "window_ms": window_ms,
@@ -2627,6 +2979,13 @@ class Step1App:
             "exclude_hours": exclude_hours,
             "allow_same_direction": allow_same_direction,
             "allow_opposite_direction": allow_opposite_direction,
+            "namping_first_enabled": namping_first_enabled,
+            "namping_step1_enabled": namping_step1_enabled,
+            "namping_step2_enabled": namping_step2_enabled,
+            "namping_step1_pips": namping_step1_pips,
+            "namping_step2_pips": namping_step2_pips,
+            "namping_step1_lot": namping_step1_lot,
+            "namping_step2_lot": namping_step2_lot,
         }
 
     def _get_sr_params(self):
@@ -2907,6 +3266,13 @@ class Step1App:
         set_bool(self.fixed_exit_price_var, data.get("fixed_exit_price"))
         set_bool(self.allow_same_direction_var, data.get("allow_same_direction"))
         set_bool(self.allow_opposite_direction_var, data.get("allow_opposite_direction"))
+        set_bool(self.namping_first_entry_var, data.get("namping_first_enabled"))
+        set_bool(self.namping_step1_enabled_var, data.get("namping_step1_enabled"))
+        set_bool(self.namping_step2_enabled_var, data.get("namping_step2_enabled"))
+        set_var(self.namping_step1_pips_var, data.get("namping_step1_pips"))
+        set_var(self.namping_step2_pips_var, data.get("namping_step2_pips"))
+        set_var(self.namping_step1_lot_var, data.get("namping_step1_lot"))
+        set_var(self.namping_step2_lot_var, data.get("namping_step2_lot"))
 
         set_var(self.sr_zigzag_pips_var, data.get("sr_zigzag_pips"))
         set_var(self.sr_break_pips_var, data.get("sr_break_pips"))
@@ -2992,6 +3358,13 @@ class Step1App:
             "fixed_exit_price": self.fixed_exit_price_var.get(),
             "allow_same_direction": self.allow_same_direction_var.get(),
             "allow_opposite_direction": self.allow_opposite_direction_var.get(),
+            "namping_first_enabled": self.namping_first_entry_var.get(),
+            "namping_step1_enabled": self.namping_step1_enabled_var.get(),
+            "namping_step2_enabled": self.namping_step2_enabled_var.get(),
+            "namping_step1_pips": self.namping_step1_pips_var.get(),
+            "namping_step2_pips": self.namping_step2_pips_var.get(),
+            "namping_step1_lot": self.namping_step1_lot_var.get(),
+            "namping_step2_lot": self.namping_step2_lot_var.get(),
             "sr_zigzag_pips": self.sr_zigzag_pips_var.get(),
             "sr_break_pips": self.sr_break_pips_var.get(),
             "sr_min_bars": self.sr_min_bars_var.get(),
@@ -3678,6 +4051,16 @@ class Step1App:
                 else "disabled"
             )
             self.sr_reentry_favored_tick_min_entry.config(state=state)
+
+    def _on_namping_toggle(self):
+        if hasattr(self, "namping_step1_pips_entry"):
+            state = "normal" if self.namping_step1_enabled_var.get() else "disabled"
+            self.namping_step1_pips_entry.config(state=state)
+            self.namping_step1_lot_entry.config(state=state)
+        if hasattr(self, "namping_step2_pips_entry"):
+            state = "normal" if self.namping_step2_enabled_var.get() else "disabled"
+            self.namping_step2_pips_entry.config(state=state)
+            self.namping_step2_lot_entry.config(state=state)
 
     def _on_extreme_filter_toggle(self):
         enabled = self.extreme_filter_var.get()
@@ -4493,6 +4876,36 @@ class Step1App:
                 data["trade_markers"].append(
                     {"x": exit_x, "y": exit_y, "kind": "exit", "trade": trade}
                 )
+
+                extra_entries = trade.get("namping_entries") or []
+                if extra_entries:
+                    base_entry_idx = trade.get("entry_idx")
+                    for entry in extra_entries:
+                        entry_idx = entry.get("idx")
+                        entry_price = entry.get("price")
+                        if entry_idx is None or entry_price is None:
+                            continue
+                        if base_entry_idx is not None and entry_idx == base_entry_idx:
+                            continue
+                        if not (0 <= entry_idx < len(points_all)):
+                            continue
+                        extra_time = points_all[entry_idx][0]
+                        extra_x = time_to_x(extra_time)
+                        if extra_x is None:
+                            continue
+                        extra_y = price_to_y(entry_price)
+                        canvas.create_line(
+                            extra_x,
+                            extra_y,
+                            exit_x,
+                            exit_y,
+                            fill=color,
+                            dash=(4, 3),
+                        )
+                        draw_triangle(extra_x, extra_y, size, entry_dir, color)
+                        data["trade_markers"].append(
+                            {"x": extra_x, "y": extra_y, "kind": "entry", "trade": trade}
+                        )
 
         ticks = 5
         for i in range(ticks + 1):

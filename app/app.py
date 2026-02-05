@@ -1893,9 +1893,14 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     signal_chain_monitor_minutes = float(
         params.get("signal_chain_monitor_minutes", 240.0)
     )
-    signal_chain_ignore_opposite = bool(
-        params.get("signal_chain_ignore_opposite", True)
+    signal_chain_ignore_reverse = bool(
+        params.get("signal_chain_ignore_reverse", False)
     )
+    signal_chain_ignore_momentum = bool(
+        params.get("signal_chain_ignore_momentum", False)
+    )
+    signal_chain_ignore_sr = bool(params.get("signal_chain_ignore_sr", False))
+    signal_chain_ignore_spike = bool(params.get("signal_chain_ignore_spike", False))
     signal_chain_enabled = bool(params.get("signal_chain_enabled", True))
     signal_chain_count_reverse = bool(
         params.get("signal_chain_count_reverse", True)
@@ -2165,6 +2170,12 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             "sr": signal_chain_trigger_sr,
             "spike": signal_chain_trigger_spike,
         }
+        ignore_sources = {
+            "reverse": signal_chain_ignore_reverse,
+            "momentum": signal_chain_ignore_momentum,
+            "sr": signal_chain_ignore_sr,
+            "spike": signal_chain_ignore_spike,
+        }
 
         def new_state(side, idx, price, ts, countable, signal):
             expires_at = None
@@ -2227,7 +2238,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
 
             side = sig["side"]
             other = "short" if side == "long" else "long"
-            if signal_chain_ignore_opposite and pending.get(other):
+            if ignore_sources.get(sig.get("source"), False) and pending.get(other):
                 pending[other] = None
 
             state = pending.get(side)
@@ -3467,12 +3478,15 @@ class Step1App:
         self.signal_chain_pos_pips_var = tk.StringVar(value="10")
         self.signal_chain_neg_pips_var = tk.StringVar(value="5")
         self.signal_chain_count_var = tk.StringVar(value="3")
-        self.signal_chain_ignore_opposite_var = tk.BooleanVar(value=False)
         self.signal_chain_monitor_minutes_var = tk.StringVar(value="240")
         self.signal_chain_count_reverse_var = tk.BooleanVar(value=True)
         self.signal_chain_count_momentum_var = tk.BooleanVar(value=True)
         self.signal_chain_count_sr_var = tk.BooleanVar(value=True)
         self.signal_chain_count_spike_var = tk.BooleanVar(value=True)
+        self.signal_chain_ignore_reverse_var = tk.BooleanVar(value=False)
+        self.signal_chain_ignore_momentum_var = tk.BooleanVar(value=False)
+        self.signal_chain_ignore_sr_var = tk.BooleanVar(value=False)
+        self.signal_chain_ignore_spike_var = tk.BooleanVar(value=False)
         self.signal_chain_trigger_reverse_var = tk.BooleanVar(value=True)
         self.signal_chain_trigger_momentum_var = tk.BooleanVar(value=True)
         self.signal_chain_trigger_sr_var = tk.BooleanVar(value=True)
@@ -4095,16 +4109,43 @@ class Step1App:
         self.signal_chain_monitor_entry.grid(
             row=2, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        self.signal_chain_ignore_check = ttk.Checkbutton(
-            signal_chain_settings,
-            text="逆方向サインで見送り",
-            variable=self.signal_chain_ignore_opposite_var,
+        ttk.Label(signal_chain_settings, text="逆方向サインで見送り").grid(
+            row=3, column=0, sticky="w", pady=(6, 0)
         )
-        self.signal_chain_ignore_check.grid(
-            row=2, column=2, columnspan=2, sticky="w", pady=(6, 0)
+        self.signal_chain_ignore_reverse_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="秒逆張り",
+            variable=self.signal_chain_ignore_reverse_var,
+        )
+        self.signal_chain_ignore_reverse_check.grid(
+            row=3, column=1, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_ignore_momentum_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="勢い追随",
+            variable=self.signal_chain_ignore_momentum_var,
+        )
+        self.signal_chain_ignore_momentum_check.grid(
+            row=3, column=2, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_ignore_sr_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="水平線戻り",
+            variable=self.signal_chain_ignore_sr_var,
+        )
+        self.signal_chain_ignore_sr_check.grid(
+            row=3, column=3, sticky="w", pady=(6, 0)
+        )
+        self.signal_chain_ignore_spike_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="スパイク",
+            variable=self.signal_chain_ignore_spike_var,
+        )
+        self.signal_chain_ignore_spike_check.grid(
+            row=3, column=4, sticky="w", pady=(6, 0)
         )
         ttk.Label(signal_chain_settings, text="カウント対象").grid(
-            row=3, column=0, sticky="w", pady=(6, 0)
+            row=4, column=0, sticky="w", pady=(6, 0)
         )
         self.signal_chain_count_reverse_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -4112,7 +4153,7 @@ class Step1App:
             variable=self.signal_chain_count_reverse_var,
         )
         self.signal_chain_count_reverse_check.grid(
-            row=3, column=1, sticky="w", pady=(6, 0)
+            row=4, column=1, sticky="w", pady=(6, 0)
         )
         self.signal_chain_count_momentum_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -4120,7 +4161,7 @@ class Step1App:
             variable=self.signal_chain_count_momentum_var,
         )
         self.signal_chain_count_momentum_check.grid(
-            row=3, column=2, sticky="w", pady=(6, 0)
+            row=4, column=2, sticky="w", pady=(6, 0)
         )
         self.signal_chain_count_sr_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -4128,7 +4169,7 @@ class Step1App:
             variable=self.signal_chain_count_sr_var,
         )
         self.signal_chain_count_sr_check.grid(
-            row=3, column=3, sticky="w", pady=(6, 0)
+            row=4, column=3, sticky="w", pady=(6, 0)
         )
         self.signal_chain_count_spike_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -4136,10 +4177,10 @@ class Step1App:
             variable=self.signal_chain_count_spike_var,
         )
         self.signal_chain_count_spike_check.grid(
-            row=3, column=4, sticky="w", pady=(6, 0)
+            row=4, column=4, sticky="w", pady=(6, 0)
         )
         ttk.Label(signal_chain_settings, text="最終きっかけ").grid(
-            row=4, column=0, sticky="w", pady=(6, 0)
+            row=5, column=0, sticky="w", pady=(6, 0)
         )
         self.signal_chain_trigger_reverse_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -4147,7 +4188,7 @@ class Step1App:
             variable=self.signal_chain_trigger_reverse_var,
         )
         self.signal_chain_trigger_reverse_check.grid(
-            row=4, column=1, sticky="w", pady=(6, 0)
+            row=5, column=1, sticky="w", pady=(6, 0)
         )
         self.signal_chain_trigger_momentum_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -4155,7 +4196,7 @@ class Step1App:
             variable=self.signal_chain_trigger_momentum_var,
         )
         self.signal_chain_trigger_momentum_check.grid(
-            row=4, column=2, sticky="w", pady=(6, 0)
+            row=5, column=2, sticky="w", pady=(6, 0)
         )
         self.signal_chain_trigger_sr_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -4163,7 +4204,7 @@ class Step1App:
             variable=self.signal_chain_trigger_sr_var,
         )
         self.signal_chain_trigger_sr_check.grid(
-            row=4, column=3, sticky="w", pady=(6, 0)
+            row=5, column=3, sticky="w", pady=(6, 0)
         )
         self.signal_chain_trigger_spike_check = ttk.Checkbutton(
             signal_chain_settings,
@@ -4171,7 +4212,7 @@ class Step1App:
             variable=self.signal_chain_trigger_spike_var,
         )
         self.signal_chain_trigger_spike_check.grid(
-            row=4, column=4, sticky="w", pady=(6, 0)
+            row=5, column=4, sticky="w", pady=(6, 0)
         )
 
         def build_close_frame(
@@ -4884,12 +4925,15 @@ class Step1App:
             signal_chain_monitor_minutes = self._parse_number(
                 self.signal_chain_monitor_minutes_var.get()
             )
-            signal_chain_ignore_opposite = self.signal_chain_ignore_opposite_var.get()
             signal_chain_enabled = self.signal_chain_enabled_var.get()
             signal_chain_count_reverse = self.signal_chain_count_reverse_var.get()
             signal_chain_count_momentum = self.signal_chain_count_momentum_var.get()
             signal_chain_count_sr = self.signal_chain_count_sr_var.get()
             signal_chain_count_spike = self.signal_chain_count_spike_var.get()
+            signal_chain_ignore_reverse = self.signal_chain_ignore_reverse_var.get()
+            signal_chain_ignore_momentum = self.signal_chain_ignore_momentum_var.get()
+            signal_chain_ignore_sr = self.signal_chain_ignore_sr_var.get()
+            signal_chain_ignore_spike = self.signal_chain_ignore_spike_var.get()
             signal_chain_trigger_reverse = self.signal_chain_trigger_reverse_var.get()
             signal_chain_trigger_momentum = (
                 self.signal_chain_trigger_momentum_var.get()
@@ -5229,7 +5273,10 @@ class Step1App:
             "signal_chain_neg_pips": signal_chain_neg_pips,
             "signal_chain_count": signal_chain_count,
             "signal_chain_monitor_minutes": signal_chain_monitor_minutes,
-            "signal_chain_ignore_opposite": signal_chain_ignore_opposite,
+            "signal_chain_ignore_reverse": signal_chain_ignore_reverse,
+            "signal_chain_ignore_momentum": signal_chain_ignore_momentum,
+            "signal_chain_ignore_sr": signal_chain_ignore_sr,
+            "signal_chain_ignore_spike": signal_chain_ignore_spike,
             "signal_chain_enabled": signal_chain_enabled,
             "signal_chain_count_reverse": signal_chain_count_reverse,
             "signal_chain_count_momentum": signal_chain_count_momentum,
@@ -6044,10 +6091,6 @@ class Step1App:
             data.get("signal_chain_monitor_minutes"),
         )
         set_bool(
-            self.signal_chain_ignore_opposite_var,
-            data.get("signal_chain_ignore_opposite"),
-        )
-        set_bool(
             self.signal_chain_enabled_var,
             data.get("signal_chain_enabled"),
         )
@@ -6067,6 +6110,26 @@ class Step1App:
             self.signal_chain_count_spike_var,
             data.get("signal_chain_count_spike"),
         )
+        old_ignore = data.get("signal_chain_ignore_opposite")
+        ignore_reverse = data.get("signal_chain_ignore_reverse")
+        ignore_momentum = data.get("signal_chain_ignore_momentum")
+        ignore_sr = data.get("signal_chain_ignore_sr")
+        ignore_spike = data.get("signal_chain_ignore_spike")
+        if (
+            ignore_reverse is None
+            and ignore_momentum is None
+            and ignore_sr is None
+            and ignore_spike is None
+            and old_ignore is not None
+        ):
+            ignore_reverse = old_ignore
+            ignore_momentum = old_ignore
+            ignore_sr = old_ignore
+            ignore_spike = old_ignore
+        set_bool(self.signal_chain_ignore_reverse_var, ignore_reverse)
+        set_bool(self.signal_chain_ignore_momentum_var, ignore_momentum)
+        set_bool(self.signal_chain_ignore_sr_var, ignore_sr)
+        set_bool(self.signal_chain_ignore_spike_var, ignore_spike)
         set_bool(
             self.signal_chain_trigger_reverse_var,
             data.get("signal_chain_trigger_reverse"),
@@ -6296,7 +6359,10 @@ class Step1App:
             "signal_chain_neg_pips": self.signal_chain_neg_pips_var.get(),
             "signal_chain_count": self.signal_chain_count_var.get(),
             "signal_chain_monitor_minutes": self.signal_chain_monitor_minutes_var.get(),
-            "signal_chain_ignore_opposite": self.signal_chain_ignore_opposite_var.get(),
+            "signal_chain_ignore_reverse": self.signal_chain_ignore_reverse_var.get(),
+            "signal_chain_ignore_momentum": self.signal_chain_ignore_momentum_var.get(),
+            "signal_chain_ignore_sr": self.signal_chain_ignore_sr_var.get(),
+            "signal_chain_ignore_spike": self.signal_chain_ignore_spike_var.get(),
             "signal_chain_enabled": self.signal_chain_enabled_var.get(),
             "signal_chain_count_reverse": self.signal_chain_count_reverse_var.get(),
             "signal_chain_count_momentum": self.signal_chain_count_momentum_var.get(),
@@ -7086,8 +7152,14 @@ class Step1App:
             self.signal_chain_count_entry.config(state=state)
         if hasattr(self, "signal_chain_monitor_entry"):
             self.signal_chain_monitor_entry.config(state=state)
-        if hasattr(self, "signal_chain_ignore_check"):
-            self.signal_chain_ignore_check.config(state=state)
+        if hasattr(self, "signal_chain_ignore_reverse_check"):
+            self.signal_chain_ignore_reverse_check.config(state=state)
+        if hasattr(self, "signal_chain_ignore_momentum_check"):
+            self.signal_chain_ignore_momentum_check.config(state=state)
+        if hasattr(self, "signal_chain_ignore_sr_check"):
+            self.signal_chain_ignore_sr_check.config(state=state)
+        if hasattr(self, "signal_chain_ignore_spike_check"):
+            self.signal_chain_ignore_spike_check.config(state=state)
         if hasattr(self, "signal_chain_count_reverse_check"):
             self.signal_chain_count_reverse_check.config(state=state)
         if hasattr(self, "signal_chain_count_momentum_check"):

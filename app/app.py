@@ -6,6 +6,7 @@ import queue
 import struct
 import threading
 import time as pytime
+from collections import deque
 from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -1535,6 +1536,9 @@ def simulate_namping_trade(
     should_cancel=None,
     extra_stop_price=None,
     extra_stop_reason="抜け撤退",
+    fast_take_min_pips=0.0,
+    fast_take_window_ms=0.0,
+    fast_take_pips=0.0,
 ):
     if not points:
         return None
@@ -1601,6 +1605,16 @@ def simulate_namping_trade(
     if time_close_seconds and time_close_seconds > 0 and last_entry_time is not None:
         forced_close_time = last_entry_time + timedelta(seconds=time_close_seconds)
 
+    fast_take_enabled = (
+        fast_take_min_pips > 0 and fast_take_window_ms > 0 and fast_take_pips > 0
+    )
+    fast_take_window = (
+        timedelta(milliseconds=fast_take_window_ms) if fast_take_enabled else None
+    )
+    fast_take_move = fast_take_pips * PIP_SIZE
+    min_price_deque = deque()
+    max_price_deque = deque()
+
     j = signal_idx + 1
     while j < n:
         if is_cancel_requested(should_cancel):
@@ -1627,6 +1641,53 @@ def simulate_namping_trade(
         if total_lot <= 0:
             j += 1
             continue
+
+        if fast_take_enabled and avg_price is not None:
+            while min_price_deque and min_price_deque[-1][1] >= bid:
+                min_price_deque.pop()
+            min_price_deque.append((ts, bid))
+            while min_price_deque and min_price_deque[0][0] < ts - fast_take_window:
+                min_price_deque.popleft()
+
+            while max_price_deque and max_price_deque[-1][1] <= bid:
+                max_price_deque.pop()
+            max_price_deque.append((ts, bid))
+            while max_price_deque and max_price_deque[0][0] < ts - fast_take_window:
+                max_price_deque.popleft()
+
+            if min_price_deque and max_price_deque:
+                min_price = min_price_deque[0][1]
+                max_price = max_price_deque[0][1]
+                if side == "long":
+                    if bid - min_price >= fast_take_move:
+                        exit_price = bid
+                        profit = (exit_price - avg_price) / PIP_SIZE
+                        if profit >= fast_take_min_pips:
+                            return {
+                                "entry_idx": first_entry_idx,
+                                "entry_price": entries[0]["price"],
+                                "avg_entry_price": avg_price,
+                                "lot_total": total_lot,
+                                "entries": entries,
+                                "exit_idx": j,
+                                "exit_price": exit_price,
+                                "exit_reason": "急伸利確",
+                            }
+                else:
+                    if max_price - bid >= fast_take_move:
+                        exit_price = ask
+                        profit = (avg_price - exit_price) / PIP_SIZE
+                        if profit >= fast_take_min_pips:
+                            return {
+                                "entry_idx": first_entry_idx,
+                                "entry_price": entries[0]["price"],
+                                "avg_entry_price": avg_price,
+                                "lot_total": total_lot,
+                                "entries": entries,
+                                "exit_idx": j,
+                                "exit_price": exit_price,
+                                "exit_reason": "急伸利確",
+                            }
 
         if extra_stop_price is not None:
             if side == "long":
@@ -1790,11 +1851,15 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     common_fixed_exit_price = bool(
         params.get("common_fixed_exit_price", params.get("fixed_exit_price", True))
     )
+    common_fast_take_min = float(params.get("common_fast_take_min", 0.0))
+    common_fast_take_window_ms = float(params.get("common_fast_take_window_ms", 0.0))
+    common_fast_take_pips = float(params.get("common_fast_take_pips", 0.0))
     common_stop_override = bool(params.get("common_stop_override", True))
     common_take_override = bool(params.get("common_take_override", True))
     common_time_override = bool(params.get("common_time_override", True))
     common_fixed_override = bool(params.get("common_fixed_override", True))
     common_namping_override = bool(params.get("common_namping_override", True))
+    common_fast_take_override = bool(params.get("common_fast_take_override", True))
     ma_enabled = params.get("ma_enabled", False)
     ma_period = max(1, int(params.get("ma_period", 0)))
     ma_deviation = params.get("ma_deviation_rate", 0.0)
@@ -1952,12 +2017,32 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 params.get(f"{kind}_fixed_exit_price", common_fixed_exit_price)
             )
         )
+        fast_take_min = (
+            common_fast_take_min
+            if common_fast_take_override
+            else float(params.get(f"{kind}_fast_take_min", common_fast_take_min))
+        )
+        fast_take_window_ms = (
+            common_fast_take_window_ms
+            if common_fast_take_override
+            else float(
+                params.get(f"{kind}_fast_take_window_ms", common_fast_take_window_ms)
+            )
+        )
+        fast_take_pips = (
+            common_fast_take_pips
+            if common_fast_take_override
+            else float(params.get(f"{kind}_fast_take_pips", common_fast_take_pips))
+        )
         namping = common_namping if common_namping_override else namping_map[kind]
         return {
             "stop": stop_pips * PIP_SIZE,
             "take": take_pips * PIP_SIZE,
             "time_close_seconds": time_close_seconds,
             "fixed_exit_price": fixed_exit_price,
+            "fast_take_min": fast_take_min,
+            "fast_take_window_ms": fast_take_window_ms,
+            "fast_take_pips": fast_take_pips,
             "namping_first_enabled": namping["first_enabled"],
             "namping_steps": namping["steps"],
         }
@@ -2509,6 +2594,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 trade_params["namping_first_enabled"],
                 trade_params["namping_steps"],
                 should_cancel,
+                fast_take_min_pips=trade_params["fast_take_min"],
+                fast_take_window_ms=trade_params["fast_take_window_ms"],
+                fast_take_pips=trade_params["fast_take_pips"],
             )
             if not trade_result:
                 i = entry_idx + 1
@@ -2670,6 +2758,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 trade_params["namping_first_enabled"],
                 trade_params["namping_steps"],
                 should_cancel,
+                fast_take_min_pips=trade_params["fast_take_min"],
+                fast_take_window_ms=trade_params["fast_take_window_ms"],
+                fast_take_pips=trade_params["fast_take_pips"],
             )
             if not trade_result:
                 i = entry_idx + 1
@@ -2789,6 +2880,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 trade_params["namping_first_enabled"],
                 trade_params["namping_steps"],
                 should_cancel,
+                fast_take_min_pips=trade_params["fast_take_min"],
+                fast_take_window_ms=trade_params["fast_take_window_ms"],
+                fast_take_pips=trade_params["fast_take_pips"],
             )
             if not trade_result:
                 i = entry_idx + 1
@@ -2915,6 +3009,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 trade_params["namping_steps"],
                 should_cancel,
                 extra_stop_price=extra_stop_price,
+                fast_take_min_pips=trade_params["fast_take_min"],
+                fast_take_window_ms=trade_params["fast_take_window_ms"],
+                fast_take_pips=trade_params["fast_take_pips"],
             )
             if not trade_result:
                 i = entry_idx + 1
@@ -3189,27 +3286,43 @@ class Step1App:
         self.take_pips_var = tk.StringVar(value="10.0")
         self.time_close_seconds_var = tk.StringVar(value="0")
         self.fixed_exit_price_var = tk.BooleanVar(value=True)
+        self.fast_take_min_var = tk.StringVar(value="5")
+        self.fast_take_window_ms_var = tk.StringVar(value="2000")
+        self.fast_take_pips_var = tk.StringVar(value="5")
         self.common_stop_override_var = tk.BooleanVar(value=True)
         self.common_take_override_var = tk.BooleanVar(value=True)
         self.common_time_override_var = tk.BooleanVar(value=True)
         self.common_fixed_override_var = tk.BooleanVar(value=True)
         self.common_namping_override_var = tk.BooleanVar(value=True)
+        self.common_fast_take_override_var = tk.BooleanVar(value=True)
         self.reverse_stop_pips_var = tk.StringVar(value="10.0")
         self.reverse_take_pips_var = tk.StringVar(value="10.0")
         self.reverse_time_close_seconds_var = tk.StringVar(value="0")
         self.reverse_fixed_exit_price_var = tk.BooleanVar(value=True)
+        self.reverse_fast_take_min_var = tk.StringVar(value="5")
+        self.reverse_fast_take_window_ms_var = tk.StringVar(value="2000")
+        self.reverse_fast_take_pips_var = tk.StringVar(value="5")
         self.momentum_stop_pips_var = tk.StringVar(value="10.0")
         self.momentum_take_pips_var = tk.StringVar(value="10.0")
         self.momentum_time_close_seconds_var = tk.StringVar(value="0")
         self.momentum_fixed_exit_price_var = tk.BooleanVar(value=True)
+        self.momentum_fast_take_min_var = tk.StringVar(value="5")
+        self.momentum_fast_take_window_ms_var = tk.StringVar(value="2000")
+        self.momentum_fast_take_pips_var = tk.StringVar(value="5")
         self.sr_stop_pips_var = tk.StringVar(value="10.0")
         self.sr_take_pips_var = tk.StringVar(value="10.0")
         self.sr_time_close_seconds_var = tk.StringVar(value="0")
         self.sr_fixed_exit_price_var = tk.BooleanVar(value=True)
+        self.sr_fast_take_min_var = tk.StringVar(value="5")
+        self.sr_fast_take_window_ms_var = tk.StringVar(value="2000")
+        self.sr_fast_take_pips_var = tk.StringVar(value="5")
         self.spike_stop_pips_var = tk.StringVar(value="10.0")
         self.spike_take_pips_var = tk.StringVar(value="10.0")
         self.spike_time_close_seconds_var = tk.StringVar(value="0")
         self.spike_fixed_exit_price_var = tk.BooleanVar(value=True)
+        self.spike_fast_take_min_var = tk.StringVar(value="5")
+        self.spike_fast_take_window_ms_var = tk.StringVar(value="2000")
+        self.spike_fast_take_pips_var = tk.StringVar(value="5")
         self.allow_same_direction_var = tk.BooleanVar(value=False)
         self.allow_opposite_direction_var = tk.BooleanVar(value=False)
         self.namping_first_entry_var = tk.BooleanVar(value=True)
@@ -3801,7 +3914,7 @@ class Step1App:
         ttk.Checkbutton(
             common_close, text="共通優先", variable=self.common_take_override_var
         ).grid(row=2, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
-        ttk.Label(common_close, text="時間経過クローズ（秒）").grid(
+        ttk.Label(common_close, text="時間経過(秒)").grid(
             row=3, column=0, sticky="w", pady=(6, 0)
         )
         ttk.Entry(
@@ -3810,15 +3923,38 @@ class Step1App:
         ttk.Checkbutton(
             common_close, text="共通優先", variable=self.common_time_override_var
         ).grid(row=3, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
+        ttk.Label(common_close, text="急伸利確 最低幅（pp）").grid(
+            row=4, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(common_close, textvariable=self.fast_take_min_var, width=8).grid(
+            row=4, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(common_close, text="ミリ秒").grid(
+            row=4, column=2, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(common_close, textvariable=self.fast_take_window_ms_var, width=8).grid(
+            row=4, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(common_close, text="ピプス（pp）").grid(
+            row=4, column=4, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(common_close, textvariable=self.fast_take_pips_var, width=8).grid(
+            row=4, column=5, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Checkbutton(
+            common_close, text="共通優先", variable=self.common_fast_take_override_var
+        ).grid(row=4, column=6, padx=(6, 0), pady=(6, 0), sticky="w")
         self.fixed_exit_price_check = ttk.Checkbutton(
             common_close,
             text="損切/利確を固定決済",
             variable=self.fixed_exit_price_var,
         )
-        self.fixed_exit_price_check.grid(row=4, column=0, padx=(0, 8), pady=(6, 0), sticky="w")
+        self.fixed_exit_price_check.grid(
+            row=5, column=0, padx=(0, 8), pady=(6, 0), sticky="w"
+        )
         ttk.Checkbutton(
             common_close, text="共通優先", variable=self.common_fixed_override_var
-        ).grid(row=4, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
+        ).grid(row=5, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
 
         common_namping = ttk.LabelFrame(common_panel, text="ナンピン条件（共通）")
         common_namping.grid(row=1, column=0, sticky="ew", pady=(0, 6))
@@ -4003,7 +4139,16 @@ class Step1App:
             row=4, column=4, sticky="w", pady=(6, 0)
         )
 
-        def build_close_frame(parent, stop_var, take_var, time_var, fixed_var):
+        def build_close_frame(
+            parent,
+            stop_var,
+            take_var,
+            time_var,
+            fixed_var,
+            fast_min_var,
+            fast_window_var,
+            fast_pips_var,
+        ):
             frame = ttk.LabelFrame(parent, text="決済条件")
             ttk.Label(frame, text="損切幅（ピップス）").grid(
                 row=0, column=0, sticky="w"
@@ -4017,15 +4162,33 @@ class Step1App:
             ttk.Entry(frame, textvariable=take_var, width=8).grid(
                 row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
             )
-            ttk.Label(frame, text="時間経過クローズ（秒）").grid(
+            ttk.Label(frame, text="時間経過(秒)").grid(
                 row=2, column=0, sticky="w", pady=(6, 0)
             )
             ttk.Entry(frame, textvariable=time_var, width=8).grid(
                 row=2, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
             )
+            ttk.Label(frame, text="急伸利確 最低幅（pp）").grid(
+                row=3, column=0, sticky="w", pady=(6, 0)
+            )
+            ttk.Entry(frame, textvariable=fast_min_var, width=8).grid(
+                row=3, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+            )
+            ttk.Label(frame, text="ミリ秒").grid(
+                row=3, column=2, sticky="w", pady=(6, 0)
+            )
+            ttk.Entry(frame, textvariable=fast_window_var, width=8).grid(
+                row=3, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+            )
+            ttk.Label(frame, text="ピプス（pp）").grid(
+                row=3, column=4, sticky="w", pady=(6, 0)
+            )
+            ttk.Entry(frame, textvariable=fast_pips_var, width=8).grid(
+                row=3, column=5, padx=(4, 12), pady=(6, 0), sticky="w"
+            )
             ttk.Checkbutton(
                 frame, text="損切/利確を固定決済", variable=fixed_var
-            ).grid(row=3, column=0, columnspan=2, pady=(6, 0), sticky="w")
+            ).grid(row=4, column=0, columnspan=2, pady=(6, 0), sticky="w")
             return frame
 
         self.entry_reverse_check = ttk.Checkbutton(
@@ -4041,6 +4204,9 @@ class Step1App:
             self.reverse_take_pips_var,
             self.reverse_time_close_seconds_var,
             self.reverse_fixed_exit_price_var,
+            self.reverse_fast_take_min_var,
+            self.reverse_fast_take_window_ms_var,
+            self.reverse_fast_take_pips_var,
         )
         reverse_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         reverse_namping = ttk.LabelFrame(reverse_tab, text="ナンピン条件")
@@ -4099,6 +4265,9 @@ class Step1App:
             self.momentum_take_pips_var,
             self.momentum_time_close_seconds_var,
             self.momentum_fixed_exit_price_var,
+            self.momentum_fast_take_min_var,
+            self.momentum_fast_take_window_ms_var,
+            self.momentum_fast_take_pips_var,
         )
         momentum_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         momentum_namping = ttk.LabelFrame(momentum_tab, text="ナンピン条件")
@@ -4156,6 +4325,9 @@ class Step1App:
             self.sr_take_pips_var,
             self.sr_time_close_seconds_var,
             self.sr_fixed_exit_price_var,
+            self.sr_fast_take_min_var,
+            self.sr_fast_take_window_ms_var,
+            self.sr_fast_take_pips_var,
         )
         sr_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         sr_namping = ttk.LabelFrame(sr_tab, text="ナンピン条件")
@@ -4349,6 +4521,9 @@ class Step1App:
             self.spike_take_pips_var,
             self.spike_time_close_seconds_var,
             self.spike_fixed_exit_price_var,
+            self.spike_fast_take_min_var,
+            self.spike_fast_take_window_ms_var,
+            self.spike_fast_take_pips_var,
         )
         spike_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         spike_namping = ttk.LabelFrame(spike_tab, text="ナンピン条件")
@@ -4602,33 +4777,69 @@ class Step1App:
             common_take_pips = self._parse_number(self.take_pips_var.get())
             common_time_close_seconds = self._parse_number(self.time_close_seconds_var.get())
             common_fixed_exit_price = self.fixed_exit_price_var.get()
+            common_fast_take_min = self._parse_number(self.fast_take_min_var.get())
+            common_fast_take_window_ms = self._parse_number(
+                self.fast_take_window_ms_var.get()
+            )
+            common_fast_take_pips = self._parse_number(self.fast_take_pips_var.get())
             common_stop_override = self.common_stop_override_var.get()
             common_take_override = self.common_take_override_var.get()
             common_time_override = self.common_time_override_var.get()
             common_fixed_override = self.common_fixed_override_var.get()
             common_namping_override = self.common_namping_override_var.get()
+            common_fast_take_override = self.common_fast_take_override_var.get()
             reverse_stop_pips = self._parse_number(self.reverse_stop_pips_var.get())
             reverse_take_pips = self._parse_number(self.reverse_take_pips_var.get())
             reverse_time_close_seconds = self._parse_number(
                 self.reverse_time_close_seconds_var.get()
             )
             reverse_fixed_exit_price = self.reverse_fixed_exit_price_var.get()
+            reverse_fast_take_min = self._parse_number(
+                self.reverse_fast_take_min_var.get()
+            )
+            reverse_fast_take_window_ms = self._parse_number(
+                self.reverse_fast_take_window_ms_var.get()
+            )
+            reverse_fast_take_pips = self._parse_number(
+                self.reverse_fast_take_pips_var.get()
+            )
             momentum_stop_pips = self._parse_number(self.momentum_stop_pips_var.get())
             momentum_take_pips = self._parse_number(self.momentum_take_pips_var.get())
             momentum_time_close_seconds = self._parse_number(
                 self.momentum_time_close_seconds_var.get()
             )
             momentum_fixed_exit_price = self.momentum_fixed_exit_price_var.get()
+            momentum_fast_take_min = self._parse_number(
+                self.momentum_fast_take_min_var.get()
+            )
+            momentum_fast_take_window_ms = self._parse_number(
+                self.momentum_fast_take_window_ms_var.get()
+            )
+            momentum_fast_take_pips = self._parse_number(
+                self.momentum_fast_take_pips_var.get()
+            )
             sr_stop_pips = self._parse_number(self.sr_stop_pips_var.get())
             sr_take_pips = self._parse_number(self.sr_take_pips_var.get())
             sr_time_close_seconds = self._parse_number(self.sr_time_close_seconds_var.get())
             sr_fixed_exit_price = self.sr_fixed_exit_price_var.get()
+            sr_fast_take_min = self._parse_number(self.sr_fast_take_min_var.get())
+            sr_fast_take_window_ms = self._parse_number(
+                self.sr_fast_take_window_ms_var.get()
+            )
+            sr_fast_take_pips = self._parse_number(self.sr_fast_take_pips_var.get())
             spike_stop_pips = self._parse_number(self.spike_stop_pips_var.get())
             spike_take_pips = self._parse_number(self.spike_take_pips_var.get())
             spike_time_close_seconds = self._parse_number(
                 self.spike_time_close_seconds_var.get()
             )
             spike_fixed_exit_price = self.spike_fixed_exit_price_var.get()
+            spike_fast_take_min = self._parse_number(self.spike_fast_take_min_var.get())
+            spike_fast_take_window_ms = self._parse_number(
+                self.spike_fast_take_window_ms_var.get()
+            )
+            spike_fast_take_pips = self._parse_number(
+                self.spike_fast_take_pips_var.get()
+            )
             ma_enabled = self.ma_filter_var.get()
             ma_period = self._parse_number(self.ma_period_var.get())
             ma_deviation_pct = self._parse_number(self.ma_deviation_var.get())
@@ -4751,6 +4962,15 @@ class Step1App:
             if common_time_override and common_time_close_seconds < 0:
                 messagebox.showerror("エラー", "時間経過クローズは0以上にしてください。")
                 return None
+            if common_fast_take_min < 0:
+                messagebox.showerror("エラー", "急伸利確の最低幅は0以上にしてください。")
+                return None
+            if common_fast_take_window_ms < 0:
+                messagebox.showerror("エラー", "急伸利確のミリ秒は0以上にしてください。")
+                return None
+            if common_fast_take_pips < 0:
+                messagebox.showerror("エラー", "急伸利確のピプスは0以上にしてください。")
+                return None
             if common_namping_override:
                 if not validate_namping("共通", common_namping):
                     return None
@@ -4765,6 +4985,22 @@ class Step1App:
             if not common_time_override and reverse_time_close_seconds < 0:
                 messagebox.showerror("エラー", "秒逆張りの時間経過クローズは0以上にしてください。")
                 return None
+            if not common_fast_take_override:
+                if reverse_fast_take_min < 0:
+                    messagebox.showerror(
+                        "エラー", "秒逆張りの急伸利確最低幅は0以上にしてください。"
+                    )
+                    return None
+                if reverse_fast_take_window_ms < 0:
+                    messagebox.showerror(
+                        "エラー", "秒逆張りの急伸利確ミリ秒は0以上にしてください。"
+                    )
+                    return None
+                if reverse_fast_take_pips < 0:
+                    messagebox.showerror(
+                        "エラー", "秒逆張りの急伸利確ピプスは0以上にしてください。"
+                    )
+                    return None
             if not common_namping_override:
                 if not validate_namping("秒逆張り", reverse_namping):
                     return None
@@ -4779,6 +5015,22 @@ class Step1App:
             if not common_time_override and momentum_time_close_seconds < 0:
                 messagebox.showerror("エラー", "勢い追随の時間経過クローズは0以上にしてください。")
                 return None
+            if not common_fast_take_override:
+                if momentum_fast_take_min < 0:
+                    messagebox.showerror(
+                        "エラー", "勢い追随の急伸利確最低幅は0以上にしてください。"
+                    )
+                    return None
+                if momentum_fast_take_window_ms < 0:
+                    messagebox.showerror(
+                        "エラー", "勢い追随の急伸利確ミリ秒は0以上にしてください。"
+                    )
+                    return None
+                if momentum_fast_take_pips < 0:
+                    messagebox.showerror(
+                        "エラー", "勢い追随の急伸利確ピプスは0以上にしてください。"
+                    )
+                    return None
             if not common_namping_override:
                 if not validate_namping("勢い追随", momentum_namping):
                     return None
@@ -4793,6 +5045,22 @@ class Step1App:
             if not common_time_override and sr_time_close_seconds < 0:
                 messagebox.showerror("エラー", "水平線戻りの時間経過クローズは0以上にしてください。")
                 return None
+            if not common_fast_take_override:
+                if sr_fast_take_min < 0:
+                    messagebox.showerror(
+                        "エラー", "水平線戻りの急伸利確最低幅は0以上にしてください。"
+                    )
+                    return None
+                if sr_fast_take_window_ms < 0:
+                    messagebox.showerror(
+                        "エラー", "水平線戻りの急伸利確ミリ秒は0以上にしてください。"
+                    )
+                    return None
+                if sr_fast_take_pips < 0:
+                    messagebox.showerror(
+                        "エラー", "水平線戻りの急伸利確ピプスは0以上にしてください。"
+                    )
+                    return None
             if not common_namping_override:
                 if not validate_namping("水平線戻り", sr_namping):
                     return None
@@ -4807,6 +5075,22 @@ class Step1App:
             if not common_time_override and spike_time_close_seconds < 0:
                 messagebox.showerror("エラー", "スパイクの時間経過クローズは0以上にしてください。")
                 return None
+            if not common_fast_take_override:
+                if spike_fast_take_min < 0:
+                    messagebox.showerror(
+                        "エラー", "スパイクの急伸利確最低幅は0以上にしてください。"
+                    )
+                    return None
+                if spike_fast_take_window_ms < 0:
+                    messagebox.showerror(
+                        "エラー", "スパイクの急伸利確ミリ秒は0以上にしてください。"
+                    )
+                    return None
+                if spike_fast_take_pips < 0:
+                    messagebox.showerror(
+                        "エラー", "スパイクの急伸利確ピプスは0以上にしてください。"
+                    )
+                    return None
             if not common_namping_override:
                 if not validate_namping("スパイク", spike_namping):
                     return None
@@ -4866,27 +5150,43 @@ class Step1App:
             "common_take_pips": common_take_pips,
             "common_time_close_seconds": common_time_close_seconds,
             "common_fixed_exit_price": common_fixed_exit_price,
+            "common_fast_take_min": common_fast_take_min,
+            "common_fast_take_window_ms": common_fast_take_window_ms,
+            "common_fast_take_pips": common_fast_take_pips,
             "common_stop_override": common_stop_override,
             "common_take_override": common_take_override,
             "common_time_override": common_time_override,
             "common_fixed_override": common_fixed_override,
             "common_namping_override": common_namping_override,
+            "common_fast_take_override": common_fast_take_override,
             "reverse_stop_pips": reverse_stop_pips,
             "reverse_take_pips": reverse_take_pips,
             "reverse_time_close_seconds": reverse_time_close_seconds,
             "reverse_fixed_exit_price": reverse_fixed_exit_price,
+            "reverse_fast_take_min": reverse_fast_take_min,
+            "reverse_fast_take_window_ms": reverse_fast_take_window_ms,
+            "reverse_fast_take_pips": reverse_fast_take_pips,
             "momentum_stop_pips": momentum_stop_pips,
             "momentum_take_pips": momentum_take_pips,
             "momentum_time_close_seconds": momentum_time_close_seconds,
             "momentum_fixed_exit_price": momentum_fixed_exit_price,
+            "momentum_fast_take_min": momentum_fast_take_min,
+            "momentum_fast_take_window_ms": momentum_fast_take_window_ms,
+            "momentum_fast_take_pips": momentum_fast_take_pips,
             "sr_stop_pips": sr_stop_pips,
             "sr_take_pips": sr_take_pips,
             "sr_time_close_seconds": sr_time_close_seconds,
             "sr_fixed_exit_price": sr_fixed_exit_price,
+            "sr_fast_take_min": sr_fast_take_min,
+            "sr_fast_take_window_ms": sr_fast_take_window_ms,
+            "sr_fast_take_pips": sr_fast_take_pips,
             "spike_stop_pips": spike_stop_pips,
             "spike_take_pips": spike_take_pips,
             "spike_time_close_seconds": spike_time_close_seconds,
             "spike_fixed_exit_price": spike_fixed_exit_price,
+            "spike_fast_take_min": spike_fast_take_min,
+            "spike_fast_take_window_ms": spike_fast_take_window_ms,
+            "spike_fast_take_pips": spike_fast_take_pips,
             "ma_enabled": ma_enabled,
             "ma_period": int(ma_period),
             "ma_deviation_rate": ma_deviation_pct / 100.0,
@@ -5312,6 +5612,9 @@ class Step1App:
         set_var(self.spread_var, data.get("spread"))
         set_var(self.stop_pips_var, data.get("stop_pips"))
         set_var(self.take_pips_var, data.get("take_pips"))
+        set_var(self.fast_take_min_var, data.get("fast_take_min"))
+        set_var(self.fast_take_window_ms_var, data.get("fast_take_window_ms"))
+        set_var(self.fast_take_pips_var, data.get("fast_take_pips"))
         time_close_seconds = data.get("time_close_seconds")
         if time_close_seconds is None:
             old_minutes = data.get("time_close_minutes")
@@ -5327,6 +5630,7 @@ class Step1App:
         set_bool(self.common_time_override_var, data.get("common_time_override"))
         set_bool(self.common_fixed_override_var, data.get("common_fixed_override"))
         set_bool(self.common_namping_override_var, data.get("common_namping_override"))
+        set_bool(self.common_fast_take_override_var, data.get("common_fast_take_override"))
         set_var(self.reverse_stop_pips_var, data.get("reverse_stop_pips"))
         set_var(self.reverse_take_pips_var, data.get("reverse_take_pips"))
         set_var(
@@ -5334,6 +5638,12 @@ class Step1App:
             data.get("reverse_time_close_seconds"),
         )
         set_bool(self.reverse_fixed_exit_price_var, data.get("reverse_fixed_exit_price"))
+        set_var(self.reverse_fast_take_min_var, data.get("reverse_fast_take_min"))
+        set_var(
+            self.reverse_fast_take_window_ms_var,
+            data.get("reverse_fast_take_window_ms"),
+        )
+        set_var(self.reverse_fast_take_pips_var, data.get("reverse_fast_take_pips"))
         set_var(self.momentum_stop_pips_var, data.get("momentum_stop_pips"))
         set_var(self.momentum_take_pips_var, data.get("momentum_take_pips"))
         set_var(
@@ -5343,10 +5653,19 @@ class Step1App:
         set_bool(
             self.momentum_fixed_exit_price_var, data.get("momentum_fixed_exit_price")
         )
+        set_var(self.momentum_fast_take_min_var, data.get("momentum_fast_take_min"))
+        set_var(
+            self.momentum_fast_take_window_ms_var,
+            data.get("momentum_fast_take_window_ms"),
+        )
+        set_var(self.momentum_fast_take_pips_var, data.get("momentum_fast_take_pips"))
         set_var(self.sr_stop_pips_var, data.get("sr_stop_pips"))
         set_var(self.sr_take_pips_var, data.get("sr_take_pips"))
         set_var(self.sr_time_close_seconds_var, data.get("sr_time_close_seconds"))
         set_bool(self.sr_fixed_exit_price_var, data.get("sr_fixed_exit_price"))
+        set_var(self.sr_fast_take_min_var, data.get("sr_fast_take_min"))
+        set_var(self.sr_fast_take_window_ms_var, data.get("sr_fast_take_window_ms"))
+        set_var(self.sr_fast_take_pips_var, data.get("sr_fast_take_pips"))
         set_var(self.spike_stop_pips_var, data.get("spike_stop_pips"))
         set_var(self.spike_take_pips_var, data.get("spike_take_pips"))
         set_var(
@@ -5354,6 +5673,12 @@ class Step1App:
             data.get("spike_time_close_seconds"),
         )
         set_bool(self.spike_fixed_exit_price_var, data.get("spike_fixed_exit_price"))
+        set_var(self.spike_fast_take_min_var, data.get("spike_fast_take_min"))
+        set_var(
+            self.spike_fast_take_window_ms_var,
+            data.get("spike_fast_take_window_ms"),
+        )
+        set_var(self.spike_fast_take_pips_var, data.get("spike_fast_take_pips"))
         set_bool(self.allow_same_direction_var, data.get("allow_same_direction"))
         set_bool(self.allow_opposite_direction_var, data.get("allow_opposite_direction"))
         set_bool(self.namping_first_entry_var, data.get("namping_first_enabled"))
@@ -5774,27 +6099,43 @@ class Step1App:
             "take_pips": self.take_pips_var.get(),
             "time_close_seconds": self.time_close_seconds_var.get(),
             "fixed_exit_price": self.fixed_exit_price_var.get(),
+            "fast_take_min": self.fast_take_min_var.get(),
+            "fast_take_window_ms": self.fast_take_window_ms_var.get(),
+            "fast_take_pips": self.fast_take_pips_var.get(),
             "common_stop_override": self.common_stop_override_var.get(),
             "common_take_override": self.common_take_override_var.get(),
             "common_time_override": self.common_time_override_var.get(),
             "common_fixed_override": self.common_fixed_override_var.get(),
             "common_namping_override": self.common_namping_override_var.get(),
+            "common_fast_take_override": self.common_fast_take_override_var.get(),
             "reverse_stop_pips": self.reverse_stop_pips_var.get(),
             "reverse_take_pips": self.reverse_take_pips_var.get(),
             "reverse_time_close_seconds": self.reverse_time_close_seconds_var.get(),
             "reverse_fixed_exit_price": self.reverse_fixed_exit_price_var.get(),
+            "reverse_fast_take_min": self.reverse_fast_take_min_var.get(),
+            "reverse_fast_take_window_ms": self.reverse_fast_take_window_ms_var.get(),
+            "reverse_fast_take_pips": self.reverse_fast_take_pips_var.get(),
             "momentum_stop_pips": self.momentum_stop_pips_var.get(),
             "momentum_take_pips": self.momentum_take_pips_var.get(),
             "momentum_time_close_seconds": self.momentum_time_close_seconds_var.get(),
             "momentum_fixed_exit_price": self.momentum_fixed_exit_price_var.get(),
+            "momentum_fast_take_min": self.momentum_fast_take_min_var.get(),
+            "momentum_fast_take_window_ms": self.momentum_fast_take_window_ms_var.get(),
+            "momentum_fast_take_pips": self.momentum_fast_take_pips_var.get(),
             "sr_stop_pips": self.sr_stop_pips_var.get(),
             "sr_take_pips": self.sr_take_pips_var.get(),
             "sr_time_close_seconds": self.sr_time_close_seconds_var.get(),
             "sr_fixed_exit_price": self.sr_fixed_exit_price_var.get(),
+            "sr_fast_take_min": self.sr_fast_take_min_var.get(),
+            "sr_fast_take_window_ms": self.sr_fast_take_window_ms_var.get(),
+            "sr_fast_take_pips": self.sr_fast_take_pips_var.get(),
             "spike_stop_pips": self.spike_stop_pips_var.get(),
             "spike_take_pips": self.spike_take_pips_var.get(),
             "spike_time_close_seconds": self.spike_time_close_seconds_var.get(),
             "spike_fixed_exit_price": self.spike_fixed_exit_price_var.get(),
+            "spike_fast_take_min": self.spike_fast_take_min_var.get(),
+            "spike_fast_take_window_ms": self.spike_fast_take_window_ms_var.get(),
+            "spike_fast_take_pips": self.spike_fast_take_pips_var.get(),
             "allow_same_direction": self.allow_same_direction_var.get(),
             "allow_opposite_direction": self.allow_opposite_direction_var.get(),
             "namping_first_enabled": self.namping_first_entry_var.get(),

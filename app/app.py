@@ -710,6 +710,38 @@ def find_spike_signal(
     return None
 
 
+def find_reverse_signal(
+    points, times, start_idx, window, move, should_cancel=None
+):
+    t0, p0 = points[start_idx]
+    end_time = t0 + window
+    end_idx = bisect_right(times, end_time)
+    if end_idx <= start_idx + 1:
+        return None
+
+    upper = p0 + move
+    lower = p0 - move
+
+    for j in range(start_idx + 1, end_idx):
+        if is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
+        price = points[j][1]
+        if price >= upper:
+            return {
+                "entry_idx": j,
+                "side": "short",
+                "entry_reason": "秒逆張り",
+            }
+        if price <= lower:
+            return {
+                "entry_idx": j,
+                "side": "long",
+                "entry_reason": "秒逆張り",
+            }
+
+    return None
+
+
 def build_second_extremes(points):
     n = len(points)
     lows = [0.0] * n
@@ -1349,7 +1381,7 @@ def simulate_exit(
     stop,
     take,
     fixed_exit_price=True,
-    time_close_minutes=0.0,
+    time_close_seconds=0.0,
     minute_close_info=None,
     should_cancel=None,
 ):
@@ -1361,14 +1393,8 @@ def simulate_exit(
         take_price = entry_price - take
 
     forced_close_time = None
-    if time_close_minutes and time_close_minutes > 0:
-        forced_close_time = points[entry_idx][0] + timedelta(minutes=time_close_minutes)
-
-    minute_times = []
-    minute_close_prices = []
-    minute_close_indices = []
-    if minute_close_info:
-        minute_times, minute_close_prices, minute_close_indices = minute_close_info
+    if time_close_seconds and time_close_seconds > 0:
+        forced_close_time = points[entry_idx][0] + timedelta(seconds=time_close_seconds)
 
     n = len(points)
     exit_idx = None
@@ -1403,19 +1429,8 @@ def simulate_exit(
                 exit_reason = "利確"
                 break
         if forced_close_time is not None and _t >= forced_close_time:
-            close_bid = bid
-            close_idx = j
-            if minute_times:
-                minute_start = _t.replace(second=0, microsecond=0)
-                minute_pos = bisect_left(minute_times, minute_start)
-                if (
-                    0 <= minute_pos < len(minute_times)
-                    and minute_times[minute_pos] == minute_start
-                ):
-                    close_bid = minute_close_prices[minute_pos]
-                    close_idx = minute_close_indices[minute_pos]
-            exit_idx = close_idx
-            exit_price = close_bid if side == "long" else close_bid + spread
+            exit_idx = j
+            exit_price = bid if side == "long" else bid + spread
             exit_reason = "時間"
             break
         j += 1
@@ -1438,7 +1453,7 @@ def simulate_namping_trade(
     stop,
     take,
     fixed_exit_price=True,
-    time_close_minutes=0.0,
+    time_close_seconds=0.0,
     minute_close_info=None,
     first_entry_enabled=True,
     steps=None,
@@ -1478,12 +1493,6 @@ def simulate_namping_trade(
 
     stop_ready = False
 
-    minute_times = []
-    minute_close_prices = []
-    minute_close_indices = []
-    if minute_close_info:
-        minute_times, minute_close_prices, minute_close_indices = minute_close_info
-
     entries = []
     total_lot = 0.0
     avg_price = None
@@ -1512,8 +1521,8 @@ def simulate_namping_trade(
             stop_ready = True
 
     forced_close_time = None
-    if time_close_minutes and time_close_minutes > 0 and last_entry_time is not None:
-        forced_close_time = last_entry_time + timedelta(minutes=time_close_minutes)
+    if time_close_seconds and time_close_seconds > 0 and last_entry_time is not None:
+        forced_close_time = last_entry_time + timedelta(seconds=time_close_seconds)
 
     j = signal_idx + 1
     while j < n:
@@ -1533,8 +1542,8 @@ def simulate_namping_trade(
             if adverse_move >= step["trigger"]:
                 add_entry(j, current_entry_price, step["lot"], step["label"])
                 step["done"] = True
-                if time_close_minutes and time_close_minutes > 0:
-                    forced_close_time = ts + timedelta(minutes=time_close_minutes)
+                if time_close_seconds and time_close_seconds > 0:
+                    forced_close_time = ts + timedelta(seconds=time_close_seconds)
         if enabled_steps and all(step["done"] for step in enabled_steps):
             stop_ready = True
 
@@ -1599,25 +1608,14 @@ def simulate_namping_trade(
                 }
 
         if forced_close_time is not None and ts >= forced_close_time:
-            close_bid = bid
-            close_idx = j
-            if minute_times:
-                minute_start = ts.replace(second=0, microsecond=0)
-                minute_pos = bisect_left(minute_times, minute_start)
-                if (
-                    0 <= minute_pos < len(minute_times)
-                    and minute_times[minute_pos] == minute_start
-                ):
-                    close_bid = minute_close_prices[minute_pos]
-                    close_idx = minute_close_indices[minute_pos]
-            exit_price = close_bid if side == "long" else close_bid + spread
+            exit_price = bid if side == "long" else bid + spread
             return {
                 "entry_idx": first_entry_idx,
                 "entry_price": entries[0]["price"],
                 "avg_entry_price": avg_price,
                 "lot_total": total_lot,
                 "entries": entries,
-                "exit_idx": close_idx,
+                "exit_idx": j,
                 "exit_price": exit_price,
                 "exit_reason": "時間",
             }
@@ -1682,7 +1680,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     stop = params["stop_pips"] * PIP_SIZE
     take = params["take_pips"] * PIP_SIZE
     fixed_exit_price = bool(params.get("fixed_exit_price", True))
-    time_close_minutes = float(params.get("time_close_minutes", 0.0))
+    time_close_seconds = float(params.get("time_close_seconds", 0.0))
     ma_enabled = params.get("ma_enabled", False)
     ma_period = max(1, int(params.get("ma_period", 0)))
     ma_deviation = params.get("ma_deviation_rate", 0.0)
@@ -1716,6 +1714,18 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     momentum_tick_min_per_min = float(params.get("momentum_tick_min_per_min", 100.0))
     momentum_hold_seconds = float(params.get("momentum_hold_seconds", 2.0))
     momentum_max_move = float(params.get("momentum_max_pips", 0.0)) * PIP_SIZE
+    reverse_window_seconds = float(params.get("reverse_window_seconds", 2.0))
+    reverse_move = float(params.get("reverse_pips", 3.0)) * PIP_SIZE
+    signal_chain_pos_move = float(params.get("signal_chain_pos_pips", 10.0)) * PIP_SIZE
+    signal_chain_neg_move = float(params.get("signal_chain_neg_pips", 5.0)) * PIP_SIZE
+    signal_chain_count = int(params.get("signal_chain_count", 3))
+    signal_chain_monitor_minutes = float(
+        params.get("signal_chain_monitor_minutes", 240.0)
+    )
+    signal_chain_ignore_opposite = bool(
+        params.get("signal_chain_ignore_opposite", True)
+    )
+    signal_chain_enabled = bool(params.get("signal_chain_enabled", True))
     entry_mode = params.get("entry_mode", "spike")
     entry_spike_enabled = bool(
         params.get("entry_spike_enabled", entry_mode in ("spike", "both", "multi"))
@@ -1725,6 +1735,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     )
     entry_momentum_enabled = bool(
         params.get("entry_momentum_enabled", entry_mode in ("momentum", "multi"))
+    )
+    entry_reverse_enabled = bool(
+        params.get("entry_reverse_enabled", entry_mode in ("reverse", "multi"))
     )
 
     candle_times = []
@@ -1744,11 +1757,6 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         candle_times, ma_values, ma_series = ma_entry
 
     minute_close_info = None
-    if time_close_minutes > 0:
-        minute_close_info = runtime_cache.get("minute_close_info")
-        if minute_close_info is None:
-            minute_close_info = build_minute_close_info(points_sorted)
-            runtime_cache["minute_close_info"] = minute_close_info
 
     momentum_window = None
     second_lows = None
@@ -1771,6 +1779,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     active_positions_sr = []
     active_positions_spike = []
     active_positions_momentum = []
+    active_positions_reverse = []
 
     def can_open_position(entry_idx, side, positions):
         if not allow_overlap:
@@ -1789,6 +1798,305 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             positions.append({"side": side, "exit_idx": exit_idx})
 
     n = len(points_sorted)
+    signal_chain_count = max(1, signal_chain_count)
+
+    def signal_key(signal):
+        return (
+            signal.get("source"),
+            signal.get("entry_idx"),
+            signal.get("side"),
+        )
+
+    def signal_passes_filters(signal):
+        entry_idx = signal["entry_idx"]
+        entry_time, entry_bid = points_sorted[entry_idx]
+        side = signal["side"]
+        entry_price = entry_bid + spread if side == "long" else entry_bid
+        if exclude_enabled and entry_time.hour in exclude_hours:
+            return False
+        if ma_enabled:
+            if not candle_times:
+                return False
+            candle_idx = bisect_right(candle_times, entry_time) - 1
+            if candle_idx < 0 or candle_idx >= len(ma_values):
+                return False
+            ma_value = ma_values[candle_idx]
+            if ma_value is None or ma_value <= 0:
+                return False
+            if side == "long":
+                deviation = (ma_value - entry_price) / ma_value
+            else:
+                deviation = (entry_price - ma_value) / ma_value
+            if deviation < ma_deviation:
+                return False
+        return True
+
+    def build_signal_gate(all_signals):
+        if not all_signals:
+            return set()
+        allowed = set()
+        pending = {"long": None, "short": None}
+
+        def new_state(side, idx, price, ts):
+            expires_at = None
+            if signal_chain_monitor_minutes and signal_chain_monitor_minutes > 0:
+                expires_at = ts + timedelta(minutes=signal_chain_monitor_minutes)
+            return {
+                "side": side,
+                "first_idx": idx,
+                "first_price": price,
+                "max_price": price,
+                "min_price": price,
+                "count": 1,
+                "last_idx": idx,
+                "expires_at": expires_at,
+            }
+
+        def update_state(state, idx):
+            if idx <= state["last_idx"]:
+                return
+            for k in range(state["last_idx"] + 1, idx + 1):
+                price = points_sorted[k][1]
+                if state["side"] == "long":
+                    if price > state["max_price"]:
+                        state["max_price"] = price
+                else:
+                    if price < state["min_price"]:
+                        state["min_price"] = price
+            state["last_idx"] = idx
+
+        ordered = sorted(
+            all_signals,
+            key=lambda s: (s.get("entry_idx", -1), s.get("source") or ""),
+        )
+        for sig in ordered:
+            if not signal_passes_filters(sig):
+                continue
+            idx = sig["entry_idx"]
+            ts, price = points_sorted[idx]
+
+            for side_key in ("long", "short"):
+                state = pending.get(side_key)
+                if not state:
+                    continue
+                if state["expires_at"] is not None and ts > state["expires_at"]:
+                    pending[side_key] = None
+                    continue
+                update_state(state, idx)
+
+            side = sig["side"]
+            other = "short" if side == "long" else "long"
+            if not signal_chain_ignore_opposite and pending.get(other):
+                pending[other] = None
+
+            state = pending.get(side)
+            if state is None:
+                state = new_state(side, idx, price, ts)
+                pending[side] = state
+            else:
+                state["count"] += 1
+
+            if side == "long":
+                favorable = state["max_price"] - state["first_price"]
+                adverse = state["first_price"] - price
+            else:
+                favorable = state["first_price"] - state["min_price"]
+                adverse = price - state["first_price"]
+
+            if signal_chain_pos_move > 0 and favorable >= signal_chain_pos_move:
+                pending[side] = new_state(side, idx, price, ts)
+                continue
+            if adverse >= signal_chain_neg_move and state["count"] >= signal_chain_count:
+                allowed.add(signal_key(sig))
+                pending[side] = None
+
+        return allowed
+    gate_signals = []
+
+    if signal_chain_enabled and entry_sr_enabled:
+        sr_break_pips = params.get("sr_break_pips", 5.0)
+        sr_tick_limit = int(params.get("sr_tick_limit", 10))
+        sr_tick_min = float(params.get("sr_tick_min", 0.0))
+        sr_wait_bars = int(params.get("sr_wait_bars", 0))
+        sr_min_seconds = float(params.get("sr_min_seconds", 0.0))
+        sr_max_seconds = float(params.get("sr_max_seconds", 60.0))
+        sr_midpoint_pct = float(params.get("sr_midpoint_pct", 50.0))
+        sr_dominance_pct = float(params.get("sr_dominance_pct", 50.0))
+        sr_move_ratio_pct = float(params.get("sr_move_ratio_pct", 100.0))
+        sr_move_speed_ratio_pct = float(params.get("sr_move_speed_ratio_pct", 100.0))
+        sr_favored_tick_min_pips = float(params.get("sr_favored_tick_min_pips", 1.0))
+        sr_move_ratio_enabled = bool(params.get("sr_move_ratio_enabled", True))
+        sr_move_speed_ratio_enabled = bool(params.get("sr_move_speed_ratio_enabled", True))
+        sr_ratio_join_mode = params.get("sr_ratio_join_mode", "and")
+        sr_target = params.get("sr_target", "both")
+        line_interval = max(1, int(params.get("line_interval", 1)))
+        sr_params = params.get("sr_params") or {}
+        range_params = params.get("range_params") or {}
+        line_key = (
+            line_interval,
+            sr_target,
+            freeze_value(sr_params),
+            freeze_value(range_params),
+        )
+        line_cache = runtime_cache.setdefault("line_cache", {})
+        line_entry = line_cache.get(line_key)
+        if line_entry is None:
+            candle_cache = runtime_cache.setdefault("candle_cache", {})
+            line_candles = candle_cache.get(line_interval)
+            if line_candles is None:
+                line_candles = build_timeframe_candles(points_sorted, line_interval)
+                candle_cache[line_interval] = line_candles
+            lines = build_reentry_lines(line_candles, sr_params, range_params, sr_target)
+            line_start_times = [line["start_time"] for line in lines]
+            end_limits_base = [
+                line["end_time"] + timedelta(minutes=line_interval) for line in lines
+            ]
+            line_entry = {
+                "lines": lines,
+                "line_start_times": line_start_times,
+                "end_limits_base": end_limits_base,
+                "start_limits_cache": {},
+            }
+            line_cache[line_key] = line_entry
+
+        lines = line_entry["lines"]
+        line_start_times = line_entry["line_start_times"]
+        end_limits = line_entry["end_limits_base"]
+        max_break = sr_break_pips * PIP_SIZE
+        favored_tick_min_move = sr_favored_tick_min_pips * PIP_SIZE
+        bin_key = (line_key, round(max_break, 10))
+        line_bin_cache = runtime_cache.setdefault("line_bin_cache", {})
+        bin_entry = line_bin_cache.get(bin_key)
+        if bin_entry is None:
+            bin_size, line_bins = build_line_bins(lines, max_break, line_start_times)
+            bin_entry = {
+                "bin_size": bin_size,
+                "line_bins": line_bins,
+            }
+            line_bin_cache[bin_key] = bin_entry
+        else:
+            bin_size = bin_entry["bin_size"]
+            line_bins = bin_entry["line_bins"]
+
+        bin_state_gate = {}
+        disabled_lines_gate = set()
+        start_limits_cache = line_entry.setdefault("start_limits_cache", {})
+        start_limits = start_limits_cache.get(sr_wait_bars)
+        if start_limits is None:
+            wait_delta = timedelta(minutes=line_interval * sr_wait_bars)
+            start_limits = [start_time + wait_delta for start_time in line_start_times]
+            start_limits_cache[sr_wait_bars] = start_limits
+
+        i_gate = 0
+        while i_gate < n - 1:
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
+            signal = find_sr_reentry_signal(
+                points_sorted,
+                i_gate,
+                lines,
+                max_break,
+                sr_tick_limit,
+                sr_tick_min,
+                line_bins,
+                bin_size,
+                bin_state_gate,
+                line_start_times,
+                disabled_lines_gate,
+                end_limits,
+                start_limits,
+                sr_min_seconds,
+                sr_max_seconds,
+                sr_midpoint_pct,
+                sr_dominance_pct,
+                sr_move_ratio_pct,
+                sr_move_speed_ratio_pct,
+                favored_tick_min_move,
+                sr_move_ratio_enabled,
+                sr_move_speed_ratio_enabled,
+                sr_ratio_join_mode,
+                should_cancel,
+            )
+            if not signal:
+                break
+            gate_signal = dict(signal)
+            gate_signal["source"] = "sr"
+            gate_signals.append(gate_signal)
+            i_gate = signal["entry_idx"] + 1
+
+    if signal_chain_enabled and entry_spike_enabled:
+        i_gate = 0
+        while i_gate < n - 1:
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
+            signal = find_spike_signal(
+                points_sorted,
+                times,
+                i_gate,
+                window,
+                spike,
+                retrace_rate,
+                should_cancel,
+            )
+            if not signal:
+                i_gate += 1
+                continue
+            gate_signal = dict(signal)
+            gate_signal["source"] = "spike"
+            gate_signals.append(gate_signal)
+            i_gate = signal["entry_idx"] + 1
+
+    if signal_chain_enabled and entry_momentum_enabled:
+        i_gate = 0
+        while i_gate < n - 1:
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
+            signal = find_momentum_signal(
+                points_sorted,
+                times,
+                i_gate,
+                momentum_window,
+                momentum_spike,
+                momentum_boundary_pct,
+                momentum_tick_min_per_min,
+                momentum_hold_seconds,
+                momentum_max_move,
+                second_lows,
+                second_highs,
+                should_cancel,
+            )
+            if not signal:
+                i_gate += 1
+                continue
+            gate_signal = dict(signal)
+            gate_signal["source"] = "momentum"
+            gate_signals.append(gate_signal)
+            i_gate = signal["entry_idx"] + 1
+
+    if signal_chain_enabled and entry_reverse_enabled:
+        reverse_window = timedelta(seconds=reverse_window_seconds)
+        i_gate = 0
+        while i_gate < n - 1:
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
+            signal = find_reverse_signal(
+                points_sorted,
+                times,
+                i_gate,
+                reverse_window,
+                reverse_move,
+                should_cancel,
+            )
+            if not signal:
+                i_gate += 1
+                continue
+            gate_signal = dict(signal)
+            gate_signal["source"] = "reverse"
+            gate_signals.append(gate_signal)
+            i_gate = signal["entry_idx"] + 1
+
+    allowed_signals = build_signal_gate(gate_signals) if signal_chain_enabled else set()
+
     if entry_sr_enabled:
         sr_break_pips = params.get("sr_break_pips", 5.0)
         sr_tick_limit = int(params.get("sr_tick_limit", 10))
@@ -1897,6 +2205,10 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 break
 
             entry_idx = signal["entry_idx"]
+            signal["source"] = "sr"
+            if signal_chain_enabled and gate_signals and signal_key(signal) not in allowed_signals:
+                i = entry_idx + 1
+                continue
             side = signal["side"]
             entry_time, entry_bid = points_sorted[entry_idx]
             entry_price = entry_bid + spread if side == "long" else entry_bid
@@ -1934,8 +2246,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 stop,
                 take,
                 fixed_exit_price,
-                time_close_minutes,
-                minute_close_info,
+                time_close_seconds,
+                None,
                 namping_first_enabled,
                 [
                     {
@@ -2048,6 +2360,10 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 continue
 
             entry_idx = signal["entry_idx"]
+            signal["source"] = "momentum"
+            if signal_chain_enabled and gate_signals and signal_key(signal) not in allowed_signals:
+                i = entry_idx + 1
+                continue
             side = signal["side"]
             extreme_idx = signal["extreme_idx"]
             extreme_price = signal["extreme_price"]
@@ -2121,8 +2437,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 stop,
                 take,
                 fixed_exit_price,
-                time_close_minutes,
-                minute_close_info,
+                time_close_seconds,
+                None,
                 namping_first_enabled,
                 [
                     {
@@ -2229,6 +2545,10 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 continue
 
             entry_idx = signal["entry_idx"]
+            signal["source"] = "spike"
+            if signal_chain_enabled and gate_signals and signal_key(signal) not in allowed_signals:
+                i = entry_idx + 1
+                continue
             side = signal["side"]
             entry_time, entry_bid = points_sorted[entry_idx]
             entry_price = entry_bid + spread if side == "long" else entry_bid
@@ -2266,8 +2586,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 stop,
                 take,
                 fixed_exit_price,
-                time_close_minutes,
-                minute_close_info,
+                time_close_seconds,
+                None,
                 namping_first_enabled,
                 [
                     {
@@ -2350,6 +2670,150 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             register_position(side, exit_idx, active_positions_momentum)
             i = entry_idx_actual + 1 if allow_overlap else exit_idx + 1
 
+    if entry_reverse_enabled:
+        reverse_window = timedelta(seconds=reverse_window_seconds)
+        i = 0
+        while i < n - 1:
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
+            signal = find_reverse_signal(
+                points_sorted,
+                times,
+                i,
+                reverse_window,
+                reverse_move,
+                should_cancel,
+            )
+            if not signal:
+                i += 1
+                continue
+
+            entry_idx = signal["entry_idx"]
+            signal["source"] = "reverse"
+            if signal_chain_enabled and gate_signals and signal_key(signal) not in allowed_signals:
+                i = entry_idx + 1
+                continue
+            side = signal["side"]
+            entry_time, entry_bid = points_sorted[entry_idx]
+            entry_price = entry_bid + spread if side == "long" else entry_bid
+
+            if exclude_enabled and entry_time.hour in exclude_hours:
+                i = entry_idx + 1
+                continue
+
+            if ma_enabled:
+                if not candle_times:
+                    i = entry_idx + 1
+                    continue
+                candle_idx = bisect_right(candle_times, entry_time) - 1
+                if candle_idx < 0 or candle_idx >= len(ma_values):
+                    i = entry_idx + 1
+                    continue
+                ma_value = ma_values[candle_idx]
+                if ma_value is None or ma_value <= 0:
+                    i = entry_idx + 1
+                    continue
+                if side == "long":
+                    deviation = (ma_value - entry_price) / ma_value
+                else:
+                    deviation = (entry_price - ma_value) / ma_value
+                if deviation < ma_deviation:
+                    i = entry_idx + 1
+                    continue
+
+            trade_result = simulate_namping_trade(
+                points_sorted,
+                entry_idx,
+                side,
+                entry_price,
+                spread,
+                stop,
+                take,
+                fixed_exit_price,
+                time_close_seconds,
+                None,
+                namping_first_enabled,
+                [
+                    {
+                        "enabled": namping_step1_enabled,
+                        "pips": namping_step1_pips,
+                        "lot": namping_step1_lot,
+                        "label": "段階1",
+                    },
+                    {
+                        "enabled": namping_step2_enabled,
+                        "pips": namping_step2_pips,
+                        "lot": namping_step2_lot,
+                        "label": "段階2",
+                    },
+                    {
+                        "enabled": namping_step3_enabled,
+                        "pips": namping_step3_pips,
+                        "lot": namping_step3_lot,
+                        "label": "段階3",
+                    },
+                    {
+                        "enabled": namping_step4_enabled,
+                        "pips": namping_step4_pips,
+                        "lot": namping_step4_lot,
+                        "label": "段階4",
+                    },
+                    {
+                        "enabled": namping_step5_enabled,
+                        "pips": namping_step5_pips,
+                        "lot": namping_step5_lot,
+                        "label": "段階5",
+                    },
+                ],
+                should_cancel,
+            )
+            if not trade_result:
+                i = entry_idx + 1
+                continue
+
+            entry_idx_actual = trade_result["entry_idx"]
+            if entry_idx_actual is None:
+                i = entry_idx + 1
+                continue
+            if not can_open_position(entry_idx_actual, side, active_positions_reverse):
+                i = entry_idx + 1
+                continue
+
+            entry_time = points_sorted[entry_idx_actual][0]
+            entry_price_actual = trade_result["entry_price"]
+            avg_entry_price = trade_result["avg_entry_price"]
+            total_lot = trade_result["lot_total"]
+            exit_idx = trade_result["exit_idx"]
+            exit_price = trade_result["exit_price"]
+            exit_reason = trade_result["exit_reason"]
+
+            if side == "long":
+                pips_per_lot = (exit_price - avg_entry_price) / PIP_SIZE
+            else:
+                pips_per_lot = (avg_entry_price - exit_price) / PIP_SIZE
+            pips = pips_per_lot * total_lot
+
+            trades.append(
+                {
+                    "side": side,
+                    "entry_reason": signal.get("entry_reason", "秒逆張り"),
+                    "entry_idx": entry_idx_actual,
+                    "entry_time": entry_time,
+                    "entry_price": entry_price_actual,
+                    "avg_entry_price": avg_entry_price,
+                    "lot_total": total_lot,
+                    "pips_per_lot": pips_per_lot,
+                    "namping_entries": trade_result.get("entries") or [],
+                    "exit_idx": exit_idx,
+                    "exit_time": points_sorted[exit_idx][0],
+                    "exit_price": exit_price,
+                    "pips": pips,
+                    "reason": exit_reason,
+                }
+            )
+            register_position(side, exit_idx, active_positions_reverse)
+            i = entry_idx_actual + 1 if allow_overlap else exit_idx + 1
+
     if trades:
         trades.sort(
             key=lambda t: (
@@ -2372,10 +2836,22 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         equity_curve.append((times[-1], cumulative))
 
     enabled_count = sum(
-        1 for flag in (entry_spike_enabled, entry_sr_enabled, entry_momentum_enabled) if flag
+        1
+        for flag in (
+            entry_spike_enabled,
+            entry_sr_enabled,
+            entry_momentum_enabled,
+            entry_reverse_enabled,
+        )
+        if flag
     )
     if enabled_count >= 2:
-        if entry_spike_enabled and entry_sr_enabled and not entry_momentum_enabled:
+        if (
+            entry_spike_enabled
+            and entry_sr_enabled
+            and not entry_momentum_enabled
+            and not entry_reverse_enabled
+        ):
             entry_mode = "both"
         else:
             entry_mode = "multi"
@@ -2383,6 +2859,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         entry_mode = "sr_reentry"
     elif entry_momentum_enabled:
         entry_mode = "momentum"
+    elif entry_reverse_enabled:
+        entry_mode = "reverse"
     elif entry_spike_enabled:
         entry_mode = "spike"
 
@@ -2399,6 +2877,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         "entry_spike_enabled": entry_spike_enabled,
         "entry_sr_enabled": entry_sr_enabled,
         "entry_momentum_enabled": entry_momentum_enabled,
+        "entry_reverse_enabled": entry_reverse_enabled,
         "sr_ratio_join_mode": params.get("sr_ratio_join_mode"),
         "sr_move_ratio_enabled": params.get("sr_move_ratio_enabled"),
         "sr_move_speed_ratio_enabled": params.get("sr_move_speed_ratio_enabled"),
@@ -2522,6 +3001,7 @@ class Step1App:
         self.entry_spike_var = tk.BooleanVar(value=False)
         self.entry_sr_var = tk.BooleanVar(value=True)
         self.entry_momentum_var = tk.BooleanVar(value=False)
+        self.entry_reverse_var = tk.BooleanVar(value=False)
         self.hide_chart_var = tk.BooleanVar(value=False)
         self.ma_filter_var = tk.BooleanVar(value=True)
         self.ma_period_var = tk.StringVar(value="200")
@@ -2542,6 +3022,8 @@ class Step1App:
         self.spike_window_var = tk.StringVar(value="500")
         self.spike_pips_var = tk.StringVar(value="1.0")
         self.retrace_var = tk.StringVar(value="90")
+        self.reverse_window_var = tk.StringVar(value="2")
+        self.reverse_pips_var = tk.StringVar(value="3")
         self.momentum_window_var = tk.StringVar(value="1000")
         self.momentum_spike_pips_var = tk.StringVar(value="3.0")
         self.momentum_boundary_pct_var = tk.StringVar(value="50")
@@ -2551,7 +3033,7 @@ class Step1App:
         self.spread_var = tk.StringVar(value="1.0")
         self.stop_pips_var = tk.StringVar(value="10.0")
         self.take_pips_var = tk.StringVar(value="10.0")
-        self.time_close_minutes_var = tk.StringVar(value="0")
+        self.time_close_seconds_var = tk.StringVar(value="0")
         self.fixed_exit_price_var = tk.BooleanVar(value=True)
         self.allow_same_direction_var = tk.BooleanVar(value=False)
         self.allow_opposite_direction_var = tk.BooleanVar(value=False)
@@ -2594,6 +3076,12 @@ class Step1App:
         self.sr_reentry_speed_ratio_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_favored_tick_min_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_target_var = tk.StringVar(value="両方")
+        self.signal_chain_enabled_var = tk.BooleanVar(value=True)
+        self.signal_chain_pos_pips_var = tk.StringVar(value="10")
+        self.signal_chain_neg_pips_var = tk.StringVar(value="5")
+        self.signal_chain_count_var = tk.StringVar(value="3")
+        self.signal_chain_ignore_opposite_var = tk.BooleanVar(value=True)
+        self.signal_chain_monitor_minutes_var = tk.StringVar(value="240")
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.backtest_elapsed_var = tk.StringVar(value="計算時間: -")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
@@ -2855,6 +3343,14 @@ class Step1App:
         ttk.Entry(settings, textvariable=self.retrace_var, width=8).grid(
             row=0, column=5, padx=(4, 0), sticky="w"
         )
+        ttk.Label(settings, text="逆張り時間（秒）").grid(row=0, column=6, sticky="w")
+        ttk.Entry(settings, textvariable=self.reverse_window_var, width=8).grid(
+            row=0, column=7, padx=(4, 12), sticky="w"
+        )
+        ttk.Label(settings, text="逆張り幅（pp）").grid(row=0, column=8, sticky="w")
+        ttk.Entry(settings, textvariable=self.reverse_pips_var, width=8).grid(
+            row=0, column=9, padx=(4, 0), sticky="w"
+        )
 
         ttk.Label(settings, text="スプレッド（ピップス）").grid(row=1, column=0, sticky="w")
         ttk.Entry(settings, textvariable=self.spread_var, width=8).grid(
@@ -2868,10 +3364,10 @@ class Step1App:
         ttk.Entry(settings, textvariable=self.take_pips_var, width=8).grid(
             row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="時間経過クローズ（分）").grid(
+        ttk.Label(settings, text="時間経過クローズ（秒）").grid(
             row=1, column=6, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(settings, textvariable=self.time_close_minutes_var, width=8).grid(
+        ttk.Entry(settings, textvariable=self.time_close_seconds_var, width=8).grid(
             row=1, column=7, padx=(4, 0), pady=(6, 0), sticky="w"
         )
         self.fixed_exit_price_check = ttk.Checkbutton(
@@ -2957,18 +3453,24 @@ class Step1App:
             variable=self.entry_momentum_var,
         )
         self.strategy_momentum_check.grid(row=5, column=3, sticky="w", pady=(6, 0))
+        self.strategy_reverse_check = ttk.Checkbutton(
+            settings,
+            text="秒逆張り",
+            variable=self.entry_reverse_var,
+        )
+        self.strategy_reverse_check.grid(row=5, column=4, sticky="w", pady=(6, 0))
         self.allow_same_direction_check = ttk.Checkbutton(
             settings,
             text="同方向同時保有",
             variable=self.allow_same_direction_var,
         )
-        self.allow_same_direction_check.grid(row=5, column=4, sticky="w", pady=(6, 0))
+        self.allow_same_direction_check.grid(row=5, column=5, sticky="w", pady=(6, 0))
         self.allow_opposite_direction_check = ttk.Checkbutton(
             settings,
             text="逆方向同時保有",
             variable=self.allow_opposite_direction_var,
         )
-        self.allow_opposite_direction_check.grid(row=5, column=5, sticky="w", pady=(6, 0))
+        self.allow_opposite_direction_check.grid(row=5, column=6, sticky="w", pady=(6, 0))
 
         self.namping_first_check = ttk.Checkbutton(
             settings,
@@ -3301,6 +3803,45 @@ class Step1App:
             momentum_settings, textvariable=self.momentum_max_pips_var, width=8
         ).grid(row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
 
+        signal_chain_settings = ttk.LabelFrame(param_area, text="連続点灯条件")
+        signal_chain_settings.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
+        ttk.Label(signal_chain_settings, text="正方向幅（pp）").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Entry(
+            signal_chain_settings, textvariable=self.signal_chain_pos_pips_var, width=8
+        ).grid(row=0, column=1, padx=(4, 12), sticky="w")
+        ttk.Label(signal_chain_settings, text="逆方向幅（pp）").grid(
+            row=0, column=2, sticky="w"
+        )
+        ttk.Entry(
+            signal_chain_settings, textvariable=self.signal_chain_neg_pips_var, width=8
+        ).grid(row=0, column=3, padx=(4, 12), sticky="w")
+        ttk.Label(signal_chain_settings, text="連続回数").grid(
+            row=0, column=4, sticky="w"
+        )
+        ttk.Entry(
+            signal_chain_settings, textvariable=self.signal_chain_count_var, width=8
+        ).grid(row=0, column=5, padx=(4, 0), sticky="w")
+        ttk.Label(signal_chain_settings, text="監視時間（分）").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            signal_chain_settings,
+            textvariable=self.signal_chain_monitor_minutes_var,
+            width=8,
+        ).grid(row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w")
+        ttk.Checkbutton(
+            signal_chain_settings,
+            text="逆方向サインは無視",
+            variable=self.signal_chain_ignore_opposite_var,
+        ).grid(row=1, column=2, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(
+            signal_chain_settings,
+            text="連続点灯ON",
+            variable=self.signal_chain_enabled_var,
+        ).grid(row=1, column=4, columnspan=2, sticky="w", pady=(6, 0))
+
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
         )
@@ -3415,14 +3956,24 @@ class Step1App:
             window_ms = self._parse_number(self.spike_window_var.get())
             spike_pips = self._parse_number(self.spike_pips_var.get())
             retrace_pct = self._parse_number(self.retrace_var.get())
+            reverse_window_seconds = self._parse_number(self.reverse_window_var.get())
+            reverse_pips = self._parse_number(self.reverse_pips_var.get())
             spread_pips = self._parse_number(self.spread_var.get())
             stop_pips = self._parse_number(self.stop_pips_var.get())
             take_pips = self._parse_number(self.take_pips_var.get())
-            time_close_minutes = self._parse_number(self.time_close_minutes_var.get())
+            time_close_seconds = self._parse_number(self.time_close_seconds_var.get())
             fixed_exit_price = self.fixed_exit_price_var.get()
             ma_enabled = self.ma_filter_var.get()
             ma_period = self._parse_number(self.ma_period_var.get())
             ma_deviation_pct = self._parse_number(self.ma_deviation_var.get())
+            signal_chain_pos_pips = self._parse_number(self.signal_chain_pos_pips_var.get())
+            signal_chain_neg_pips = self._parse_number(self.signal_chain_neg_pips_var.get())
+            signal_chain_count = int(self._parse_number(self.signal_chain_count_var.get()))
+            signal_chain_monitor_minutes = self._parse_number(
+                self.signal_chain_monitor_minutes_var.get()
+            )
+            signal_chain_ignore_opposite = self.signal_chain_ignore_opposite_var.get()
+            signal_chain_enabled = self.signal_chain_enabled_var.get()
             extreme_enabled = self.extreme_filter_var.get()
             if extreme_enabled:
                 extreme_hold_ms = self._parse_number(self.extreme_hold_ms_var.get())
@@ -3485,6 +4036,12 @@ class Step1App:
         if retrace_pct < 0:
             messagebox.showerror("エラー", "最小戻し率は0以上にしてください。")
             return None
+        if reverse_window_seconds <= 0:
+            messagebox.showerror("エラー", "逆張り時間は0より大きくしてください。")
+            return None
+        if reverse_pips <= 0:
+            messagebox.showerror("エラー", "逆張り幅は0より大きくしてください。")
+            return None
         if spread_pips < 0:
             messagebox.showerror("エラー", "スプレッドは0以上にしてください。")
             return None
@@ -3494,9 +4051,22 @@ class Step1App:
         if take_pips <= 0:
             messagebox.showerror("エラー", "利確幅は0より大きくしてください。")
             return None
-        if time_close_minutes < 0:
+        if time_close_seconds < 0:
             messagebox.showerror("エラー", "時間経過クローズは0以上にしてください。")
             return None
+        if signal_chain_enabled:
+            if signal_chain_pos_pips < 0:
+                messagebox.showerror("エラー", "正方向幅は0以上にしてください。")
+                return None
+            if signal_chain_neg_pips < 0:
+                messagebox.showerror("エラー", "逆方向幅は0以上にしてください。")
+                return None
+            if signal_chain_count < 1:
+                messagebox.showerror("エラー", "連続回数は1以上にしてください。")
+                return None
+            if signal_chain_monitor_minutes < 0:
+                messagebox.showerror("エラー", "監視時間は0以上にしてください。")
+                return None
 
         if ma_period < 2:
             messagebox.showerror("エラー", "移動平均の期間は2以上にしてください。")
@@ -3555,14 +4125,22 @@ class Step1App:
             "window_ms": window_ms,
             "spike_pips": spike_pips,
             "retrace_rate": retrace_pct / 100.0,
+            "reverse_window_seconds": reverse_window_seconds,
+            "reverse_pips": reverse_pips,
             "spread_pips": spread_pips,
             "stop_pips": stop_pips,
             "take_pips": take_pips,
-            "time_close_minutes": time_close_minutes,
+            "time_close_seconds": time_close_seconds,
             "fixed_exit_price": fixed_exit_price,
             "ma_enabled": ma_enabled,
             "ma_period": int(ma_period),
             "ma_deviation_rate": ma_deviation_pct / 100.0,
+            "signal_chain_pos_pips": signal_chain_pos_pips,
+            "signal_chain_neg_pips": signal_chain_neg_pips,
+            "signal_chain_count": signal_chain_count,
+            "signal_chain_monitor_minutes": signal_chain_monitor_minutes,
+            "signal_chain_ignore_opposite": signal_chain_ignore_opposite,
+            "signal_chain_enabled": signal_chain_enabled,
             "extreme_enabled": extreme_enabled,
             "extreme_hold_ms": extreme_hold_ms,
             "extreme_distance_pips": extreme_distance_pips,
@@ -3880,34 +4458,52 @@ class Step1App:
         entry_spike = data.get("entry_spike_enabled")
         entry_sr = data.get("entry_sr_enabled")
         entry_momentum = data.get("entry_momentum_enabled")
-        if entry_spike is None and entry_sr is None and entry_momentum is None:
+        entry_reverse = data.get("entry_reverse_enabled")
+        if (
+            entry_spike is None
+            and entry_sr is None
+            and entry_momentum is None
+            and entry_reverse is None
+        ):
             entry_mode = data.get("entry_mode")
             if entry_mode == "spike":
                 entry_spike = True
                 entry_sr = False
                 entry_momentum = False
+                entry_reverse = False
             elif entry_mode == "sr_reentry":
                 entry_spike = False
                 entry_sr = True
                 entry_momentum = False
+                entry_reverse = False
             elif entry_mode == "both":
                 entry_spike = True
                 entry_sr = True
                 entry_momentum = False
+                entry_reverse = False
             elif entry_mode == "momentum":
                 entry_spike = False
                 entry_sr = False
                 entry_momentum = True
+                entry_reverse = False
+            elif entry_mode == "reverse":
+                entry_spike = False
+                entry_sr = False
+                entry_momentum = False
+                entry_reverse = True
             elif entry_mode == "multi":
                 entry_spike = True
                 entry_sr = True
                 entry_momentum = True
+                entry_reverse = False
         if entry_spike is not None:
             set_bool(self.entry_spike_var, entry_spike)
         if entry_sr is not None:
             set_bool(self.entry_sr_var, entry_sr)
         if entry_momentum is not None:
             set_bool(self.entry_momentum_var, entry_momentum)
+        if entry_reverse is not None:
+            set_bool(self.entry_reverse_var, entry_reverse)
         set_bool(self.hide_chart_var, data.get("hide_chart"))
         set_bool(self.ma_filter_var, data.get("ma_filter"))
         set_var(self.ma_period_var, data.get("ma_period"))
@@ -3929,6 +4525,8 @@ class Step1App:
         set_var(self.spike_window_var, data.get("spike_window"))
         set_var(self.spike_pips_var, data.get("spike_pips"))
         set_var(self.retrace_var, data.get("retrace"))
+        set_var(self.reverse_window_var, data.get("reverse_window_seconds"))
+        set_var(self.reverse_pips_var, data.get("reverse_pips"))
         set_var(self.momentum_window_var, data.get("momentum_window_ms"))
         set_var(self.momentum_spike_pips_var, data.get("momentum_spike_pips"))
         set_var(self.momentum_boundary_pct_var, data.get("momentum_boundary_pct"))
@@ -3948,7 +4546,15 @@ class Step1App:
         set_var(self.spread_var, data.get("spread"))
         set_var(self.stop_pips_var, data.get("stop_pips"))
         set_var(self.take_pips_var, data.get("take_pips"))
-        set_var(self.time_close_minutes_var, data.get("time_close_minutes"))
+        time_close_seconds = data.get("time_close_seconds")
+        if time_close_seconds is None:
+            old_minutes = data.get("time_close_minutes")
+            if old_minutes is not None:
+                try:
+                    time_close_seconds = float(old_minutes) * 60.0
+                except Exception:
+                    time_close_seconds = None
+        set_var(self.time_close_seconds_var, time_close_seconds)
         set_bool(self.fixed_exit_price_var, data.get("fixed_exit_price"))
         set_bool(self.allow_same_direction_var, data.get("allow_same_direction"))
         set_bool(self.allow_opposite_direction_var, data.get("allow_opposite_direction"))
@@ -4016,6 +4622,21 @@ class Step1App:
             data.get("sr_reentry_favored_tick_min_enabled"),
         )
         set_var(self.sr_reentry_target_var, data.get("sr_reentry_target"))
+        set_var(self.signal_chain_pos_pips_var, data.get("signal_chain_pos_pips"))
+        set_var(self.signal_chain_neg_pips_var, data.get("signal_chain_neg_pips"))
+        set_var(self.signal_chain_count_var, data.get("signal_chain_count"))
+        set_var(
+            self.signal_chain_monitor_minutes_var,
+            data.get("signal_chain_monitor_minutes"),
+        )
+        set_bool(
+            self.signal_chain_ignore_opposite_var,
+            data.get("signal_chain_ignore_opposite"),
+        )
+        set_bool(
+            self.signal_chain_enabled_var,
+            data.get("signal_chain_enabled"),
+        )
 
     def _collect_persistent_state(self):
         return {
@@ -4030,6 +4651,7 @@ class Step1App:
             "entry_spike_enabled": self.entry_spike_var.get(),
             "entry_sr_enabled": self.entry_sr_var.get(),
             "entry_momentum_enabled": self.entry_momentum_var.get(),
+            "entry_reverse_enabled": self.entry_reverse_var.get(),
             "hide_chart": self.hide_chart_var.get(),
             "ma_filter": self.ma_filter_var.get(),
             "ma_period": self.ma_period_var.get(),
@@ -4048,6 +4670,8 @@ class Step1App:
             "spike_window": self.spike_window_var.get(),
             "spike_pips": self.spike_pips_var.get(),
             "retrace": self.retrace_var.get(),
+            "reverse_window_seconds": self.reverse_window_var.get(),
+            "reverse_pips": self.reverse_pips_var.get(),
             "momentum_window_ms": self.momentum_window_var.get(),
             "momentum_spike_pips": self.momentum_spike_pips_var.get(),
             "momentum_boundary_pct": self.momentum_boundary_pct_var.get(),
@@ -4057,7 +4681,7 @@ class Step1App:
             "spread": self.spread_var.get(),
             "stop_pips": self.stop_pips_var.get(),
             "take_pips": self.take_pips_var.get(),
-            "time_close_minutes": self.time_close_minutes_var.get(),
+            "time_close_seconds": self.time_close_seconds_var.get(),
             "fixed_exit_price": self.fixed_exit_price_var.get(),
             "allow_same_direction": self.allow_same_direction_var.get(),
             "allow_opposite_direction": self.allow_opposite_direction_var.get(),
@@ -4102,6 +4726,12 @@ class Step1App:
                 self.sr_reentry_favored_tick_min_enabled_var.get()
             ),
             "sr_reentry_target": self.sr_reentry_target_var.get(),
+            "signal_chain_pos_pips": self.signal_chain_pos_pips_var.get(),
+            "signal_chain_neg_pips": self.signal_chain_neg_pips_var.get(),
+            "signal_chain_count": self.signal_chain_count_var.get(),
+            "signal_chain_monitor_minutes": self.signal_chain_monitor_minutes_var.get(),
+            "signal_chain_ignore_opposite": self.signal_chain_ignore_opposite_var.get(),
+            "signal_chain_enabled": self.signal_chain_enabled_var.get(),
         }
 
     def _save_persistent_state(self):
@@ -4160,7 +4790,13 @@ class Step1App:
         entry_spike_enabled = self.entry_spike_var.get()
         entry_sr_enabled = self.entry_sr_var.get()
         entry_momentum_enabled = self.entry_momentum_var.get()
-        if not entry_spike_enabled and not entry_sr_enabled and not entry_momentum_enabled:
+        entry_reverse_enabled = self.entry_reverse_var.get()
+        if (
+            not entry_spike_enabled
+            and not entry_sr_enabled
+            and not entry_momentum_enabled
+            and not entry_reverse_enabled
+        ):
             messagebox.showerror("エラー", "戦略は最低1つ選択してください。")
             return
         sr_reentry_params = {}
@@ -4178,10 +4814,22 @@ class Step1App:
         except Exception:
             line_interval = 1
         enabled_count = sum(
-            1 for flag in (entry_spike_enabled, entry_sr_enabled, entry_momentum_enabled) if flag
+            1
+            for flag in (
+                entry_spike_enabled,
+                entry_sr_enabled,
+                entry_momentum_enabled,
+                entry_reverse_enabled,
+            )
+            if flag
         )
         if enabled_count >= 2:
-            if entry_spike_enabled and entry_sr_enabled and not entry_momentum_enabled:
+            if (
+                entry_spike_enabled
+                and entry_sr_enabled
+                and not entry_momentum_enabled
+                and not entry_reverse_enabled
+            ):
                 entry_mode = "both"
             else:
                 entry_mode = "multi"
@@ -4189,12 +4837,15 @@ class Step1App:
             entry_mode = "sr_reentry"
         elif entry_momentum_enabled:
             entry_mode = "momentum"
+        elif entry_reverse_enabled:
+            entry_mode = "reverse"
         else:
             entry_mode = "spike"
         params["entry_mode"] = entry_mode
         params["entry_spike_enabled"] = entry_spike_enabled
         params["entry_sr_enabled"] = entry_sr_enabled
         params["entry_momentum_enabled"] = entry_momentum_enabled
+        params["entry_reverse_enabled"] = entry_reverse_enabled
         params["line_interval"] = max(1, line_interval)
         params["sr_params"] = sr_params
         params["range_params"] = range_params
@@ -4516,6 +5167,9 @@ class Step1App:
         )
         entry_momentum_enabled = payload.get(
             "entry_momentum_enabled", entry_mode in ("momentum", "multi")
+        )
+        entry_reverse_enabled = payload.get(
+            "entry_reverse_enabled", entry_mode in ("reverse", "multi")
         )
 
         if total == 0:

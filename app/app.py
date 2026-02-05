@@ -2149,8 +2149,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
 
     def build_signal_gate(all_signals):
         if not all_signals:
-            return set()
+            return set(), {}
         allowed = set()
+        chain_map = {}
         pending = {"long": None, "short": None}
         countable_sources = {
             "reverse": signal_chain_count_reverse,
@@ -2165,10 +2166,19 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             "spike": signal_chain_trigger_spike,
         }
 
-        def new_state(side, idx, price, ts, countable):
+        def new_state(side, idx, price, ts, countable, signal):
             expires_at = None
             if signal_chain_monitor_minutes and signal_chain_monitor_minutes > 0:
                 expires_at = ts + timedelta(minutes=signal_chain_monitor_minutes)
+            counted = []
+            if countable and signal is not None:
+                counted.append(
+                    {
+                        "entry_idx": signal.get("entry_idx"),
+                        "side": signal.get("side"),
+                        "source": signal.get("source"),
+                    }
+                )
             return {
                 "side": side,
                 "first_idx": idx,
@@ -2178,6 +2188,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 "count": 1 if countable else 0,
                 "last_idx": idx,
                 "expires_at": expires_at,
+                "counted": counted,
             }
 
         def update_state(state, idx):
@@ -2221,11 +2232,18 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
 
             state = pending.get(side)
             if state is None:
-                state = new_state(side, idx, price, ts, countable)
+                state = new_state(side, idx, price, ts, countable, sig)
                 pending[side] = state
             else:
                 if countable:
                     state["count"] += 1
+                    state["counted"].append(
+                        {
+                            "entry_idx": sig.get("entry_idx"),
+                            "side": sig.get("side"),
+                            "source": sig.get("source"),
+                        }
+                    )
 
             if side == "long":
                 favorable = state["max_price"] - state["first_price"]
@@ -2235,7 +2253,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 adverse = price - state["first_price"]
 
             if signal_chain_pos_enabled and favorable >= signal_chain_pos_move:
-                pending[side] = new_state(side, idx, price, ts, countable)
+                pending[side] = new_state(side, idx, price, ts, countable, sig)
                 continue
             if countable:
                 meets_count = state["count"] >= signal_chain_count
@@ -2244,13 +2262,15 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             if signal_chain_neg_enabled:
                 if adverse >= signal_chain_neg_move and meets_count and triggerable:
                     allowed.add(signal_key(sig))
+                    chain_map[signal_key(sig)] = list(state["counted"])
                     pending[side] = None
             else:
                 if meets_count and triggerable:
                     allowed.add(signal_key(sig))
+                    chain_map[signal_key(sig)] = list(state["counted"])
                     pending[side] = None
 
-        return allowed
+        return allowed, chain_map
     gate_signals = []
 
     if signal_chain_enabled and entry_sr_enabled:
@@ -2437,7 +2457,10 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             gate_signals.append(gate_signal)
             i_gate = signal["entry_idx"] + 1
 
-    allowed_signals = build_signal_gate(gate_signals) if signal_chain_enabled else set()
+    if signal_chain_enabled:
+        allowed_signals, chain_map = build_signal_gate(gate_signals)
+    else:
+        allowed_signals, chain_map = set(), {}
 
     if entry_sr_enabled:
         sr_break_pips = params.get("sr_break_pips", 5.0)
@@ -2548,9 +2571,11 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
 
             entry_idx = signal["entry_idx"]
             signal["source"] = "sr"
-            if signal_chain_enabled and gate_signals and signal_key(signal) not in allowed_signals:
+            gate_key = signal_key(signal)
+            if signal_chain_enabled and gate_signals and gate_key not in allowed_signals:
                 i = entry_idx + 1
                 continue
+            chain_signals = chain_map.get(gate_key, []) if signal_chain_enabled else []
             side = signal["side"]
             entry_time, entry_bid = points_sorted[entry_idx]
             entry_price = entry_bid + spread if side == "long" else entry_bid
@@ -2635,6 +2660,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     "lot_total": total_lot,
                     "pips_per_lot": pips_per_lot,
                     "namping_entries": trade_result.get("entries") or [],
+                    "signal_chain": chain_signals,
                     "exit_idx": exit_idx,
                     "exit_time": points_sorted[exit_idx][0],
                     "exit_price": exit_price,
@@ -2675,10 +2701,12 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 continue
 
             entry_idx = signal["entry_idx"]
-            signal["source"] = "momentum"
-            if signal_chain_enabled and gate_signals and signal_key(signal) not in allowed_signals:
+            signal["source"] = "spike"
+            gate_key = signal_key(signal)
+            if signal_chain_enabled and gate_signals and gate_key not in allowed_signals:
                 i = entry_idx + 1
                 continue
+            chain_signals = chain_map.get(gate_key, []) if signal_chain_enabled else []
             side = signal["side"]
             extreme_idx = signal["extreme_idx"]
             extreme_price = signal["extreme_price"]
@@ -2799,6 +2827,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     "lot_total": total_lot,
                     "pips_per_lot": pips_per_lot,
                     "namping_entries": trade_result.get("entries") or [],
+                    "signal_chain": chain_signals,
                     "exit_idx": exit_idx,
                     "exit_time": points_sorted[exit_idx][0],
                     "exit_price": exit_price,
@@ -2833,10 +2862,12 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 continue
 
             entry_idx = signal["entry_idx"]
-            signal["source"] = "spike"
-            if signal_chain_enabled and gate_signals and signal_key(signal) not in allowed_signals:
+            signal["source"] = "momentum"
+            gate_key = signal_key(signal)
+            if signal_chain_enabled and gate_signals and gate_key not in allowed_signals:
                 i = entry_idx + 1
                 continue
+            chain_signals = chain_map.get(gate_key, []) if signal_chain_enabled else []
             side = signal["side"]
             entry_time, entry_bid = points_sorted[entry_idx]
             entry_price = entry_bid + spread if side == "long" else entry_bid
@@ -2921,6 +2952,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     "lot_total": total_lot,
                     "pips_per_lot": pips_per_lot,
                     "namping_entries": trade_result.get("entries") or [],
+                    "signal_chain": chain_signals,
                     "exit_idx": exit_idx,
                     "exit_time": points_sorted[exit_idx][0],
                     "exit_price": exit_price,
@@ -2953,9 +2985,11 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
 
             entry_idx = signal["entry_idx"]
             signal["source"] = "reverse"
-            if signal_chain_enabled and gate_signals and signal_key(signal) not in allowed_signals:
+            gate_key = signal_key(signal)
+            if signal_chain_enabled and gate_signals and gate_key not in allowed_signals:
                 i = entry_idx + 1
                 continue
+            chain_signals = chain_map.get(gate_key, []) if signal_chain_enabled else []
             side = signal["side"]
             entry_time, entry_bid = points_sorted[entry_idx]
             entry_price = entry_bid + spread if side == "long" else entry_bid
@@ -3050,6 +3084,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     "lot_total": total_lot,
                     "pips_per_lot": pips_per_lot,
                     "namping_entries": trade_result.get("entries") or [],
+                    "signal_chain": chain_signals,
                     "exit_idx": exit_idx,
                     "exit_time": points_sorted[exit_idx][0],
                     "exit_price": exit_price,
@@ -7919,10 +7954,41 @@ class Step1App:
                     color = "#d62728"
                     entry_dir = "down"
                     exit_dir = "up"
+                    chain_color = "#f5b483"
                 else:
                     color = "#2ca02c"
                     entry_dir = "up"
                     exit_dir = "down"
+                    chain_color = "#b8e9a5"
+
+                chain_signals = trade.get("signal_chain") or []
+                if chain_signals and entry_x is not None and entry_y is not None:
+                    seen_chain = set()
+                    base_entry_idx = trade.get("entry_idx")
+                    for chain in chain_signals:
+                        chain_idx = chain.get("entry_idx")
+                        if chain_idx is None or chain_idx == base_entry_idx:
+                            continue
+                        if chain_idx in seen_chain:
+                            continue
+                        seen_chain.add(chain_idx)
+                        if not (0 <= chain_idx < len(points_all)):
+                            continue
+                        chain_time = points_all[chain_idx][0]
+                        chain_price = points_all[chain_idx][1]
+                        chain_x = time_to_x(chain_time)
+                        if chain_x is None:
+                            continue
+                        chain_y = price_to_y(chain_price)
+                        canvas.create_line(
+                            chain_x,
+                            chain_y,
+                            entry_x,
+                            entry_y,
+                            fill=chain_color,
+                            dash=(2, 3),
+                        )
+                        draw_triangle(chain_x, chain_y, size, entry_dir, chain_color)
 
                 if entry_x is not None and exit_x is not None:
                     canvas.create_line(

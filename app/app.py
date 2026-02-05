@@ -1843,6 +1843,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
 
     n = len(points_sorted)
     signal_chain_count = max(1, signal_chain_count)
+    signal_chain_pos_enabled = signal_chain_pos_move > 0
+    signal_chain_neg_enabled = signal_chain_neg_move > 0
 
     def signal_key(signal):
         return (
@@ -1947,12 +1949,17 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 favorable = state["first_price"] - state["min_price"]
                 adverse = price - state["first_price"]
 
-            if signal_chain_pos_move > 0 and favorable >= signal_chain_pos_move:
+            if signal_chain_pos_enabled and favorable >= signal_chain_pos_move:
                 pending[side] = new_state(side, idx, price, ts)
                 continue
-            if adverse >= signal_chain_neg_move and state["count"] >= signal_chain_count:
-                allowed.add(signal_key(sig))
-                pending[side] = None
+            if signal_chain_neg_enabled:
+                if adverse >= signal_chain_neg_move and state["count"] >= signal_chain_count:
+                    allowed.add(signal_key(sig))
+                    pending[side] = None
+            else:
+                if state["count"] >= signal_chain_count:
+                    allowed.add(signal_key(sig))
+                    pending[side] = None
 
         return allowed
     gate_signals = []

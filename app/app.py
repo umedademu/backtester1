@@ -2116,7 +2116,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
 
             side = sig["side"]
             other = "short" if side == "long" else "long"
-            if not signal_chain_ignore_opposite and pending.get(other):
+            if signal_chain_ignore_opposite and pending.get(other):
                 pending[other] = None
 
             state = pending.get(side)
@@ -3304,7 +3304,7 @@ class Step1App:
         self.signal_chain_pos_pips_var = tk.StringVar(value="10")
         self.signal_chain_neg_pips_var = tk.StringVar(value="5")
         self.signal_chain_count_var = tk.StringVar(value="3")
-        self.signal_chain_ignore_opposite_var = tk.BooleanVar(value=True)
+        self.signal_chain_ignore_opposite_var = tk.BooleanVar(value=False)
         self.signal_chain_monitor_minutes_var = tk.StringVar(value="240")
         self.signal_chain_count_reverse_var = tk.BooleanVar(value=True)
         self.signal_chain_count_momentum_var = tk.BooleanVar(value=True)
@@ -3907,7 +3907,7 @@ class Step1App:
         )
         self.signal_chain_ignore_check = ttk.Checkbutton(
             signal_chain_settings,
-            text="逆方向サインは無視",
+            text="逆方向サインで見送り",
             variable=self.signal_chain_ignore_opposite_var,
         )
         self.signal_chain_ignore_check.grid(

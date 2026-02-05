@@ -3390,43 +3390,45 @@ class Step1App:
         ttk.Entry(settings, textvariable=self.retrace_var, width=8).grid(
             row=0, column=5, padx=(4, 0), sticky="w"
         )
-        ttk.Label(settings, text="逆張り時間（秒）").grid(row=0, column=6, sticky="w")
-        ttk.Entry(settings, textvariable=self.reverse_window_var, width=8).grid(
-            row=0, column=7, padx=(4, 12), sticky="w"
-        )
-        ttk.Label(settings, text="逆張り幅（pp）").grid(row=0, column=8, sticky="w")
-        ttk.Entry(settings, textvariable=self.reverse_pips_var, width=8).grid(
-            row=0, column=9, padx=(4, 0), sticky="w"
-        )
-        ttk.Label(settings, text="上げ止まり秒").grid(row=0, column=10, sticky="w")
-        ttk.Entry(settings, textvariable=self.reverse_hold_seconds_var, width=8).grid(
-            row=0, column=11, padx=(4, 0), sticky="w"
-        )
 
-        ttk.Label(settings, text="スプレッド（ピップス）").grid(row=1, column=0, sticky="w")
-        ttk.Entry(settings, textvariable=self.spread_var, width=8).grid(
+        ttk.Label(settings, text="逆張り時間（秒）").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(settings, textvariable=self.reverse_window_var, width=8).grid(
             row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="損切幅（ピップス）").grid(row=1, column=2, sticky="w", pady=(6, 0))
-        ttk.Entry(settings, textvariable=self.stop_pips_var, width=8).grid(
+        ttk.Label(settings, text="逆張り幅（pp）").grid(row=1, column=2, sticky="w", pady=(6, 0))
+        ttk.Entry(settings, textvariable=self.reverse_pips_var, width=8).grid(
             row=1, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="利確幅（ピップス）").grid(row=1, column=4, sticky="w", pady=(6, 0))
-        ttk.Entry(settings, textvariable=self.take_pips_var, width=8).grid(
+        ttk.Label(settings, text="上げ止まり秒").grid(row=1, column=4, sticky="w", pady=(6, 0))
+        ttk.Entry(settings, textvariable=self.reverse_hold_seconds_var, width=8).grid(
             row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
+
+        ttk.Label(settings, text="スプレッド（ピップス）").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(settings, textvariable=self.spread_var, width=8).grid(
+            row=2, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="損切幅（ピップス）").grid(row=2, column=2, sticky="w", pady=(6, 0))
+        ttk.Entry(settings, textvariable=self.stop_pips_var, width=8).grid(
+            row=2, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(settings, text="利確幅（ピップス）").grid(row=2, column=4, sticky="w", pady=(6, 0))
+        ttk.Entry(settings, textvariable=self.take_pips_var, width=8).grid(
+            row=2, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+
         ttk.Label(settings, text="時間経過クローズ（秒）").grid(
-            row=1, column=6, sticky="w", pady=(6, 0)
+            row=3, column=0, sticky="w", pady=(6, 0)
         )
         ttk.Entry(settings, textvariable=self.time_close_seconds_var, width=8).grid(
-            row=1, column=7, padx=(4, 0), pady=(6, 0), sticky="w"
+            row=3, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
         )
         self.fixed_exit_price_check = ttk.Checkbutton(
             settings,
             text="損切/利確を固定決済",
             variable=self.fixed_exit_price_var,
         )
-        self.fixed_exit_price_check.grid(row=1, column=8, padx=(8, 0), pady=(6, 0), sticky="w")
+        self.fixed_exit_price_check.grid(row=3, column=2, padx=(8, 0), pady=(6, 0), sticky="w")
 
         self.ma_check = ttk.Checkbutton(
             settings,
@@ -3434,17 +3436,17 @@ class Step1App:
             variable=self.ma_filter_var,
             command=self._on_ma_filter_toggle,
         )
-        self.ma_check.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="期間").grid(row=2, column=2, sticky="w", pady=(6, 0))
+        self.ma_check.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="期間").grid(row=4, column=2, sticky="w", pady=(6, 0))
         self.ma_period_entry = ttk.Entry(
             settings, textvariable=self.ma_period_var, width=8
         )
-        self.ma_period_entry.grid(row=2, column=3, padx=(4, 12), pady=(6, 0), sticky="w")
-        ttk.Label(settings, text="乖離率（％）").grid(row=2, column=4, sticky="w", pady=(6, 0))
+        self.ma_period_entry.grid(row=4, column=3, padx=(4, 12), pady=(6, 0), sticky="w")
+        ttk.Label(settings, text="乖離率（％）").grid(row=4, column=4, sticky="w", pady=(6, 0))
         self.ma_deviation_entry = ttk.Entry(
             settings, textvariable=self.ma_deviation_var, width=8
         )
-        self.ma_deviation_entry.grid(row=2, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
+        self.ma_deviation_entry.grid(row=4, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
 
         self.extreme_check = ttk.Checkbutton(
             settings,
@@ -3452,20 +3454,20 @@ class Step1App:
             variable=self.extreme_filter_var,
             command=self._on_extreme_filter_toggle,
         )
-        self.extreme_check.grid(row=3, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="天底維持ms").grid(row=3, column=1, sticky="w", pady=(6, 0))
+        self.extreme_check.grid(row=5, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="天底維持ms").grid(row=5, column=1, sticky="w", pady=(6, 0))
         self.extreme_hold_entry = ttk.Entry(
             settings, textvariable=self.extreme_hold_ms_var, width=8
         )
         self.extreme_hold_entry.grid(
-            row=3, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=5, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="天底距離pips").grid(row=3, column=3, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="天底距離pips").grid(row=5, column=3, sticky="w", pady=(6, 0))
         self.extreme_distance_entry = ttk.Entry(
             settings, textvariable=self.extreme_distance_pips_var, width=8
         )
         self.extreme_distance_entry.grid(
-            row=3, column=4, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=5, column=4, padx=(4, 12), pady=(6, 0), sticky="w"
         )
 
         self.backtest_exclude_check = ttk.Checkbutton(
@@ -3474,81 +3476,81 @@ class Step1App:
             variable=self.backtest_exclude_var,
             command=self._on_backtest_exclude_toggle,
         )
-        self.backtest_exclude_check.grid(row=4, column=0, sticky="w", pady=(6, 0))
+        self.backtest_exclude_check.grid(row=6, column=0, sticky="w", pady=(6, 0))
         self.backtest_exclude_button = ttk.Button(
             settings, text="時間帯設定", command=self._open_backtest_exclude_hours
         )
         self.backtest_exclude_button.grid(
-            row=4, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=6, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
         )
         ttk.Label(settings, textvariable=self.backtest_exclude_label_var).grid(
-            row=4, column=2, columnspan=4, sticky="w", pady=(6, 0)
+            row=6, column=2, columnspan=4, sticky="w", pady=(6, 0)
         )
 
-        ttk.Label(settings, text="戦略").grid(row=5, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="戦略").grid(row=7, column=0, sticky="w", pady=(6, 0))
         self.strategy_spike_check = ttk.Checkbutton(
             settings,
             text="スパイク",
             variable=self.entry_spike_var,
         )
-        self.strategy_spike_check.grid(row=5, column=1, sticky="w", pady=(6, 0))
+        self.strategy_spike_check.grid(row=7, column=1, sticky="w", pady=(6, 0))
         self.strategy_sr_check = ttk.Checkbutton(
             settings,
             text="水平線戻り",
             variable=self.entry_sr_var,
         )
-        self.strategy_sr_check.grid(row=5, column=2, sticky="w", pady=(6, 0))
+        self.strategy_sr_check.grid(row=7, column=2, sticky="w", pady=(6, 0))
         self.strategy_momentum_check = ttk.Checkbutton(
             settings,
             text="勢い追随",
             variable=self.entry_momentum_var,
         )
-        self.strategy_momentum_check.grid(row=5, column=3, sticky="w", pady=(6, 0))
+        self.strategy_momentum_check.grid(row=7, column=3, sticky="w", pady=(6, 0))
         self.strategy_reverse_check = ttk.Checkbutton(
             settings,
             text="秒逆張り",
             variable=self.entry_reverse_var,
         )
-        self.strategy_reverse_check.grid(row=5, column=4, sticky="w", pady=(6, 0))
+        self.strategy_reverse_check.grid(row=7, column=4, sticky="w", pady=(6, 0))
         self.allow_same_direction_check = ttk.Checkbutton(
             settings,
             text="同方向同時保有",
             variable=self.allow_same_direction_var,
         )
-        self.allow_same_direction_check.grid(row=5, column=5, sticky="w", pady=(6, 0))
+        self.allow_same_direction_check.grid(row=7, column=5, sticky="w", pady=(6, 0))
         self.allow_opposite_direction_check = ttk.Checkbutton(
             settings,
             text="逆方向同時保有",
             variable=self.allow_opposite_direction_var,
         )
-        self.allow_opposite_direction_check.grid(row=5, column=6, sticky="w", pady=(6, 0))
+        self.allow_opposite_direction_check.grid(row=7, column=6, sticky="w", pady=(6, 0))
 
         self.namping_first_check = ttk.Checkbutton(
             settings,
             text="初回エントリー",
             variable=self.namping_first_entry_var,
         )
-        self.namping_first_check.grid(row=6, column=0, sticky="w", pady=(6, 0))
+        self.namping_first_check.grid(row=8, column=0, sticky="w", pady=(6, 0))
         self.namping_step1_check = ttk.Checkbutton(
             settings,
             text="段階1",
             variable=self.namping_step1_enabled_var,
             command=self._on_namping_toggle,
         )
-        self.namping_step1_check.grid(row=6, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="幅pp").grid(row=6, column=2, sticky="w", pady=(6, 0))
+        self.namping_step1_check.grid(row=8, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="幅pp").grid(row=8, column=2, sticky="w", pady=(6, 0))
         self.namping_step1_pips_entry = ttk.Entry(
             settings, textvariable=self.namping_step1_pips_var, width=6
         )
         self.namping_step1_pips_entry.grid(
-            row=6, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=8, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="ロット").grid(row=6, column=4, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="ロット").grid(row=8, column=4, sticky="w", pady=(6, 0))
         self.namping_step1_lot_entry = ttk.Entry(
             settings, textvariable=self.namping_step1_lot_var, width=6
         )
         self.namping_step1_lot_entry.grid(
-            row=6, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+            row=8, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
         self.namping_step2_check = ttk.Checkbutton(
@@ -3557,20 +3559,20 @@ class Step1App:
             variable=self.namping_step2_enabled_var,
             command=self._on_namping_toggle,
         )
-        self.namping_step2_check.grid(row=7, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="幅pp").grid(row=7, column=2, sticky="w", pady=(6, 0))
+        self.namping_step2_check.grid(row=9, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="幅pp").grid(row=9, column=2, sticky="w", pady=(6, 0))
         self.namping_step2_pips_entry = ttk.Entry(
             settings, textvariable=self.namping_step2_pips_var, width=6
         )
         self.namping_step2_pips_entry.grid(
-            row=7, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=9, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="ロット").grid(row=7, column=4, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="ロット").grid(row=9, column=4, sticky="w", pady=(6, 0))
         self.namping_step2_lot_entry = ttk.Entry(
             settings, textvariable=self.namping_step2_lot_var, width=6
         )
         self.namping_step2_lot_entry.grid(
-            row=7, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+            row=9, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
         self.namping_step3_check = ttk.Checkbutton(
@@ -3579,20 +3581,20 @@ class Step1App:
             variable=self.namping_step3_enabled_var,
             command=self._on_namping_toggle,
         )
-        self.namping_step3_check.grid(row=8, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="幅pp").grid(row=8, column=2, sticky="w", pady=(6, 0))
+        self.namping_step3_check.grid(row=10, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="幅pp").grid(row=10, column=2, sticky="w", pady=(6, 0))
         self.namping_step3_pips_entry = ttk.Entry(
             settings, textvariable=self.namping_step3_pips_var, width=6
         )
         self.namping_step3_pips_entry.grid(
-            row=8, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=10, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="ロット").grid(row=8, column=4, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="ロット").grid(row=10, column=4, sticky="w", pady=(6, 0))
         self.namping_step3_lot_entry = ttk.Entry(
             settings, textvariable=self.namping_step3_lot_var, width=6
         )
         self.namping_step3_lot_entry.grid(
-            row=8, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+            row=10, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
         self.namping_step4_check = ttk.Checkbutton(
@@ -3601,20 +3603,20 @@ class Step1App:
             variable=self.namping_step4_enabled_var,
             command=self._on_namping_toggle,
         )
-        self.namping_step4_check.grid(row=9, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="幅pp").grid(row=9, column=2, sticky="w", pady=(6, 0))
+        self.namping_step4_check.grid(row=11, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="幅pp").grid(row=11, column=2, sticky="w", pady=(6, 0))
         self.namping_step4_pips_entry = ttk.Entry(
             settings, textvariable=self.namping_step4_pips_var, width=6
         )
         self.namping_step4_pips_entry.grid(
-            row=9, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=11, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="ロット").grid(row=9, column=4, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="ロット").grid(row=11, column=4, sticky="w", pady=(6, 0))
         self.namping_step4_lot_entry = ttk.Entry(
             settings, textvariable=self.namping_step4_lot_var, width=6
         )
         self.namping_step4_lot_entry.grid(
-            row=9, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+            row=11, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
         self.namping_step5_check = ttk.Checkbutton(
@@ -3623,20 +3625,20 @@ class Step1App:
             variable=self.namping_step5_enabled_var,
             command=self._on_namping_toggle,
         )
-        self.namping_step5_check.grid(row=10, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(settings, text="幅pp").grid(row=10, column=2, sticky="w", pady=(6, 0))
+        self.namping_step5_check.grid(row=12, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="幅pp").grid(row=12, column=2, sticky="w", pady=(6, 0))
         self.namping_step5_pips_entry = ttk.Entry(
             settings, textvariable=self.namping_step5_pips_var, width=6
         )
         self.namping_step5_pips_entry.grid(
-            row=10, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=12, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
         )
-        ttk.Label(settings, text="ロット").grid(row=10, column=4, sticky="w", pady=(6, 0))
+        ttk.Label(settings, text="ロット").grid(row=12, column=4, sticky="w", pady=(6, 0))
         self.namping_step5_lot_entry = ttk.Entry(
             settings, textvariable=self.namping_step5_lot_var, width=6
         )
         self.namping_step5_lot_entry.grid(
-            row=10, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
+            row=12, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
         sr_settings = ttk.LabelFrame(param_area, text="水平線条件")

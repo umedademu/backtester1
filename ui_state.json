@@ -54,6 +54,7 @@
   "retrace": "100",
   "reverse_window_seconds": "3",
   "reverse_pips": "10",
+  "reverse_hold_seconds": "2",
   "momentum_window_ms": "500",
   "momentum_spike_pips": "1",
   "momentum_boundary_pct": "80",
@@ -111,5 +112,5 @@
   "signal_chain_count": "2",
   "signal_chain_monitor_minutes": "240",
   "signal_chain_ignore_opposite": true,
-  "signal_chain_enabled": true
+  "signal_chain_enabled": false
 }

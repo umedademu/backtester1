@@ -710,6 +710,133 @@ def find_spike_signal(
     return None
 
 
+def build_second_extremes(points):
+    n = len(points)
+    lows = [0.0] * n
+    highs = [0.0] * n
+    i = 0
+    while i < n:
+        sec = points[i][0].replace(microsecond=0)
+        low = points[i][1]
+        high = points[i][1]
+        j = i + 1
+        while j < n:
+            ts = points[j][0]
+            if ts.replace(microsecond=0) != sec:
+                break
+            price = points[j][1]
+            if price < low:
+                low = price
+            if price > high:
+                high = price
+            j += 1
+        for k in range(i, j):
+            lows[k] = low
+            highs[k] = high
+        i = j
+    return lows, highs
+
+
+def find_momentum_signal(
+    points,
+    times,
+    start_idx,
+    window,
+    spike,
+    boundary_pct,
+    tick_min_per_min,
+    hold_seconds,
+    max_move,
+    second_lows,
+    second_highs,
+    should_cancel=None,
+):
+    t0, _p0 = points[start_idx]
+    end_time = t0 + window
+    end_idx = bisect_right(times, end_time)
+    if end_idx <= start_idx + 1:
+        return None
+
+    base_low = second_lows[start_idx]
+    base_high = second_highs[start_idx]
+    up_threshold = base_low + spike
+    down_threshold = base_high - spike
+
+    direction = None
+    monitor_idx = None
+    for j in range(start_idx + 1, end_idx):
+        if is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
+        price = points[j][1]
+        if price >= up_threshold:
+            direction = "long"
+            monitor_idx = j
+            break
+        if price <= down_threshold:
+            direction = "short"
+            monitor_idx = j
+            break
+
+    if direction is None:
+        return None
+
+    ratio = boundary_pct / 100.0
+    if ratio < 0:
+        ratio = 0.0
+    elif ratio > 1:
+        ratio = 1.0
+
+    monitor_start_time = points[monitor_idx][0]
+    tick_count = 0
+    last_price = (
+        points[monitor_idx - 1][1] if monitor_idx > 0 else points[monitor_idx][1]
+    )
+    if direction == "long":
+        low_base = base_low
+        high = points[monitor_idx][1]
+    else:
+        high_base = base_high
+        low = points[monitor_idx][1]
+
+    n = len(points)
+    for j in range(monitor_idx, n):
+        if is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
+        ts, price = points[j]
+        if price != last_price:
+            tick_count += 1
+        last_price = price
+        if direction == "long":
+            if price > high:
+                high = price
+            if max_move > 0 and (high - low_base) >= max_move:
+                return None
+            boundary = low_base + (high - low_base) * ratio
+            if price < boundary:
+                return None
+        else:
+            if price < low:
+                low = price
+            if max_move > 0 and (high_base - low) >= max_move:
+                return None
+            boundary = high_base - (high_base - low) * ratio
+            if price > boundary:
+                return None
+
+        duration = (ts - monitor_start_time).total_seconds()
+        if duration >= hold_seconds:
+            denom = duration if duration > 0 else 0.001
+            avg_per_min = tick_count / denom * 60.0
+            if avg_per_min >= tick_min_per_min:
+                return {
+                    "entry_idx": j,
+                    "side": direction,
+                    "entry_reason": "勢い追随",
+                }
+
+    return None
+
+
 def build_reentry_lines(candles, sr_params, range_params, target_type):
     if not candles:
         return []
@@ -920,6 +1047,7 @@ def find_sr_reentry_signal(
                     continue
 
                 delta = bid - state["last_bid"]
+                moved = delta != 0
                 if delta > 0:
                     state["up_move_sum"] += delta
                     state["up_move_count"] += 1
@@ -940,7 +1068,9 @@ def find_sr_reentry_signal(
                         if bid > level + max_break:
                             finished.append(idx)
                         else:
-                            state["tick_count"] = tick_count + 1
+                            if moved:
+                                tick_count += 1
+                            state["tick_count"] = tick_count
                             if bid > state["extreme_price"]:
                                 state["extreme_price"] = bid
                             state["last_time"] = ts
@@ -1010,7 +1140,9 @@ def find_sr_reentry_signal(
                                 }
                         finished.append(idx)
                     else:
-                        state["tick_count"] = tick_count + 1
+                        if moved:
+                            tick_count += 1
+                        state["tick_count"] = tick_count
                         state["last_time"] = ts
                         state["last_bid"] = bid
                 else:
@@ -1018,7 +1150,9 @@ def find_sr_reentry_signal(
                         if bid < level - max_break:
                             finished.append(idx)
                         else:
-                            state["tick_count"] = tick_count + 1
+                            if moved:
+                                tick_count += 1
+                            state["tick_count"] = tick_count
                             if bid < state["extreme_price"]:
                                 state["extreme_price"] = bid
                             state["last_time"] = ts
@@ -1088,7 +1222,9 @@ def find_sr_reentry_signal(
                                 }
                         finished.append(idx)
                     else:
-                        state["tick_count"] = tick_count + 1
+                        if moved:
+                            tick_count += 1
+                        state["tick_count"] = tick_count
                         state["last_time"] = ts
                         state["last_bid"] = bid
             for idx in finished:
@@ -1574,6 +1710,22 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     namping_step3_lot = float(params.get("namping_step3_lot", 8.0))
     namping_step4_lot = float(params.get("namping_step4_lot", 16.0))
     namping_step5_lot = float(params.get("namping_step5_lot", 32.0))
+    momentum_window_ms = float(params.get("momentum_window_ms", 1000.0))
+    momentum_spike = float(params.get("momentum_spike_pips", 3.0)) * PIP_SIZE
+    momentum_boundary_pct = float(params.get("momentum_boundary_pct", 50.0))
+    momentum_tick_min_per_min = float(params.get("momentum_tick_min_per_min", 100.0))
+    momentum_hold_seconds = float(params.get("momentum_hold_seconds", 2.0))
+    momentum_max_move = float(params.get("momentum_max_pips", 0.0)) * PIP_SIZE
+    entry_mode = params.get("entry_mode", "spike")
+    entry_spike_enabled = bool(
+        params.get("entry_spike_enabled", entry_mode in ("spike", "both", "multi"))
+    )
+    entry_sr_enabled = bool(
+        params.get("entry_sr_enabled", entry_mode in ("sr_reentry", "both", "multi"))
+    )
+    entry_momentum_enabled = bool(
+        params.get("entry_momentum_enabled", entry_mode in ("momentum", "multi"))
+    )
 
     candle_times = []
     ma_values = []
@@ -1598,17 +1750,27 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             minute_close_info = build_minute_close_info(points_sorted)
             runtime_cache["minute_close_info"] = minute_close_info
 
-    entry_mode = params.get("entry_mode", "spike")
-    entry_spike_enabled = bool(
-        params.get("entry_spike_enabled", entry_mode in ("spike", "both"))
-    )
-    entry_sr_enabled = bool(
-        params.get("entry_sr_enabled", entry_mode in ("sr_reentry", "both"))
-    )
+    momentum_window = None
+    second_lows = None
+    second_highs = None
+    if entry_momentum_enabled:
+        momentum_window = timedelta(milliseconds=momentum_window_ms)
+        second_extremes = runtime_cache.get("second_extremes")
+        if second_extremes is None or second_extremes.get("points_ref") is not points_sorted:
+            lows, highs = build_second_extremes(points_sorted)
+            second_extremes = {
+                "points_ref": points_sorted,
+                "lows": lows,
+                "highs": highs,
+            }
+            runtime_cache["second_extremes"] = second_extremes
+        second_lows = second_extremes.get("lows")
+        second_highs = second_extremes.get("highs")
 
     trades = []
     active_positions_sr = []
     active_positions_spike = []
+    active_positions_momentum = []
 
     def can_open_position(entry_idx, side, positions):
         if not allow_overlap:
@@ -2043,6 +2205,151 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             register_position(side, exit_idx, active_positions_spike)
             i = entry_idx_actual + 1 if allow_overlap else exit_idx + 1
 
+    if entry_momentum_enabled:
+        i = 0
+        while i < n - 1:
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
+            signal = find_momentum_signal(
+                points_sorted,
+                times,
+                i,
+                momentum_window,
+                momentum_spike,
+                momentum_boundary_pct,
+                momentum_tick_min_per_min,
+                momentum_hold_seconds,
+                momentum_max_move,
+                second_lows,
+                second_highs,
+                should_cancel,
+            )
+            if not signal:
+                i += 1
+                continue
+
+            entry_idx = signal["entry_idx"]
+            side = signal["side"]
+            entry_time, entry_bid = points_sorted[entry_idx]
+            entry_price = entry_bid + spread if side == "long" else entry_bid
+
+            if exclude_enabled and entry_time.hour in exclude_hours:
+                i = entry_idx + 1
+                continue
+
+            if ma_enabled:
+                if not candle_times:
+                    i = entry_idx + 1
+                    continue
+                candle_idx = bisect_right(candle_times, entry_time) - 1
+                if candle_idx < 0 or candle_idx >= len(ma_values):
+                    i = entry_idx + 1
+                    continue
+                ma_value = ma_values[candle_idx]
+                if ma_value is None or ma_value <= 0:
+                    i = entry_idx + 1
+                    continue
+                if side == "long":
+                    deviation = (ma_value - entry_price) / ma_value
+                else:
+                    deviation = (entry_price - ma_value) / ma_value
+                if deviation < ma_deviation:
+                    i = entry_idx + 1
+                    continue
+
+            trade_result = simulate_namping_trade(
+                points_sorted,
+                entry_idx,
+                side,
+                entry_price,
+                spread,
+                stop,
+                take,
+                fixed_exit_price,
+                time_close_minutes,
+                minute_close_info,
+                namping_first_enabled,
+                [
+                    {
+                        "enabled": namping_step1_enabled,
+                        "pips": namping_step1_pips,
+                        "lot": namping_step1_lot,
+                        "label": "段階1",
+                    },
+                    {
+                        "enabled": namping_step2_enabled,
+                        "pips": namping_step2_pips,
+                        "lot": namping_step2_lot,
+                        "label": "段階2",
+                    },
+                    {
+                        "enabled": namping_step3_enabled,
+                        "pips": namping_step3_pips,
+                        "lot": namping_step3_lot,
+                        "label": "段階3",
+                    },
+                    {
+                        "enabled": namping_step4_enabled,
+                        "pips": namping_step4_pips,
+                        "lot": namping_step4_lot,
+                        "label": "段階4",
+                    },
+                    {
+                        "enabled": namping_step5_enabled,
+                        "pips": namping_step5_pips,
+                        "lot": namping_step5_lot,
+                        "label": "段階5",
+                    },
+                ],
+                should_cancel,
+            )
+            if not trade_result:
+                i = entry_idx + 1
+                continue
+
+            entry_idx_actual = trade_result["entry_idx"]
+            if entry_idx_actual is None:
+                i = entry_idx + 1
+                continue
+            if not can_open_position(entry_idx_actual, side, active_positions_momentum):
+                i = entry_idx + 1
+                continue
+
+            entry_time = points_sorted[entry_idx_actual][0]
+            entry_price_actual = trade_result["entry_price"]
+            avg_entry_price = trade_result["avg_entry_price"]
+            total_lot = trade_result["lot_total"]
+            exit_idx = trade_result["exit_idx"]
+            exit_price = trade_result["exit_price"]
+            exit_reason = trade_result["exit_reason"]
+
+            if side == "long":
+                pips_per_lot = (exit_price - avg_entry_price) / PIP_SIZE
+            else:
+                pips_per_lot = (avg_entry_price - exit_price) / PIP_SIZE
+            pips = pips_per_lot * total_lot
+
+            trades.append(
+                {
+                    "side": side,
+                    "entry_reason": signal.get("entry_reason", "勢い追随"),
+                    "entry_idx": entry_idx_actual,
+                    "entry_time": entry_time,
+                    "entry_price": entry_price_actual,
+                    "avg_entry_price": avg_entry_price,
+                    "lot_total": total_lot,
+                    "pips_per_lot": pips_per_lot,
+                    "namping_entries": trade_result.get("entries") or [],
+                    "exit_idx": exit_idx,
+                    "exit_time": points_sorted[exit_idx][0],
+                    "exit_price": exit_price,
+                    "pips": pips,
+                    "reason": exit_reason,
+                }
+            )
+            register_position(side, exit_idx, active_positions_momentum)
+            i = entry_idx_actual + 1 if allow_overlap else exit_idx + 1
+
     if trades:
         trades.sort(
             key=lambda t: (
@@ -2064,10 +2371,18 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     if equity_curve and equity_curve[-1][0] != times[-1]:
         equity_curve.append((times[-1], cumulative))
 
-    if entry_spike_enabled and entry_sr_enabled:
-        entry_mode = "both"
+    enabled_count = sum(
+        1 for flag in (entry_spike_enabled, entry_sr_enabled, entry_momentum_enabled) if flag
+    )
+    if enabled_count >= 2:
+        if entry_spike_enabled and entry_sr_enabled and not entry_momentum_enabled:
+            entry_mode = "both"
+        else:
+            entry_mode = "multi"
     elif entry_sr_enabled:
         entry_mode = "sr_reentry"
+    elif entry_momentum_enabled:
+        entry_mode = "momentum"
     elif entry_spike_enabled:
         entry_mode = "spike"
 
@@ -2083,6 +2398,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         "sr_target": params.get("sr_target"),
         "entry_spike_enabled": entry_spike_enabled,
         "entry_sr_enabled": entry_sr_enabled,
+        "entry_momentum_enabled": entry_momentum_enabled,
         "sr_ratio_join_mode": params.get("sr_ratio_join_mode"),
         "sr_move_ratio_enabled": params.get("sr_move_ratio_enabled"),
         "sr_move_speed_ratio_enabled": params.get("sr_move_speed_ratio_enabled"),
@@ -2205,6 +2521,7 @@ class Step1App:
         self.candle_interval_var = tk.IntVar(value=1)
         self.entry_spike_var = tk.BooleanVar(value=False)
         self.entry_sr_var = tk.BooleanVar(value=True)
+        self.entry_momentum_var = tk.BooleanVar(value=False)
         self.hide_chart_var = tk.BooleanVar(value=False)
         self.ma_filter_var = tk.BooleanVar(value=True)
         self.ma_period_var = tk.StringVar(value="200")
@@ -2225,6 +2542,12 @@ class Step1App:
         self.spike_window_var = tk.StringVar(value="500")
         self.spike_pips_var = tk.StringVar(value="1.0")
         self.retrace_var = tk.StringVar(value="90")
+        self.momentum_window_var = tk.StringVar(value="1000")
+        self.momentum_spike_pips_var = tk.StringVar(value="3.0")
+        self.momentum_boundary_pct_var = tk.StringVar(value="50")
+        self.momentum_tick_min_var = tk.StringVar(value="100")
+        self.momentum_hold_seconds_var = tk.StringVar(value="2")
+        self.momentum_max_pips_var = tk.StringVar(value="0")
         self.spread_var = tk.StringVar(value="1.0")
         self.stop_pips_var = tk.StringVar(value="10.0")
         self.take_pips_var = tk.StringVar(value="10.0")
@@ -2628,18 +2951,24 @@ class Step1App:
             variable=self.entry_sr_var,
         )
         self.strategy_sr_check.grid(row=5, column=2, sticky="w", pady=(6, 0))
+        self.strategy_momentum_check = ttk.Checkbutton(
+            settings,
+            text="勢い追随",
+            variable=self.entry_momentum_var,
+        )
+        self.strategy_momentum_check.grid(row=5, column=3, sticky="w", pady=(6, 0))
         self.allow_same_direction_check = ttk.Checkbutton(
             settings,
             text="同方向同時保有",
             variable=self.allow_same_direction_var,
         )
-        self.allow_same_direction_check.grid(row=5, column=3, sticky="w", pady=(6, 0))
+        self.allow_same_direction_check.grid(row=5, column=4, sticky="w", pady=(6, 0))
         self.allow_opposite_direction_check = ttk.Checkbutton(
             settings,
             text="逆方向同時保有",
             variable=self.allow_opposite_direction_var,
         )
-        self.allow_opposite_direction_check.grid(row=5, column=4, sticky="w", pady=(6, 0))
+        self.allow_opposite_direction_check.grid(row=5, column=5, sticky="w", pady=(6, 0))
 
         self.namping_first_check = ttk.Checkbutton(
             settings,
@@ -2932,6 +3261,45 @@ class Step1App:
         self.sr_reentry_favored_tick_min_entry.grid(
             row=3, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
+
+        momentum_settings = ttk.LabelFrame(param_area, text="勢い条件")
+        momentum_settings.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
+        ttk.Label(momentum_settings, text="監視時間（ms）").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Entry(momentum_settings, textvariable=self.momentum_window_var, width=8).grid(
+            row=0, column=1, padx=(4, 12), sticky="w"
+        )
+        ttk.Label(momentum_settings, text="監視幅（pp）").grid(
+            row=0, column=2, sticky="w"
+        )
+        ttk.Entry(momentum_settings, textvariable=self.momentum_spike_pips_var, width=8).grid(
+            row=0, column=3, padx=(4, 12), sticky="w"
+        )
+        ttk.Label(momentum_settings, text="境界位置（％）").grid(
+            row=0, column=4, sticky="w"
+        )
+        ttk.Entry(momentum_settings, textvariable=self.momentum_boundary_pct_var, width=8).grid(
+            row=0, column=5, padx=(4, 0), sticky="w"
+        )
+        ttk.Label(momentum_settings, text="平均ティック/分下限").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(momentum_settings, textvariable=self.momentum_tick_min_var, width=8).grid(
+            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(momentum_settings, text="継続秒数").grid(
+            row=1, column=2, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(momentum_settings, textvariable=self.momentum_hold_seconds_var, width=8).grid(
+            row=1, column=3, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+        ttk.Label(momentum_settings, text="上限（pp）").grid(
+            row=1, column=4, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            momentum_settings, textvariable=self.momentum_max_pips_var, width=8
+        ).grid(row=1, column=5, padx=(4, 0), pady=(6, 0), sticky="w")
 
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
@@ -3387,6 +3755,46 @@ class Step1App:
             "sr_target": target_kind,
         }
 
+    def _get_momentum_params(self):
+        try:
+            window_ms = self._parse_number(self.momentum_window_var.get())
+            spike_pips = self._parse_number(self.momentum_spike_pips_var.get())
+            boundary_pct = self._parse_number(self.momentum_boundary_pct_var.get())
+            tick_min = self._parse_number(self.momentum_tick_min_var.get())
+            hold_seconds = self._parse_number(self.momentum_hold_seconds_var.get())
+            max_pips = self._parse_number(self.momentum_max_pips_var.get())
+        except ValueError:
+            messagebox.showerror("エラー", "勢い条件の数値入力が正しくありません。")
+            return None
+
+        if window_ms <= 0:
+            messagebox.showerror("エラー", "監視時間は0より大きくしてください。")
+            return None
+        if spike_pips <= 0:
+            messagebox.showerror("エラー", "監視幅は0より大きくしてください。")
+            return None
+        if boundary_pct < 0 or boundary_pct > 100:
+            messagebox.showerror("エラー", "境界位置は0〜100の範囲にしてください。")
+            return None
+        if tick_min < 0:
+            messagebox.showerror("エラー", "平均ティック/分下限は0以上にしてください。")
+            return None
+        if hold_seconds < 0:
+            messagebox.showerror("エラー", "継続秒数は0以上にしてください。")
+            return None
+        if max_pips < 0:
+            messagebox.showerror("エラー", "上限は0以上にしてください。")
+            return None
+
+        return {
+            "momentum_window_ms": window_ms,
+            "momentum_spike_pips": spike_pips,
+            "momentum_boundary_pct": boundary_pct,
+            "momentum_tick_min_per_min": tick_min,
+            "momentum_hold_seconds": hold_seconds,
+            "momentum_max_pips": max_pips,
+        }
+
     def _start_download(self):
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("お知らせ", "ダウンロード中です。")
@@ -3471,21 +3879,35 @@ class Step1App:
         set_var(self.candle_interval_var, data.get("candle_interval"))
         entry_spike = data.get("entry_spike_enabled")
         entry_sr = data.get("entry_sr_enabled")
-        if entry_spike is None and entry_sr is None:
+        entry_momentum = data.get("entry_momentum_enabled")
+        if entry_spike is None and entry_sr is None and entry_momentum is None:
             entry_mode = data.get("entry_mode")
             if entry_mode == "spike":
                 entry_spike = True
                 entry_sr = False
+                entry_momentum = False
             elif entry_mode == "sr_reentry":
                 entry_spike = False
                 entry_sr = True
+                entry_momentum = False
             elif entry_mode == "both":
                 entry_spike = True
                 entry_sr = True
+                entry_momentum = False
+            elif entry_mode == "momentum":
+                entry_spike = False
+                entry_sr = False
+                entry_momentum = True
+            elif entry_mode == "multi":
+                entry_spike = True
+                entry_sr = True
+                entry_momentum = True
         if entry_spike is not None:
             set_bool(self.entry_spike_var, entry_spike)
         if entry_sr is not None:
             set_bool(self.entry_sr_var, entry_sr)
+        if entry_momentum is not None:
+            set_bool(self.entry_momentum_var, entry_momentum)
         set_bool(self.hide_chart_var, data.get("hide_chart"))
         set_bool(self.ma_filter_var, data.get("ma_filter"))
         set_var(self.ma_period_var, data.get("ma_period"))
@@ -3507,6 +3929,22 @@ class Step1App:
         set_var(self.spike_window_var, data.get("spike_window"))
         set_var(self.spike_pips_var, data.get("spike_pips"))
         set_var(self.retrace_var, data.get("retrace"))
+        set_var(self.momentum_window_var, data.get("momentum_window_ms"))
+        set_var(self.momentum_spike_pips_var, data.get("momentum_spike_pips"))
+        set_var(self.momentum_boundary_pct_var, data.get("momentum_boundary_pct"))
+        set_var(self.momentum_tick_min_var, data.get("momentum_tick_min_per_min"))
+        set_var(self.momentum_hold_seconds_var, data.get("momentum_hold_seconds"))
+        max_pips = data.get("momentum_max_pips")
+        if max_pips is None:
+            old_long = data.get("momentum_max_long_pips")
+            old_short = data.get("momentum_max_short_pips")
+            candidates = [v for v in (old_long, old_short) if v is not None]
+            if candidates:
+                try:
+                    max_pips = max(candidates)
+                except Exception:
+                    max_pips = None
+        set_var(self.momentum_max_pips_var, max_pips)
         set_var(self.spread_var, data.get("spread"))
         set_var(self.stop_pips_var, data.get("stop_pips"))
         set_var(self.take_pips_var, data.get("take_pips"))
@@ -3591,6 +4029,7 @@ class Step1App:
             "candle_interval": int(self.candle_interval_var.get()),
             "entry_spike_enabled": self.entry_spike_var.get(),
             "entry_sr_enabled": self.entry_sr_var.get(),
+            "entry_momentum_enabled": self.entry_momentum_var.get(),
             "hide_chart": self.hide_chart_var.get(),
             "ma_filter": self.ma_filter_var.get(),
             "ma_period": self.ma_period_var.get(),
@@ -3609,6 +4048,12 @@ class Step1App:
             "spike_window": self.spike_window_var.get(),
             "spike_pips": self.spike_pips_var.get(),
             "retrace": self.retrace_var.get(),
+            "momentum_window_ms": self.momentum_window_var.get(),
+            "momentum_spike_pips": self.momentum_spike_pips_var.get(),
+            "momentum_boundary_pct": self.momentum_boundary_pct_var.get(),
+            "momentum_tick_min_per_min": self.momentum_tick_min_var.get(),
+            "momentum_hold_seconds": self.momentum_hold_seconds_var.get(),
+            "momentum_max_pips": self.momentum_max_pips_var.get(),
             "spread": self.spread_var.get(),
             "stop_pips": self.stop_pips_var.get(),
             "take_pips": self.take_pips_var.get(),
@@ -3714,7 +4159,8 @@ class Step1App:
             return
         entry_spike_enabled = self.entry_spike_var.get()
         entry_sr_enabled = self.entry_sr_var.get()
-        if not entry_spike_enabled and not entry_sr_enabled:
+        entry_momentum_enabled = self.entry_momentum_var.get()
+        if not entry_spike_enabled and not entry_sr_enabled and not entry_momentum_enabled:
             messagebox.showerror("エラー", "戦略は最低1つ選択してください。")
             return
         sr_reentry_params = {}
@@ -3722,23 +4168,38 @@ class Step1App:
             sr_reentry_params = self._get_sr_reentry_params()
             if not sr_reentry_params:
                 return
+        momentum_params = {}
+        if entry_momentum_enabled:
+            momentum_params = self._get_momentum_params()
+            if not momentum_params:
+                return
         try:
             line_interval = int(self.candle_interval_var.get())
         except Exception:
             line_interval = 1
-        if entry_spike_enabled and entry_sr_enabled:
-            entry_mode = "both"
+        enabled_count = sum(
+            1 for flag in (entry_spike_enabled, entry_sr_enabled, entry_momentum_enabled) if flag
+        )
+        if enabled_count >= 2:
+            if entry_spike_enabled and entry_sr_enabled and not entry_momentum_enabled:
+                entry_mode = "both"
+            else:
+                entry_mode = "multi"
         elif entry_sr_enabled:
             entry_mode = "sr_reentry"
+        elif entry_momentum_enabled:
+            entry_mode = "momentum"
         else:
             entry_mode = "spike"
         params["entry_mode"] = entry_mode
         params["entry_spike_enabled"] = entry_spike_enabled
         params["entry_sr_enabled"] = entry_sr_enabled
+        params["entry_momentum_enabled"] = entry_momentum_enabled
         params["line_interval"] = max(1, line_interval)
         params["sr_params"] = sr_params
         params["range_params"] = range_params
         params.update(sr_reentry_params)
+        params.update(momentum_params)
         self.chart_cancel_event.clear()
         self.chart_button.config(state="disabled")
         self.chart_cancel_button.config(state="normal")
@@ -4048,10 +4509,13 @@ class Step1App:
         entry_mode = payload.get("entry_mode")
         sr_target = payload.get("sr_target")
         entry_spike_enabled = payload.get(
-            "entry_spike_enabled", entry_mode in ("spike", "both")
+            "entry_spike_enabled", entry_mode in ("spike", "both", "multi")
         )
         entry_sr_enabled = payload.get(
-            "entry_sr_enabled", entry_mode in ("sr_reentry", "both")
+            "entry_sr_enabled", entry_mode in ("sr_reentry", "both", "multi")
+        )
+        entry_momentum_enabled = payload.get(
+            "entry_momentum_enabled", entry_mode in ("momentum", "multi")
         )
 
         if total == 0:

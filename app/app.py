@@ -3623,25 +3623,38 @@ class Step1App:
         )
         self.candle_1440_radio.grid(row=3, column=5, sticky="w")
 
-        param_notebook = ttk.Notebook(param_tab)
-        param_notebook.grid(row=3, column=0, sticky="nsew", pady=(4, 4))
+        param_body = ttk.Frame(param_tab)
+        param_body.grid(row=3, column=0, sticky="nsew", pady=(4, 4))
         param_tab.rowconfigure(3, weight=1)
+        param_body.columnconfigure(0, weight=1)
+        param_body.columnconfigure(1, weight=2)
+        param_body.rowconfigure(0, weight=1)
 
-        common_tab = ttk.Frame(param_notebook, padding=12)
+        common_panel = ttk.Frame(param_body, padding=12)
+        common_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        common_panel.columnconfigure(0, weight=1)
+
+        right_panel = ttk.Frame(param_body)
+        right_panel.grid(row=0, column=1, sticky="nsew")
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.rowconfigure(0, weight=1)
+
+        param_notebook = ttk.Notebook(right_panel)
+        param_notebook.grid(row=0, column=0, sticky="nsew")
+
         reverse_tab = ttk.Frame(param_notebook, padding=12)
         momentum_tab = ttk.Frame(param_notebook, padding=12)
         sr_tab = ttk.Frame(param_notebook, padding=12)
         spike_tab = ttk.Frame(param_notebook, padding=12)
-        param_notebook.add(common_tab, text="共通")
         param_notebook.add(reverse_tab, text="秒逆張り")
         param_notebook.add(momentum_tab, text="勢い追随")
         param_notebook.add(sr_tab, text="水平線戻り")
         param_notebook.add(spike_tab, text="スパイク")
 
-        for tab in (common_tab, reverse_tab, momentum_tab, sr_tab, spike_tab):
+        for tab in (reverse_tab, momentum_tab, sr_tab, spike_tab):
             tab.columnconfigure(0, weight=1)
 
-        common_close = ttk.LabelFrame(common_tab, text="決済条件（共通）")
+        common_close = ttk.LabelFrame(common_panel, text="決済条件（共通）")
         common_close.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         ttk.Label(common_close, text="スプレッド（ピップス）").grid(
             row=0, column=0, sticky="w"
@@ -3686,14 +3699,14 @@ class Step1App:
             common_close, text="共通優先", variable=self.common_fixed_override_var
         ).grid(row=4, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
 
-        common_namping = ttk.LabelFrame(common_tab, text="ナンピン条件（共通）")
+        common_namping = ttk.LabelFrame(common_panel, text="ナンピン条件（共通）")
         common_namping.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         ttk.Checkbutton(
             common_namping, text="共通優先", variable=self.common_namping_override_var
         ).grid(row=0, column=0, sticky="w")
         self._build_namping_rows(common_namping, "common", row_start=1)
 
-        common_filter = ttk.LabelFrame(common_tab, text="共通フィルター")
+        common_filter = ttk.LabelFrame(common_panel, text="共通フィルター")
         common_filter.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         self.ma_check = ttk.Checkbutton(
             common_filter,
@@ -3741,7 +3754,7 @@ class Step1App:
         )
         self.allow_opposite_direction_check.grid(row=2, column=1, sticky="w", pady=(6, 0))
 
-        signal_chain_settings = ttk.LabelFrame(common_tab, text="連続点灯条件")
+        signal_chain_settings = ttk.LabelFrame(common_panel, text="連続点灯条件")
         signal_chain_settings.grid(row=3, column=0, sticky="ew", pady=(0, 6))
         ttk.Label(signal_chain_settings, text="正方向幅（pp）").grid(
             row=0, column=0, sticky="w"

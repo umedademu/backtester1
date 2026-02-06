@@ -274,7 +274,7 @@ def downsample_points(points, max_points):
     return sampled
 
 
-def build_timeframe_candles(points, interval_minutes=1):
+def build_timeframe_candles(points, interval_minutes=1, should_cancel=None):
     if not points:
         return []
     interval_minutes = max(1, int(interval_minutes))
@@ -283,6 +283,8 @@ def build_timeframe_candles(points, interval_minutes=1):
     open_p = high_p = low_p = close_p = None
 
     for ts, price in points:
+        if should_cancel and is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
         total_minutes = ts.hour * 60 + ts.minute
         bucket_minutes = (total_minutes // interval_minutes) * interval_minutes
         bucket_hour = bucket_minutes // 60
@@ -307,11 +309,11 @@ def build_timeframe_candles(points, interval_minutes=1):
     return candles
 
 
-def build_minute_candles(points):
-    return build_timeframe_candles(points, 1)
+def build_minute_candles(points, should_cancel=None):
+    return build_timeframe_candles(points, 1, should_cancel=should_cancel)
 
 
-def build_minute_ma(candles, period):
+def build_minute_ma(candles, period, should_cancel=None):
     if period <= 0 or not candles:
         return [], [], []
     times = []
@@ -319,6 +321,8 @@ def build_minute_ma(candles, period):
     closes = [c[4] for c in candles]
     running = 0.0
     for i, candle in enumerate(candles):
+        if should_cancel and is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
         running += closes[i]
         if i >= period:
             running -= closes[i - period]
@@ -333,7 +337,7 @@ def build_minute_ma(candles, period):
     return times, ma_values, series
 
 
-def build_second_closes(points):
+def build_second_closes(points, should_cancel=None):
     if not points:
         return [], []
     start_time = points[0][0].replace(microsecond=0)
@@ -345,6 +349,8 @@ def build_second_closes(points):
     current_time = start_time
     n = len(points)
     while current_time <= end_time:
+        if should_cancel and is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
         next_time = current_time + timedelta(seconds=1)
         while idx < n and points[idx][0] < next_time:
             last_price = points[idx][1]
@@ -355,15 +361,17 @@ def build_second_closes(points):
     return times, closes
 
 
-def build_second_ma(points, period):
+def build_second_ma(points, period, should_cancel=None):
     if period <= 0 or not points:
         return [], [], []
-    times, closes = build_second_closes(points)
+    times, closes = build_second_closes(points, should_cancel=should_cancel)
     if not closes:
         return [], [], []
     ma_values = [None] * len(closes)
     running = 0.0
     for i, close in enumerate(closes):
+        if should_cancel and is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
         running += close
         if i >= period:
             running -= closes[i - period]
@@ -408,7 +416,7 @@ def build_minute_close_info(points):
     return minute_times, minute_close_prices, minute_close_indices
 
 
-def build_range_band_segments(candles, lookback_bars=30):
+def build_range_band_segments(candles, lookback_bars=30, should_cancel=None):
     if not candles:
         return []
 
@@ -418,6 +426,8 @@ def build_range_band_segments(candles, lookback_bars=30):
     active = None
 
     for idx in range(len(candles)):
+        if should_cancel and is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
         start_idx = max(0, idx - lookback_bars + 1)
         window = candles[start_idx : idx + 1]
         window_high = max(c[2] for c in window)
@@ -464,7 +474,7 @@ def build_range_band_segments(candles, lookback_bars=30):
     return segments
 
 
-def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5):
+def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5, should_cancel=None):
     if not candles:
         return []
 
@@ -492,6 +502,8 @@ def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5):
     last_confirm_idx = None
 
     for idx in range(1, len(candles)):
+        if should_cancel and is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
         _ts, _o, high, low, _close = candles[idx]
 
         if direction is None:
@@ -562,7 +574,9 @@ def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5):
     return points
 
 
-def build_zigzag_sr_segments(candles, zigzag_pips=5.0, break_pips=1.0, min_bars=5):
+def build_zigzag_sr_segments(
+    candles, zigzag_pips=5.0, break_pips=1.0, min_bars=5, should_cancel=None
+):
     if not candles:
         return []
 
@@ -612,6 +626,8 @@ def build_zigzag_sr_segments(candles, zigzag_pips=5.0, break_pips=1.0, min_bars=
     last_confirm_idx = None
 
     for idx in range(1, len(candles)):
+        if should_cancel and is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
         _ts, _o, high, low, close = candles[idx]
 
         if direction is None:
@@ -816,7 +832,7 @@ def find_reverse_signal(
     if direction == "short":
         extreme = points[trigger_idx][1]
         for j in range(trigger_idx + 1, len(points)):
-            if is_cancel_requested(should_cancel):
+            if should_cancel and is_cancel_requested(should_cancel):
                 raise InterruptedError("cancelled")
             ts, price = points[j]
             if price > monitor_high:
@@ -863,17 +879,21 @@ def find_reverse_signal(
     return None
 
 
-def build_second_extremes(points):
+def build_second_extremes(points, should_cancel=None):
     n = len(points)
     lows = [0.0] * n
     highs = [0.0] * n
     i = 0
     while i < n:
+        if should_cancel and is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
         sec = points[i][0].replace(microsecond=0)
         low = points[i][1]
         high = points[i][1]
         j = i + 1
         while j < n:
+            if should_cancel and is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
             ts = points[j][0]
             if ts.replace(microsecond=0) != sec:
                 break
@@ -990,7 +1010,7 @@ def find_momentum_signal(
     return None
 
 
-def build_reentry_lines(candles, sr_params, range_params, target_type):
+def build_reentry_lines(candles, sr_params, range_params, target_type, should_cancel=None):
     if not candles:
         return []
     sr_params = sr_params or {}
@@ -998,7 +1018,7 @@ def build_reentry_lines(candles, sr_params, range_params, target_type):
 
     lines = []
     if target_type in ("sr", "both"):
-        segments = build_zigzag_sr_segments(candles, **sr_params)
+        segments = build_zigzag_sr_segments(candles, **sr_params, should_cancel=should_cancel)
         for seg in segments:
             price = seg.get("price")
             kind = seg.get("kind")
@@ -1018,7 +1038,9 @@ def build_reentry_lines(candles, sr_params, range_params, target_type):
 
     if target_type in ("range", "both"):
         lookback_bars = range_params.get("lookback_bars", 30)
-        range_segments = build_range_band_segments(candles, lookback_bars=lookback_bars)
+        range_segments = build_range_band_segments(
+            candles, lookback_bars=lookback_bars, should_cancel=should_cancel
+        )
         for seg in range_segments:
             high = seg.get("high")
             low = seg.get("low")
@@ -2159,14 +2181,14 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         ma_entry = ma_cache.get(ma_key)
         if ma_entry is None:
             if ma_unit == "sec":
-                ma_entry = build_second_ma(points_sorted, ma_period)
+                ma_entry = build_second_ma(points_sorted, ma_period, should_cancel=should_cancel)
             else:
                 candle_cache = runtime_cache.setdefault("candle_cache", {})
                 minute_candles = candle_cache.get(1)
                 if minute_candles is None:
-                    minute_candles = build_minute_candles(points_sorted)
+                    minute_candles = build_minute_candles(points_sorted, should_cancel=should_cancel)
                     candle_cache[1] = minute_candles
-                ma_entry = build_minute_ma(minute_candles, ma_period)
+                ma_entry = build_minute_ma(minute_candles, ma_period, should_cancel=should_cancel)
             ma_cache[ma_key] = ma_entry
         candle_times, ma_values, ma_series = ma_entry
         if ma_series and len(ma_series) > 10000:
@@ -2194,7 +2216,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         momentum_window = timedelta(milliseconds=momentum_window_ms)
         second_extremes = runtime_cache.get("second_extremes")
         if second_extremes is None or second_extremes.get("points_ref") is not points_sorted:
-            lows, highs = build_second_extremes(points_sorted)
+            lows, highs = build_second_extremes(points_sorted, should_cancel=should_cancel)
             second_extremes = {
                 "points_ref": points_sorted,
                 "lows": lows,
@@ -2420,9 +2442,17 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             candle_cache = runtime_cache.setdefault("candle_cache", {})
             line_candles = candle_cache.get(line_interval)
             if line_candles is None:
-                line_candles = build_timeframe_candles(points_sorted, line_interval)
+                line_candles = build_timeframe_candles(
+                    points_sorted, line_interval, should_cancel=should_cancel
+                )
                 candle_cache[line_interval] = line_candles
-            lines = build_reentry_lines(line_candles, sr_params, range_params, sr_target)
+            lines = build_reentry_lines(
+                line_candles,
+                sr_params,
+                range_params,
+                sr_target,
+                should_cancel=should_cancel,
+            )
             line_start_times = [line["start_time"] for line in lines]
             end_limits_base = [
                 line["end_time"] + timedelta(minutes=line_interval) for line in lines
@@ -2609,9 +2639,17 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             candle_cache = runtime_cache.setdefault("candle_cache", {})
             line_candles = candle_cache.get(line_interval)
             if line_candles is None:
-                line_candles = build_timeframe_candles(points_sorted, line_interval)
+                line_candles = build_timeframe_candles(
+                    points_sorted, line_interval, should_cancel=should_cancel
+                )
                 candle_cache[line_interval] = line_candles
-            lines = build_reentry_lines(line_candles, sr_params, range_params, sr_target)
+            lines = build_reentry_lines(
+                line_candles,
+                sr_params,
+                range_params,
+                sr_target,
+                should_cancel=should_cancel,
+            )
             line_start_times = [line["start_time"] for line in lines]
             end_limits_base = [
                 line["end_time"] + timedelta(minutes=line_interval) for line in lines

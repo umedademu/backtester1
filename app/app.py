@@ -6820,14 +6820,19 @@ class Step1App:
             messagebox.showerror("エラー", "終了日は開始日より後にしてください。")
             return
         params = self._get_backtest_params()
-        sr_params = self._get_sr_params()
-        range_params = self._get_range_params()
-        if not params or not sr_params or not range_params:
+        if not params:
             return
         entry_spike_enabled = self.entry_spike_var.get()
         entry_sr_enabled = self.entry_sr_var.get()
         entry_momentum_enabled = self.entry_momentum_var.get()
         entry_reverse_enabled = self.entry_reverse_var.get()
+        sr_params = {}
+        range_params = {}
+        if entry_sr_enabled:
+            sr_params = self._get_sr_params()
+            range_params = self._get_range_params()
+            if not sr_params or not range_params:
+                return
         if (
             not entry_spike_enabled
             and not entry_sr_enabled
@@ -7499,6 +7504,21 @@ class Step1App:
         if self.chart_data:
             self._draw_chart()
 
+    def _apply_sr_entry_visibility(self, enabled: bool):
+        if not enabled:
+            self.zigzag_show_var.set(False)
+            self.sr_line_show_var.set(False)
+            self.range_band_show_var.set(False)
+        state = "normal" if enabled else "disabled"
+        if hasattr(self, "zigzag_check"):
+            self.zigzag_check.config(state=state)
+        if hasattr(self, "sr_line_check"):
+            self.sr_line_check.config(state=state)
+        if hasattr(self, "range_band_check"):
+            self.range_band_check.config(state=state)
+        if self.chart_data:
+            self._draw_chart()
+
     def _on_sr_reentry_filter_toggle(self):
         if hasattr(self, "sr_reentry_tick_limit_entry"):
             state = "normal" if self.sr_reentry_tick_limit_enabled_var.get() else "disabled"
@@ -7589,6 +7609,8 @@ class Step1App:
             return
         enabled = bool(info["var"].get())
         self._apply_state_recursive(info["frame"], enabled, skip=info["toggle"])
+        if key == "sr":
+            self._apply_sr_entry_visibility(enabled)
         if enabled:
             self._on_namping_toggle_group(key)
             if key == "reverse":
@@ -8198,11 +8220,12 @@ class Step1App:
             return
 
         candles = None
+        sr_entry_enabled = self.entry_sr_var.get()
+        show_zigzag = sr_entry_enabled and self.zigzag_show_var.get()
+        show_sr_line = sr_entry_enabled and self.sr_line_show_var.get()
+        show_range_band = sr_entry_enabled and self.range_band_show_var.get()
         need_overlay_data = (
-            chart_type == "candle"
-            or self.zigzag_show_var.get()
-            or self.sr_line_show_var.get()
-            or self.range_band_show_var.get()
+            chart_type == "candle" or show_zigzag or show_sr_line or show_range_band
         )
         if need_overlay_data:
             overlay_cache = data.get("overlay_cache")
@@ -8211,27 +8234,36 @@ class Step1App:
                 data["overlay_cache"] = overlay_cache
 
             cache_entry = overlay_cache.get(candle_interval)
-            if cache_entry is None or cache_entry.get("source_len") != len(points_all):
+            if (
+                cache_entry is None
+                or cache_entry.get("source_len") != len(points_all)
+                or cache_entry.get("sr_enabled") != sr_entry_enabled
+            ):
                 full_candles = build_timeframe_candles(points_all, candle_interval)
-                sr_params = {
-                    "zigzag_pips": 5.0,
-                    "break_pips": 1.0,
-                    "min_bars": 5,
-                }
-                sr_params.update(data.get("sr_params") or {})
-                range_params = {"lookback_bars": 30}
-                range_params.update(data.get("range_params") or {})
+                if sr_entry_enabled:
+                    sr_params = {
+                        "zigzag_pips": 5.0,
+                        "break_pips": 1.0,
+                        "min_bars": 5,
+                    }
+                    sr_params.update(data.get("sr_params") or {})
+                    range_params = {"lookback_bars": 30}
+                    range_params.update(data.get("range_params") or {})
 
-                zigzag_points = build_zigzag_points(
-                    full_candles,
-                    zigzag_pips=sr_params.get("zigzag_pips", 5.0),
-                    min_bars=sr_params.get("min_bars", 5),
-                )
-                range_segments = build_range_band_segments(
-                    full_candles,
-                    lookback_bars=range_params.get("lookback_bars", 30),
-                )
-                sr_segments = build_zigzag_sr_segments(full_candles, **sr_params)
+                    zigzag_points = build_zigzag_points(
+                        full_candles,
+                        zigzag_pips=sr_params.get("zigzag_pips", 5.0),
+                        min_bars=sr_params.get("min_bars", 5),
+                    )
+                    range_segments = build_range_band_segments(
+                        full_candles,
+                        lookback_bars=range_params.get("lookback_bars", 30),
+                    )
+                    sr_segments = build_zigzag_sr_segments(full_candles, **sr_params)
+                else:
+                    zigzag_points = []
+                    range_segments = []
+                    sr_segments = []
 
                 cache_entry = {
                     "source_len": len(points_all),
@@ -8239,6 +8271,7 @@ class Step1App:
                     "zigzag_points": zigzag_points,
                     "range_segments": range_segments,
                     "sr_segments": sr_segments,
+                    "sr_enabled": sr_entry_enabled,
                 }
                 overlay_cache[candle_interval] = cache_entry
 
@@ -8420,7 +8453,7 @@ class Step1App:
                 canvas.create_line(ma_coords, fill="#ff7f0e", width=1)
 
         zigzag_points = data.get("zigzag_points") or []
-        if self.zigzag_show_var.get() and chart_type == "candle" and zigzag_points:
+        if show_zigzag and chart_type == "candle" and zigzag_points:
             zz_coords = []
             if span_seconds > 0:
                 for ts, price in zigzag_points:
@@ -8459,7 +8492,7 @@ class Step1App:
             return left + (idx - view_start_idx) / (n - 1) * plot_width
 
         range_segments = data.get("range_segments") or []
-        if self.range_band_show_var.get() and range_segments:
+        if show_range_band and range_segments:
             for seg in range_segments:
                 start_ts = seg.get("start_time")
                 end_ts = seg.get("end_time")
@@ -8488,7 +8521,7 @@ class Step1App:
                 canvas.create_line(x1, y_low, x2, y_low, fill="#1f77b4", width=1, dash=(2, 2))
 
         sr_segments = data.get("sr_segments") or []
-        if self.sr_line_show_var.get() and sr_segments:
+        if show_sr_line and sr_segments:
             for seg in sr_segments:
                 start_ts = seg.get("start_time")
                 end_ts = seg.get("end_time")

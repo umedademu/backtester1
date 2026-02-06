@@ -3665,6 +3665,8 @@ class Step1App:
         self.chart_saved_month_var = tk.StringVar(value="")
         self.chart_saved_months = []
         self.chart_saved_trades = []
+        self.dup_period_mode_var = tk.StringVar(value="skip")
+        self.pending_overwrite_months = None
         self.trade_jump_var = tk.StringVar(value="1")
         self.trade_nav_info_var = tk.StringVar(value="取引: 0件")
         self.trade_focus_index = None
@@ -3968,6 +3970,15 @@ class Step1App:
             state="disabled",
         )
         self.chart_cancel_button.grid(row=0, column=1, padx=(6, 0), sticky="w")
+        ttk.Label(run_row, text="重複期間").grid(row=0, column=2, padx=(12, 4), sticky="w")
+        self.dup_skip_radio = ttk.Radiobutton(
+            run_row, text="スキップ", variable=self.dup_period_mode_var, value="skip"
+        )
+        self.dup_skip_radio.grid(row=0, column=3, sticky="w")
+        self.dup_overwrite_radio = ttk.Radiobutton(
+            run_row, text="上書き", variable=self.dup_period_mode_var, value="overwrite"
+        )
+        self.dup_overwrite_radio.grid(row=0, column=4, padx=(6, 0), sticky="w")
         ttk.Label(run_row, textvariable=self.backtest_info_var).grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(4, 0)
         )
@@ -5351,6 +5362,33 @@ class Step1App:
         self.start_var.set(start.isoformat())
         self.end_var.set(end.isoformat())
 
+    def _get_month_keys(self, start_date, end_date):
+        if not start_date or not end_date:
+            return set()
+        start = start_date.replace(day=1)
+        end = end_date.replace(day=1)
+        months = set()
+        current = start
+        while current <= end:
+            months.add(f"{current.year:04d}-{current.month:02d}")
+            current = self._add_months(current, 1)
+        return months
+
+    def _has_duplicate_month(self, trade_path: Path, month_keys):
+        try:
+            with trade_path.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    ts = self._parse_csv_time(row.get("out時刻") or "")
+                    if ts is None:
+                        continue
+                    key = f"{ts.year:04d}-{ts.month:02d}"
+                    if key in month_keys:
+                        return True
+        except Exception:
+            return False
+        return False
+
     def _shift_view_month_range(self, direction: int):
         months = self._get_view_range_months()
         if months is None:
@@ -5444,6 +5482,9 @@ class Step1App:
         self.batch_index += 1
         self._apply_view_month_range(target, 1)
         started = self._show_chart()
+        if started is None:
+            self.root.after(0, self._run_next_batch)
+            return
         if not started:
             self.batch_active = False
             if hasattr(self, "batch_run_button"):
@@ -6416,6 +6457,7 @@ class Step1App:
         set_bool(self.hide_chart_var, data.get("hide_chart"))
         self.pnl_log_enabled_var.set(True)
         self.pnl_log_path_var.set(str(project_root() / RESULTS_DIR_NAME))
+        set_var(self.dup_period_mode_var, data.get("dup_period_mode"))
         set_bool(self.ma_filter_var, data.get("ma_filter"))
         set_var(self.ma_period_var, data.get("ma_period"))
         set_var(self.ma_unit_var, data.get("ma_unit"))
@@ -6963,6 +7005,7 @@ class Step1App:
             "hide_chart": self.hide_chart_var.get(),
             "pnl_log_enabled": True,
             "pnl_log_path": str(project_root() / RESULTS_DIR_NAME),
+            "dup_period_mode": self.dup_period_mode_var.get(),
             "ma_filter": self.ma_filter_var.get(),
             "ma_period": self.ma_period_var.get(),
             "ma_unit": self.ma_unit_var.get(),
@@ -7494,6 +7537,35 @@ class Step1App:
         params["range_params"] = range_params
         params.update(sr_reentry_params)
         params.update(momentum_params)
+
+        dup_mode = (self.dup_period_mode_var.get() or "").strip()
+        month_keys = self._get_month_keys(self.view_start_date, self.view_end_date)
+        strategy_label = self._strategy_label(
+            {
+                "entry_spike_enabled": entry_spike_enabled,
+                "entry_sr_enabled": entry_sr_enabled,
+                "entry_momentum_enabled": entry_momentum_enabled,
+                "entry_reverse_enabled": entry_reverse_enabled,
+            }
+        )
+        settings_id = self._settings_id(params)
+        settings_dir = self._results_root() / PAIR / strategy_label / f"設定_{settings_id}"
+        trade_path = settings_dir / "取引一覧.csv"
+        if dup_mode in ("skip", "overwrite") and month_keys and trade_path.exists():
+            if self._has_duplicate_month(trade_path, month_keys):
+                if dup_mode == "skip":
+                    self.pending_overwrite_months = None
+                    if self.batch_active:
+                        self.status_var.set("重複期間のためスキップしました。")
+                        return None
+                    messagebox.showinfo("お知らせ", "同期間が既に記録されているためスキップしました。")
+                    return False
+                self.pending_overwrite_months = month_keys
+            else:
+                self.pending_overwrite_months = None
+        else:
+            self.pending_overwrite_months = None
+
         self.chart_cancel_event.clear()
         self.chart_button.config(state="disabled")
         self.chart_cancel_button.config(state="normal")
@@ -8510,34 +8582,15 @@ class Step1App:
             "平均in価格",
         ]
 
-        last_cum = 0.0
-        if trade_path.exists():
-            try:
-                with trade_path.open(encoding="utf-8", newline="") as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        value = row.get("累計損益")
-                        if value is None or value == "":
-                            continue
-                        try:
-                            last_cum = float(value)
-                        except Exception:
-                            continue
-            except Exception:
-                last_cum = 0.0
-
-        new_rows = []
-        cumulative = last_cum
-
         def safe_float(value, default=0.0):
             try:
                 return float(value)
             except Exception:
                 return default
 
+        trade_rows = []
         for idx, trade in enumerate(trades_sorted):
             pips = safe_float(trade.get("pips", 0.0))
-            cumulative += pips
             trade_id = f"{run_id}-{idx + 1:04d}"
             side = trade.get("side", "")
             if side == "long":
@@ -8555,37 +8608,98 @@ class Step1App:
                 line_label = ""
             namping_entries = trade.get("namping_entries") or []
             namping_count = max(0, len(namping_entries) - 1)
-            new_rows.append(
-                [
-                    start_date,
-                    end_date,
-                    run_id,
-                    trade_id,
-                    self._format_csv_time(trade.get("entry_time")),
-                    self._format_csv_time(trade.get("exit_time")),
-                    side_label,
-                    f"{safe_float(trade.get('entry_price', 0.0)):.5f}",
-                    f"{safe_float(trade.get('exit_price', 0.0)):.5f}",
-                    f"{safe_float(trade.get('lot_total', 0.0)):.2f}",
-                    f"{pips:.2f}",
-                    f"{cumulative:.2f}",
-                    trade.get("entry_reason", ""),
-                    trade.get("exit_reason", ""),
-                    line_label,
-                    str(namping_count),
-                    f"{safe_float(trade.get('avg_entry_price', 0.0)):.5f}",
-                ]
+            trade_rows.append(
+                {
+                    "開始日": start_date,
+                    "終了日": end_date,
+                    "実行ID": run_id,
+                    "取引ID": trade_id,
+                    "in時刻": self._format_csv_time(trade.get("entry_time")),
+                    "out時刻": self._format_csv_time(trade.get("exit_time")),
+                    "方向": side_label,
+                    "in価格": f"{safe_float(trade.get('entry_price', 0.0)):.5f}",
+                    "out価格": f"{safe_float(trade.get('exit_price', 0.0)):.5f}",
+                    "ロット合計": f"{safe_float(trade.get('lot_total', 0.0)):.2f}",
+                    "損益": f"{pips:.2f}",
+                    "累計損益": "",
+                    "in理由": trade.get("entry_reason", ""),
+                    "out理由": trade.get("exit_reason", ""),
+                    "ライン種別": line_label,
+                    "ナンピン回数": str(namping_count),
+                    "平均in価格": f"{safe_float(trade.get('avg_entry_price', 0.0)):.5f}",
+                }
             )
 
-        try:
-            write_header = not trade_path.exists() or trade_path.stat().st_size == 0
-            with trade_path.open("a", encoding="utf-8", newline="") as f:
-                writer = csv.writer(f)
-                if write_header:
-                    writer.writerow(trade_header)
-                writer.writerows(new_rows)
-        except Exception as e:
-            messagebox.showerror("エラー", f"損益記録の保存に失敗しました: {e}")
+        overwrite_months = set(self.pending_overwrite_months or [])
+        self.pending_overwrite_months = None
+
+        def trade_time(row):
+            ts = self._parse_csv_time(row.get("out時刻") or row.get("in時刻") or "")
+            if ts is None:
+                return datetime.min.replace(tzinfo=JST)
+            return ts
+
+        if overwrite_months:
+            existing_rows = []
+            if trade_path.exists():
+                try:
+                    with trade_path.open("r", encoding="utf-8", newline="") as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            ts = self._parse_csv_time(row.get("out時刻") or row.get("in時刻") or "")
+                            if ts is not None:
+                                key = f"{ts.year:04d}-{ts.month:02d}"
+                                if key in overwrite_months:
+                                    continue
+                            existing_rows.append(row)
+                except Exception:
+                    existing_rows = []
+            combined_rows = existing_rows + trade_rows
+            combined_rows.sort(key=trade_time)
+            cumulative = 0.0
+            for row in combined_rows:
+                cumulative += safe_float(row.get("損益"), 0.0)
+                row["累計損益"] = f"{cumulative:.2f}"
+            try:
+                with trade_path.open("w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(
+                        f, fieldnames=trade_header, extrasaction="ignore"
+                    )
+                    writer.writeheader()
+                    writer.writerows(combined_rows)
+            except Exception as e:
+                messagebox.showerror("エラー", f"損益記録の保存に失敗しました: {e}")
+        else:
+            last_cum = 0.0
+            if trade_path.exists():
+                try:
+                    with trade_path.open(encoding="utf-8", newline="") as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            value = row.get("累計損益")
+                            if value is None or value == "":
+                                continue
+                            try:
+                                last_cum = float(value)
+                            except Exception:
+                                continue
+                except Exception:
+                    last_cum = 0.0
+            cumulative = last_cum
+            for row in trade_rows:
+                cumulative += safe_float(row.get("損益"), 0.0)
+                row["累計損益"] = f"{cumulative:.2f}"
+            try:
+                write_header = not trade_path.exists() or trade_path.stat().st_size == 0
+                with trade_path.open("a", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(
+                        f, fieldnames=trade_header, extrasaction="ignore"
+                    )
+                    if write_header:
+                        writer.writeheader()
+                    writer.writerows(trade_rows)
+            except Exception as e:
+                messagebox.showerror("エラー", f"損益記録の保存に失敗しました: {e}")
 
         namping_path = settings_dir / "ナンピン詳細.csv"
         namping_header = [
@@ -8615,31 +8729,142 @@ class Step1App:
                 if entry_time is None:
                     entry_time = trade.get("entry_time")
                 namping_rows.append(
-                    [
-                        start_date,
-                        end_date,
-                        run_id,
-                        trade_id,
-                        str(step_idx + 1),
-                        entry.get("kind", ""),
-                        self._format_csv_time(entry_time),
-                        f"{safe_float(entry.get('price', 0.0)):.5f}",
-                        f"{safe_float(entry.get('lot', 0.0)):.2f}",
-                    ]
+                    {
+                        "開始日": start_date,
+                        "終了日": end_date,
+                        "実行ID": run_id,
+                        "取引ID": trade_id,
+                        "段階": str(step_idx + 1),
+                        "種別": entry.get("kind", ""),
+                        "in時刻": self._format_csv_time(entry_time),
+                        "in価格": f"{safe_float(entry.get('price', 0.0)):.5f}",
+                        "ロット": f"{safe_float(entry.get('lot', 0.0)):.2f}",
+                    }
                 )
 
-        if namping_rows:
-            try:
-                write_header = not namping_path.exists() or namping_path.stat().st_size == 0
-                with namping_path.open("a", encoding="utf-8", newline="") as f:
-                    writer = csv.writer(f)
-                    if write_header:
-                        writer.writerow(namping_header)
-                    writer.writerows(namping_rows)
-            except Exception:
-                pass
+        if overwrite_months:
+            existing_rows = []
+            if namping_path.exists():
+                try:
+                    with namping_path.open("r", encoding="utf-8", newline="") as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            ts = self._parse_csv_time(row.get("in時刻") or "")
+                            if ts is not None:
+                                key = f"{ts.year:04d}-{ts.month:02d}"
+                                if key in overwrite_months:
+                                    continue
+                            existing_rows.append(row)
+                except Exception:
+                    existing_rows = []
+            combined_rows = existing_rows + namping_rows
+            if combined_rows:
+                try:
+                    with namping_path.open("w", encoding="utf-8", newline="") as f:
+                        writer = csv.DictWriter(
+                            f, fieldnames=namping_header, extrasaction="ignore"
+                        )
+                        writer.writeheader()
+                        writer.writerows(combined_rows)
+                except Exception:
+                    pass
+        else:
+            if namping_rows:
+                try:
+                    write_header = (
+                        not namping_path.exists() or namping_path.stat().st_size == 0
+                    )
+                    with namping_path.open("a", encoding="utf-8", newline="") as f:
+                        writer = csv.DictWriter(
+                            f, fieldnames=namping_header, extrasaction="ignore"
+                        )
+                        if write_header:
+                            writer.writeheader()
+                        writer.writerows(namping_rows)
+                except Exception:
+                    pass
 
         index_path = base_dir / "index.csv"
+        self._update_index_for_trade(
+            index_path=index_path,
+            trade_path=trade_path,
+            strategy_label=strategy_label,
+            settings_id=settings_id,
+            run_at=run_at,
+        )
+
+        self._set_last_save_paths(
+            base_dir=base_dir,
+            settings_path=settings_path,
+            trade_path=trade_path,
+            namping_path=namping_path,
+            index_path=index_path,
+        )
+        self._refresh_saved_runs()
+        self._refresh_chart_saved_runs()
+
+    def _summarize_trade_csv(self, trade_path: Path):
+        if not trade_path.exists():
+            return None
+        try:
+            with trade_path.open("r", encoding="utf-8", newline="") as f:
+                rows = list(csv.DictReader(f))
+        except Exception:
+            return None
+        items = []
+        for row in rows:
+            ts = self._parse_csv_time(row.get("out時刻") or row.get("in時刻") or "")
+            if ts is None:
+                continue
+            raw = row.get("損益")
+            if raw is None or raw == "":
+                continue
+            try:
+                pips = float(raw)
+            except Exception:
+                continue
+            items.append((ts, pips))
+        if not items:
+            return None
+        items.sort(key=lambda x: x[0])
+        total = len(items)
+        wins = sum(1 for _, pips in items if pips > 0)
+        losses = sum(1 for _, pips in items if pips < 0)
+        total_pips = sum(pips for _, pips in items)
+        cumulative = 0.0
+        equity_curve = []
+        for ts, pips in items:
+            cumulative += pips
+            equity_curve.append((ts, cumulative))
+        max_dd = compute_max_drawdown(equity_curve)
+        start_date = items[0][0].date().isoformat()
+        end_date = items[-1][0].date().isoformat()
+        return {
+            "total": total,
+            "wins": wins,
+            "losses": losses,
+            "total_pips": total_pips,
+            "max_dd": max_dd,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+    def _update_index_for_trade(
+        self,
+        index_path: Path,
+        trade_path: Path,
+        strategy_label: str,
+        settings_id: str,
+        run_at: datetime,
+    ):
+        summary = self._summarize_trade_csv(trade_path)
+        if summary is None:
+            return
+        base_dir = self._results_root()
+        try:
+            save_path = str(trade_path.relative_to(base_dir))
+        except Exception:
+            save_path = str(trade_path)
         index_header = [
             "実行時刻",
             "通貨",
@@ -8654,39 +8879,46 @@ class Step1App:
             "合計損益",
             "最大DD",
         ]
-        index_row = [
-            self._format_csv_time(run_at),
-            PAIR,
-            strategy_label,
-            settings_id,
-            str(trade_path.relative_to(base_dir)) if trade_path.exists() else "",
-            start_date,
-            end_date,
-            str(total),
-            str(wins),
-            str(losses),
-            f"{safe_float(total_pips):.2f}",
-            f"{safe_float(max_dd):.2f}",
-        ]
+        new_row = {
+            "実行時刻": self._format_csv_time(run_at),
+            "通貨": PAIR,
+            "戦略": strategy_label,
+            "設定ID": settings_id,
+            "保存先": save_path,
+            "開始日": summary["start_date"],
+            "終了日": summary["end_date"],
+            "取引数": str(summary["total"]),
+            "勝ち": str(summary["wins"]),
+            "負け": str(summary["losses"]),
+            "合計損益": f"{summary['total_pips']:.2f}",
+            "最大DD": f"{summary['max_dd']:.2f}",
+        }
+        rows = []
+        if index_path.exists():
+            try:
+                with index_path.open("r", encoding="utf-8", newline="") as f:
+                    rows = list(csv.DictReader(f))
+            except Exception:
+                rows = []
+        filtered = []
+        for row in rows:
+            if (
+                (row.get("通貨") or "").strip() == PAIR
+                and (row.get("戦略") or "").strip() == strategy_label
+                and (row.get("設定ID") or "").strip() == settings_id
+            ):
+                continue
+            filtered.append(row)
+        filtered.append(new_row)
         try:
-            write_header = not index_path.exists() or index_path.stat().st_size == 0
-            with index_path.open("a", encoding="utf-8", newline="") as f:
-                writer = csv.writer(f)
-                if write_header:
-                    writer.writerow(index_header)
-                writer.writerow(index_row)
+            with index_path.open("w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f, fieldnames=index_header, extrasaction="ignore"
+                )
+                writer.writeheader()
+                writer.writerows(filtered)
         except Exception:
             pass
-
-        self._set_last_save_paths(
-            base_dir=base_dir,
-            settings_path=settings_path,
-            trade_path=trade_path,
-            namping_path=namping_path,
-            index_path=index_path,
-        )
-        self._refresh_saved_runs()
-        self._refresh_chart_saved_runs()
 
     def _format_saved_run_label(self, row):
         run_time = (row.get("実行時刻") or "").strip()

@@ -4015,7 +4015,7 @@ class Step1App:
         self.common_stop_entry = ttk.Entry(
             common_close, textvariable=self.stop_pips_var, width=8
         )
-        self.common_stop_entry.grid(row=1, column=2, padx=(4, 12), pady=(6, 0), sticky="w")
+        self.common_stop_entry.grid(row=1, column=2, padx=(2, 12), pady=(6, 0), sticky="w")
         ttk.Checkbutton(
             common_close,
             text="共通優先",
@@ -4035,7 +4035,7 @@ class Step1App:
         self.common_take_entry = ttk.Entry(
             common_close, textvariable=self.take_pips_var, width=8
         )
-        self.common_take_entry.grid(row=2, column=2, padx=(4, 12), pady=(6, 0), sticky="w")
+        self.common_take_entry.grid(row=2, column=2, padx=(2, 12), pady=(6, 0), sticky="w")
         ttk.Checkbutton(
             common_close,
             text="共通優先",
@@ -4055,7 +4055,7 @@ class Step1App:
         self.common_time_entry = ttk.Entry(
             common_close, textvariable=self.time_close_seconds_var, width=8
         )
-        self.common_time_entry.grid(row=3, column=2, padx=(4, 12), pady=(6, 0), sticky="w")
+        self.common_time_entry.grid(row=3, column=2, padx=(2, 12), pady=(6, 0), sticky="w")
         ttk.Checkbutton(
             common_close,
             text="共通優先",
@@ -4076,7 +4076,7 @@ class Step1App:
             common_close, textvariable=self.fast_take_min_var, width=8
         )
         self.common_fast_take_min_entry.grid(
-            row=4, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=4, column=2, padx=(2, 12), pady=(6, 0), sticky="w"
         )
         ttk.Label(common_close, text="ミリ秒").grid(
             row=4, column=3, sticky="w", pady=(6, 0)
@@ -4085,7 +4085,7 @@ class Step1App:
             common_close, textvariable=self.fast_take_window_ms_var, width=8
         )
         self.common_fast_take_window_entry.grid(
-            row=4, column=4, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=4, column=4, padx=(2, 12), pady=(6, 0), sticky="w"
         )
         ttk.Label(common_close, text="ピプス（pp）").grid(
             row=4, column=5, sticky="w", pady=(6, 0)
@@ -4094,7 +4094,7 @@ class Step1App:
             common_close, textvariable=self.fast_take_pips_var, width=8
         )
         self.common_fast_take_pips_entry.grid(
-            row=4, column=6, padx=(4, 12), pady=(6, 0), sticky="w"
+            row=4, column=6, padx=(2, 12), pady=(6, 0), sticky="w"
         )
         ttk.Checkbutton(
             common_close,
@@ -4108,7 +4108,7 @@ class Step1App:
             variable=self.fixed_exit_price_var,
         )
         self.fixed_exit_price_check.grid(
-            row=5, column=0, padx=(0, 8), pady=(6, 0), sticky="w"
+            row=5, column=1, padx=(0, 8), pady=(6, 0), sticky="w"
         )
         ttk.Checkbutton(
             common_close, text="共通優先", variable=self.common_fixed_override_var
@@ -4400,7 +4400,7 @@ class Step1App:
             )
             ttk.Checkbutton(
                 frame, text="損切/利確を固定決済", variable=fixed_var
-            ).grid(row=4, column=0, columnspan=2, pady=(6, 0), sticky="w")
+            ).grid(row=4, column=1, columnspan=2, pady=(6, 0), sticky="w")
             self._register_close_condition(
                 key, "stop", stop_enabled_var, stop_check, [stop_label, stop_entry]
             )

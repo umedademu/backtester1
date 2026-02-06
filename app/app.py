@@ -6262,7 +6262,11 @@ class Step1App:
                 data = json.loads(backup_path.read_text(encoding="utf-8"))
             except Exception:
                 return
+        self._apply_persistent_state(data)
 
+    def _apply_persistent_state(self, data):
+        if not isinstance(data, dict):
+            return
         def set_var(var, value):
             if value is None:
                 return

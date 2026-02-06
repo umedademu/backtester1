@@ -7726,13 +7726,6 @@ class Step1App:
             return
         self.pnl_log_path_var.set(chosen)
 
-    def _serialize_log_params(self):
-        data = self._collect_persistent_state()
-        try:
-            return json.dumps(data, ensure_ascii=True, separators=(",", ":"))
-        except Exception:
-            return ""
-
     def _append_pnl_log(self, payload):
         if not self.pnl_log_enabled_var.get():
             return
@@ -7747,44 +7740,86 @@ class Step1App:
             pass
 
         summary = payload.get("summary", {})
-        now = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
         start = self.view_start_date.isoformat() if self.view_start_date else ""
         end = self.view_end_date.isoformat() if self.view_end_date else ""
         total = summary.get("total", 0)
         wins = summary.get("wins", 0)
         losses = summary.get("losses", 0)
-        draws = summary.get("draws", 0)
         total_pips = summary.get("total_pips", 0.0)
-        avg_pips = summary.get("avg_pips", 0.0)
-        win_rate = summary.get("win_rate", 0.0)
-        params_json = self._serialize_log_params()
+        trades = payload.get("trades", [])
+        long_trades = [t for t in trades if t.get("side") == "long"]
+        short_trades = [t for t in trades if t.get("side") == "short"]
+        long_pips = sum(t.get("pips", 0.0) for t in long_trades)
+        short_pips = sum(t.get("pips", 0.0) for t in short_trades)
+        reverse_pips = sum(
+            t.get("pips", 0.0)
+            for t in trades
+            if t.get("entry_reason") == "秒逆張り"
+        )
+        momentum_pips = sum(
+            t.get("pips", 0.0) for t in trades if t.get("entry_reason") == "勢い追随"
+        )
+        sr_pips = sum(
+            t.get("pips", 0.0)
+            for t in trades
+            if t.get("entry_reason") == "水平線戻り"
+        )
+        spike_pips = sum(
+            t.get("pips", 0.0)
+            for t in trades
+            if t.get("entry_reason") == "スパイク戻り"
+        )
+        sr_target = payload.get("sr_target")
+        range_pips = None
+        if sr_target == "both":
+            sr_pips = sum(
+                t.get("pips", 0.0)
+                for t in trades
+                if t.get("line_source") == "sr"
+            )
+            range_pips = sum(
+                t.get("pips", 0.0)
+                for t in trades
+                if t.get("line_source") == "range"
+            )
 
         header = [
-            "実行日時",
             "開始日",
             "終了日",
             "取引数",
             "勝ち",
             "負け",
-            "引き分け",
             "合計損益",
-            "平均損益",
-            "勝率",
-            "パラメータ",
+            "ロング損益",
+            "ショート損益",
+            "秒逆張り損益",
+            "勢い追随損益",
+            "水平線戻り損益",
+            "スパイク損益",
         ]
+        if sr_target == "both":
+            header.extend(["水平線(支持抵抗)損益", "補助線損益"])
         row = [
-            now,
             start,
             end,
             total,
             wins,
             losses,
-            draws,
             f"{total_pips:.2f}",
-            f"{avg_pips:.2f}",
-            f"{win_rate:.2f}",
-            params_json,
+            f"{long_pips:.2f}",
+            f"{short_pips:.2f}",
+            f"{reverse_pips:.2f}",
+            f"{momentum_pips:.2f}",
+            f"{sr_pips:.2f}",
+            f"{spike_pips:.2f}",
         ]
+        if sr_target == "both":
+            row.extend(
+                [
+                    f"{0.0 if sr_pips is None else sr_pips:.2f}",
+                    f"{0.0 if range_pips is None else range_pips:.2f}",
+                ]
+            )
 
         buf = io.StringIO()
         writer = csv.writer(buf)

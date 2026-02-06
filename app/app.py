@@ -3658,6 +3658,7 @@ class Step1App:
         self.last_index_path_var = tk.StringVar(value="")
         self.saved_runs = []
         self.saved_run_var = tk.StringVar(value="")
+        self.saved_run_index = None
         self.trade_jump_var = tk.StringVar(value="1")
         self.trade_nav_info_var = tk.StringVar(value="取引: 0件")
         self.trade_focus_index = None
@@ -5165,7 +5166,7 @@ class Step1App:
         pnl_select_frame.grid(row=0, column=1, sticky="e")
         ttk.Label(pnl_select_frame, text="保存結果").grid(row=0, column=0, sticky="w")
         self.saved_runs_combo = ttk.Combobox(
-            pnl_select_frame, textvariable=self.saved_run_var, width=48, state="readonly"
+            pnl_select_frame, textvariable=self.saved_run_var, width=44, state="readonly"
         )
         self.saved_runs_combo.grid(row=0, column=1, padx=(4, 6), sticky="w")
         self.saved_runs_show_button = ttk.Button(
@@ -5176,6 +5177,18 @@ class Step1App:
             pnl_select_frame, text="更新", command=self._refresh_saved_runs
         )
         self.saved_runs_refresh_button.grid(row=0, column=3, padx=(6, 0), sticky="w")
+        self.saved_runs_prev_button = ttk.Button(
+            pnl_select_frame, text="前へ", command=self._select_prev_run
+        )
+        self.saved_runs_prev_button.grid(row=0, column=4, padx=(6, 0), sticky="w")
+        self.saved_runs_next_button = ttk.Button(
+            pnl_select_frame, text="次へ", command=self._select_next_run
+        )
+        self.saved_runs_next_button.grid(row=0, column=5, padx=(6, 0), sticky="w")
+        self.saved_runs_apply_button = ttk.Button(
+            pnl_select_frame, text="設定反映", command=self._apply_selected_settings
+        )
+        self.saved_runs_apply_button.grid(row=0, column=6, padx=(6, 0), sticky="w")
         self.pnl_canvas = tk.Canvas(pnl_tab, bg="white")
         self.pnl_canvas.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
         self.pnl_canvas.bind("<Configure>", self._on_pnl_resize)
@@ -8619,21 +8632,41 @@ class Step1App:
                     rows = list(csv.DictReader(f))
             except Exception:
                 rows = []
+            base_dir = self._results_root()
             for row in reversed(rows):
                 rel_path = (row.get("保存先") or "").strip()
                 if not rel_path:
                     continue
                 try:
-                    trade_path = project_root() / rel_path
+                    candidate = Path(rel_path)
+                    if not candidate.is_absolute():
+                        normalized = re.sub(r"[\\/]+", "\\\\", rel_path)
+                        if normalized.startswith("ドル円\\"):
+                            normalized = "USDJPY\\" + normalized[len("ドル円\\") :]
+                        candidate = Path(normalized)
+                    if candidate.is_absolute():
+                        trade_path = candidate
+                    else:
+                        trade_path = base_dir / candidate
+                        if not trade_path.exists():
+                            trade_path = base_dir / PAIR / candidate
                 except Exception:
+                    continue
+                if not trade_path.exists():
                     continue
                 display = self._format_saved_run_label(row)
                 if not display:
                     display = rel_path
+                settings_id = (row.get("設定ID") or "").strip()
+                strategy = (row.get("戦略") or "").strip()
+                settings_path = None
+                if settings_id and strategy:
+                    settings_path = base_dir / PAIR / strategy / f"設定_{settings_id}" / "設定.json"
                 self.saved_runs.append(
                     {
                         "display": display,
                         "trade_path": trade_path,
+                        "settings_path": settings_path,
                     }
                 )
                 values.append(display)
@@ -8643,14 +8676,24 @@ class Step1App:
         if values:
             self.saved_runs_combo.config(state="readonly")
             self.saved_runs_show_button.config(state="normal")
+            self.saved_runs_prev_button.config(state="normal")
+            self.saved_runs_next_button.config(state="normal")
+            self.saved_runs_apply_button.config(state="normal")
             if current in values:
+                idx = values.index(current)
                 self.saved_runs_combo.set(current)
+                self.saved_run_index = idx
             else:
                 self.saved_runs_combo.current(0)
+                self.saved_run_index = 0
         else:
             self.saved_runs_combo.set("")
             self.saved_runs_combo.config(state="disabled")
             self.saved_runs_show_button.config(state="disabled")
+            self.saved_runs_prev_button.config(state="disabled")
+            self.saved_runs_next_button.config(state="disabled")
+            self.saved_runs_apply_button.config(state="disabled")
+            self.saved_run_index = None
 
     def _load_selected_run(self):
         if not self.saved_runs:
@@ -8660,12 +8703,65 @@ class Step1App:
         if selection is None or selection < 0 or selection >= len(self.saved_runs):
             messagebox.showinfo("お知らせ", "保存結果を選択してください。")
             return
+        self.saved_run_index = selection
         target = self.saved_runs[selection]
         trade_path = target.get("trade_path")
         if not trade_path:
             messagebox.showerror("エラー", "保存先が見つかりません。")
             return
         self._apply_pnl_csv(trade_path, source_label="保存結果")
+
+    def _select_prev_run(self):
+        if not self.saved_runs:
+            return
+        if self.saved_run_index is None:
+            self.saved_run_index = 0
+        else:
+            self.saved_run_index = max(0, self.saved_run_index - 1)
+        self.saved_runs_combo.current(self.saved_run_index)
+        self._load_selected_run()
+
+    def _select_next_run(self):
+        if not self.saved_runs:
+            return
+        if self.saved_run_index is None:
+            self.saved_run_index = 0
+        else:
+            self.saved_run_index = min(len(self.saved_runs) - 1, self.saved_run_index + 1)
+        self.saved_runs_combo.current(self.saved_run_index)
+        self._load_selected_run()
+
+    def _apply_selected_settings(self):
+        if not self.saved_runs:
+            messagebox.showinfo("お知らせ", "保存結果がありません。")
+            return
+        selection = self.saved_runs_combo.current()
+        if selection is None or selection < 0 or selection >= len(self.saved_runs):
+            messagebox.showinfo("お知らせ", "保存結果を選択してください。")
+            return
+        target = self.saved_runs[selection]
+        settings_path = target.get("settings_path")
+        if not settings_path or not Path(settings_path).exists():
+            messagebox.showerror("エラー", "設定ファイルが見つかりません。")
+            return
+        try:
+            with Path(settings_path).open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as e:
+            messagebox.showerror("エラー", f"設定の読み込みに失敗しました: {e}")
+            return
+        params = payload.get("パラメータ")
+        ui_state = payload.get("画面設定")
+        if isinstance(ui_state, dict):
+            self._apply_persistent_state(ui_state)
+            self._apply_ui_state()
+        if isinstance(params, dict):
+            self._apply_backtest_params(params)
+        try:
+            self.param_notebook.select(0)
+        except Exception:
+            pass
+        self.status_var.set("設定を反映しました。")
 
     def _load_pnl_csv(self):
         chosen = filedialog.askopenfilename(

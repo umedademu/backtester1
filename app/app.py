@@ -3667,6 +3667,10 @@ class Step1App:
         self.batch_timer_running = False
         self.batch_started_at = None
         self.batch_elapsed_last_seconds = None
+        self.batch_results = []
+        self.batch_total_equity = None
+        self.batch_yearly_data = None
+        self.batch_monthly_data = None
         self.last_view_range = None
         self.close_enabled_vars = {}
         self.close_toggle_widgets = {}
@@ -5090,7 +5094,9 @@ class Step1App:
         self.log.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
 
         pnl_tab.columnconfigure(0, weight=1)
-        pnl_tab.rowconfigure(1, weight=1)
+        pnl_tab.rowconfigure(1, weight=3)
+        pnl_tab.rowconfigure(3, weight=1)
+        pnl_tab.rowconfigure(5, weight=1)
 
         ttk.Label(pnl_tab, textvariable=self.pnl_info_var).grid(row=0, column=0, sticky="w")
         self.pnl_load_button = ttk.Button(
@@ -5103,6 +5109,16 @@ class Step1App:
         self.pnl_canvas.bind("<MouseWheel>", self._on_pnl_mouse_wheel)
         self.pnl_canvas.bind("<Button-4>", self._on_pnl_mouse_wheel)
         self.pnl_canvas.bind("<Button-5>", self._on_pnl_mouse_wheel)
+
+        ttk.Label(pnl_tab, text="年別損益").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.pnl_year_canvas = tk.Canvas(pnl_tab, bg="white")
+        self.pnl_year_canvas.grid(row=3, column=0, sticky="nsew", pady=(4, 0))
+        self.pnl_year_canvas.bind("<Configure>", self._on_pnl_resize)
+
+        ttk.Label(pnl_tab, text="月別損益").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        self.pnl_month_canvas = tk.Canvas(pnl_tab, bg="white")
+        self.pnl_month_canvas.grid(row=5, column=0, sticky="nsew", pady=(4, 0))
+        self.pnl_month_canvas.bind("<Configure>", self._on_pnl_resize)
 
     def _apply_ui_state(self):
         self._on_ma_filter_toggle()
@@ -5249,6 +5265,10 @@ class Step1App:
         self.batch_months = months
         self.batch_index = 0
         self.batch_active = True
+        self.batch_results = []
+        self.batch_total_equity = None
+        self.batch_yearly_data = None
+        self.batch_monthly_data = None
         if hasattr(self, "batch_run_button"):
             self.batch_run_button.config(state="disabled")
         self._start_batch_timer()
@@ -5264,6 +5284,7 @@ class Step1App:
             if hasattr(self, "batch_run_button"):
                 self.batch_run_button.config(state="normal")
             self._stop_batch_timer()
+            self._finalize_batch_results()
             self._notify_batch_done()
             return
         target = self.batch_months[self.batch_index]
@@ -7066,6 +7087,88 @@ class Step1App:
         remain = total_seconds - minutes * 60
         return f"一括時間: {minutes}分{remain}秒"
 
+    def _append_batch_result(self, payload):
+        summary = payload.get("summary", {})
+        self.batch_results.append(
+            {
+                "start": self.view_start_date,
+                "end": self.view_end_date,
+                "summary": summary,
+                "equity_curve": payload.get("equity_curve") or [],
+            }
+        )
+
+    def _finalize_batch_results(self):
+        if not self.batch_results:
+            self.batch_total_equity = []
+            self.batch_yearly_data = []
+            self.batch_monthly_data = []
+            self._draw_batch_year_chart()
+            self._draw_batch_month_chart()
+            return
+
+        results_sorted = sorted(
+            self.batch_results,
+            key=lambda r: (r.get("start") or date.min, r.get("end") or date.min),
+        )
+        combined = []
+        offset = 0.0
+        total = 0
+        wins = 0
+        losses = 0
+        draws = 0
+        total_pips = 0.0
+        year_totals = {}
+        month_totals = {}
+
+        for result in results_sorted:
+            summary = result.get("summary", {})
+            total += int(summary.get("total", 0))
+            wins += int(summary.get("wins", 0))
+            losses += int(summary.get("losses", 0))
+            draws += int(summary.get("draws", 0))
+            total_pips += float(summary.get("total_pips", 0.0))
+
+            start_date = result.get("start")
+            if start_date:
+                year_totals[start_date.year] = year_totals.get(start_date.year, 0.0) + float(
+                    summary.get("total_pips", 0.0)
+                )
+                month_key = f"{start_date.year}-{start_date.month:02d}"
+                month_totals[month_key] = month_totals.get(month_key, 0.0) + float(
+                    summary.get("total_pips", 0.0)
+                )
+
+            curve = result.get("equity_curve") or []
+            if curve:
+                for ts, value in curve:
+                    combined.append((ts, value + offset))
+                offset += curve[-1][1]
+
+        self.batch_total_equity = combined
+        self.batch_yearly_data = sorted(year_totals.items(), key=lambda x: x[0])
+        self.batch_monthly_data = sorted(month_totals.items(), key=lambda x: x[0])
+
+        if combined:
+            max_dd = compute_max_drawdown(combined)
+            draw_text = f" 引き分け{draws}件" if draws else ""
+            self.pnl_info_var.set(
+                f"一括損益: 取引{total}件 勝ち{wins}件 負け{losses}件"
+                f"{draw_text} 合計損益{total_pips:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
+            )
+            self.pnl_data = combined
+            self._reset_pnl_view()
+            self.backtest_ready = True
+            self._draw_pnl_chart()
+        else:
+            self.pnl_data = None
+            self.backtest_ready = False
+            self.pnl_info_var.set("一括損益: データなし")
+            self._draw_pnl_chart()
+
+        self._draw_batch_year_chart()
+        self._draw_batch_month_chart()
+
     def _start_backtest_timer(self):
         self.backtest_started_at = pytime.perf_counter()
         self.backtest_timer_running = True
@@ -7125,6 +7228,13 @@ class Step1App:
         months = self._get_view_range_months()
         if months is None:
             return False
+        if not self.batch_active:
+            self.batch_results = []
+            self.batch_total_equity = None
+            self.batch_yearly_data = None
+            self.batch_monthly_data = None
+            self._draw_batch_year_chart()
+            self._draw_batch_month_chart()
         self._apply_view_month_range(self.view_start_date or date.today(), months)
         if self.view_end_date < self.view_start_date:
             messagebox.showerror("エラー", "終了日は開始日より後にしてください。")
@@ -7623,6 +7733,8 @@ class Step1App:
         self._draw_pnl_chart()
         self._stop_backtest_timer()
         self._append_pnl_log(payload)
+        if self.batch_active:
+            self._append_batch_result(payload)
         self._notify_backtest_done()
 
     def _notify_backtest_done(self):
@@ -8445,10 +8557,16 @@ class Step1App:
         self.pnl_data = equity_curve
         self._reset_pnl_view()
         self.backtest_ready = True
+        self.batch_results = []
+        self.batch_total_equity = None
+        self.batch_yearly_data = None
+        self.batch_monthly_data = None
         self.pnl_info_var.set(
             f"損益: CSV読込 取引{total}件 合計損益{cumulative:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
         )
         self._draw_pnl_chart()
+        self._draw_batch_year_chart()
+        self._draw_batch_month_chart()
 
     def _get_backtest_exclude_hours(self):
         return {i for i, var in enumerate(self.backtest_exclude_hours_vars) if var.get()}
@@ -9374,6 +9492,8 @@ class Step1App:
 
     def _on_pnl_resize(self, _event):
         self._draw_pnl_chart()
+        self._draw_batch_year_chart()
+        self._draw_batch_month_chart()
 
     def _reset_pnl_view(self):
         if not self.pnl_data:
@@ -9530,6 +9650,94 @@ class Step1App:
                 anchor="n",
                 fill="#333333",
             )
+
+    def _draw_bar_chart(self, canvas, data, empty_message):
+        if not canvas:
+            return
+        canvas.delete("all")
+        if not data:
+            canvas.create_text(
+                canvas.winfo_width() // 2,
+                canvas.winfo_height() // 2,
+                text=empty_message,
+                fill="#666666",
+            )
+            return
+
+        labels = [str(label) for label, _ in data]
+        values = [float(value) for _label, value in data]
+        min_v = min(values + [0.0])
+        max_v = max(values + [0.0])
+        if min_v == max_v:
+            min_v -= 1.0
+            max_v += 1.0
+
+        width, height, left, top, right, bottom, plot_width, plot_height = (
+            self._get_plot_area(canvas)
+        )
+        canvas.create_rectangle(
+            left, top, width - right, height - bottom, outline="#888888"
+        )
+
+        span = max_v - min_v
+        zero_y = height - bottom - (0.0 - min_v) / span * plot_height
+        canvas.create_line(left, zero_y, width - right, zero_y, fill="#888888")
+
+        count = len(values)
+        if count <= 0:
+            return
+        bar_space = plot_width / count
+        bar_width = bar_space * 0.6
+        label_step = max(1, count // 12)
+
+        for idx, (label, value) in enumerate(zip(labels, values)):
+            x_center = left + bar_space * (idx + 0.5)
+            x0 = x_center - bar_width / 2
+            x1 = x_center + bar_width / 2
+            y_value = height - bottom - (value - min_v) / span * plot_height
+            if value >= 0:
+                y0 = y_value
+                y1 = zero_y
+                color = "#2ca02c"
+            else:
+                y0 = zero_y
+                y1 = y_value
+                color = "#d62728"
+            canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline=color)
+
+            if idx % label_step == 0:
+                canvas.create_text(
+                    x_center,
+                    height - bottom + 6,
+                    text=label,
+                    anchor="n",
+                    fill="#333333",
+                )
+
+        ticks = 4
+        for i in range(ticks + 1):
+            y = top + plot_height * i / ticks
+            value = max_v - (max_v - min_v) * i / ticks
+            canvas.create_line(width - right, y, width - right + 4, y, fill="#333333")
+            canvas.create_text(
+                width - right + 6,
+                y,
+                text=f"{value:.1f}",
+                anchor="w",
+                fill="#333333",
+            )
+
+    def _draw_batch_year_chart(self):
+        if not hasattr(self, "pnl_year_canvas"):
+            return
+        data = self.batch_yearly_data or []
+        self._draw_bar_chart(self.pnl_year_canvas, data, "一括未実行")
+
+    def _draw_batch_month_chart(self):
+        if not hasattr(self, "pnl_month_canvas"):
+            return
+        data = self.batch_monthly_data or []
+        self._draw_bar_chart(self.pnl_month_canvas, data, "一括未実行")
 
 
 def main():

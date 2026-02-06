@@ -1,11 +1,11 @@
 {
   "通貨": "USDJPY",
   "戦略": "秒逆張り",
-  "設定ID": "f7b0015e",
-  "保存日時": "2026-02-07 06:46:07.880075",
+  "設定ID": "2f34a135",
+  "保存日時": "2026-02-07 07:05:34.672739",
   "パラメータ": {
-    "allow_opposite_direction": true,
-    "allow_same_direction": true,
+    "allow_opposite_direction": false,
+    "allow_same_direction": false,
     "common_fast_take_enabled": false,
     "common_fast_take_min": 5.0,
     "common_fast_take_override": true,
@@ -204,8 +204,8 @@
     "window_ms": 500.0
   },
   "画面設定": {
-    "allow_opposite_direction": true,
-    "allow_same_direction": true,
+    "allow_opposite_direction": false,
+    "allow_same_direction": false,
     "backtest_exclude": true,
     "backtest_exclude_hours": [
       false,

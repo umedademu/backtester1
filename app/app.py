@@ -3665,6 +3665,9 @@ class Step1App:
         self.chart_saved_month_var = tk.StringVar(value="")
         self.chart_saved_months = []
         self.chart_saved_trades = []
+        self.bookmarked_settings = set()
+        self.saved_run_bookmark_var = tk.StringVar(value="")
+        self.chart_saved_bookmark_var = tk.StringVar(value="")
         self.dup_period_mode_var = tk.StringVar(value="skip")
         self.pending_overwrite_months = None
         self.trade_jump_var = tk.StringVar(value="1")
@@ -3925,6 +3928,14 @@ class Step1App:
             chart_saved_frame, text="表示", command=self._load_chart_saved
         )
         self.chart_saved_show_button.grid(row=0, column=7, padx=(6, 0), sticky="w")
+        self.chart_saved_bookmark_button = ttk.Button(
+            chart_saved_frame, text="★", width=2, command=self._toggle_chart_saved_bookmark
+        )
+        self.chart_saved_bookmark_button.grid(row=0, column=8, padx=(6, 0), sticky="w")
+        self.chart_saved_bookmark_label = ttk.Label(
+            chart_saved_frame, textvariable=self.chart_saved_bookmark_var
+        )
+        self.chart_saved_bookmark_label.grid(row=0, column=9, padx=(4, 0), sticky="w")
 
         view_row = ttk.Frame(param_tab)
         view_row.grid(row=0, column=0, sticky="ew")
@@ -5224,6 +5235,7 @@ class Step1App:
             pnl_select_frame, textvariable=self.saved_run_var, width=44, state="readonly"
         )
         self.saved_runs_combo.grid(row=0, column=1, padx=(4, 6), sticky="w")
+        self.saved_runs_combo.bind("<<ComboboxSelected>>", self._on_saved_run_select)
         self.saved_runs_show_button = ttk.Button(
             pnl_select_frame, text="表示", command=self._load_selected_run
         )
@@ -5244,6 +5256,14 @@ class Step1App:
             pnl_select_frame, text="設定反映", command=self._apply_selected_settings
         )
         self.saved_runs_apply_button.grid(row=0, column=6, padx=(6, 0), sticky="w")
+        self.saved_runs_bookmark_button = ttk.Button(
+            pnl_select_frame, text="★", width=2, command=self._toggle_saved_run_bookmark
+        )
+        self.saved_runs_bookmark_button.grid(row=0, column=7, padx=(6, 0), sticky="w")
+        self.saved_runs_bookmark_label = ttk.Label(
+            pnl_select_frame, textvariable=self.saved_run_bookmark_var
+        )
+        self.saved_runs_bookmark_label.grid(row=0, column=8, padx=(4, 0), sticky="w")
 
         pnl_body = ttk.Frame(pnl_tab)
         pnl_body.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
@@ -6458,6 +6478,9 @@ class Step1App:
         self.pnl_log_enabled_var.set(True)
         self.pnl_log_path_var.set(str(project_root() / RESULTS_DIR_NAME))
         set_var(self.dup_period_mode_var, data.get("dup_period_mode"))
+        bookmarks = data.get("bookmarked_settings")
+        if isinstance(bookmarks, (list, tuple, set)):
+            self.bookmarked_settings = {str(item) for item in bookmarks if str(item)}
         set_bool(self.ma_filter_var, data.get("ma_filter"))
         set_var(self.ma_period_var, data.get("ma_period"))
         set_var(self.ma_unit_var, data.get("ma_unit"))
@@ -7006,6 +7029,7 @@ class Step1App:
             "pnl_log_enabled": True,
             "pnl_log_path": str(project_root() / RESULTS_DIR_NAME),
             "dup_period_mode": self.dup_period_mode_var.get(),
+            "bookmarked_settings": sorted(self.bookmarked_settings),
             "ma_filter": self.ma_filter_var.get(),
             "ma_period": self.ma_period_var.get(),
             "ma_unit": self.ma_unit_var.get(),
@@ -8528,6 +8552,7 @@ class Step1App:
         ui_state = self._collect_persistent_state()
         for key in ("start_date", "end_date", "view_start_date", "view_end_date"):
             ui_state.pop(key, None)
+        ui_state.pop("bookmarked_settings", None)
         settings_payload = {
             "通貨": PAIR,
             "戦略": strategy_label,
@@ -8803,6 +8828,101 @@ class Step1App:
         self._refresh_saved_runs()
         self._refresh_chart_saved_runs()
 
+    def _bookmark_key_from_run(self, run):
+        if not run:
+            return None
+        strategy = (run.get("strategy") or "").strip()
+        settings_id = (run.get("settings_id") or "").strip()
+        if not strategy or not settings_id:
+            return None
+        return f"{PAIR}|{strategy}|{settings_id}"
+
+    def _update_saved_bookmark_marker(self):
+        run = None
+        selection = self.saved_runs_combo.current()
+        if (
+            self.saved_runs
+            and selection is not None
+            and 0 <= selection < len(self.saved_runs)
+        ):
+            run = self.saved_runs[selection]
+        key = self._bookmark_key_from_run(run)
+        if key:
+            self.saved_run_bookmark_var.set("★" if key in self.bookmarked_settings else "☆")
+            if hasattr(self, "saved_runs_bookmark_button"):
+                self.saved_runs_bookmark_button.config(state="normal")
+        else:
+            self.saved_run_bookmark_var.set("")
+            if hasattr(self, "saved_runs_bookmark_button"):
+                self.saved_runs_bookmark_button.config(state="disabled")
+
+    def _update_chart_saved_bookmark_marker(self):
+        run = None
+        selection = self.chart_saved_runs_combo.current()
+        if (
+            self.chart_saved_runs
+            and selection is not None
+            and 0 <= selection < len(self.chart_saved_runs)
+        ):
+            run = self.chart_saved_runs[selection]
+        key = self._bookmark_key_from_run(run)
+        if key:
+            self.chart_saved_bookmark_var.set(
+                "★" if key in self.bookmarked_settings else "☆"
+            )
+            if hasattr(self, "chart_saved_bookmark_button"):
+                self.chart_saved_bookmark_button.config(state="normal")
+        else:
+            self.chart_saved_bookmark_var.set("")
+            if hasattr(self, "chart_saved_bookmark_button"):
+                self.chart_saved_bookmark_button.config(state="disabled")
+
+    def _toggle_saved_run_bookmark(self):
+        selection = self.saved_runs_combo.current()
+        if (
+            selection is None
+            or selection < 0
+            or selection >= len(self.saved_runs)
+        ):
+            return
+        key = self._bookmark_key_from_run(self.saved_runs[selection])
+        if not key:
+            return
+        if key in self.bookmarked_settings:
+            self.bookmarked_settings.remove(key)
+        else:
+            self.bookmarked_settings.add(key)
+        self._update_saved_bookmark_marker()
+        self._update_chart_saved_bookmark_marker()
+        self._save_persistent_state()
+
+    def _toggle_chart_saved_bookmark(self):
+        selection = self.chart_saved_runs_combo.current()
+        if (
+            selection is None
+            or selection < 0
+            or selection >= len(self.chart_saved_runs)
+        ):
+            return
+        key = self._bookmark_key_from_run(self.chart_saved_runs[selection])
+        if not key:
+            return
+        if key in self.bookmarked_settings:
+            self.bookmarked_settings.remove(key)
+        else:
+            self.bookmarked_settings.add(key)
+        self._update_saved_bookmark_marker()
+        self._update_chart_saved_bookmark_marker()
+        self._save_persistent_state()
+
+    def _on_saved_run_select(self, _event=None):
+        selection = self.saved_runs_combo.current()
+        if selection is None or selection < 0 or selection >= len(self.saved_runs):
+            self.saved_run_index = None
+        else:
+            self.saved_run_index = selection
+        self._update_saved_bookmark_marker()
+
     def _summarize_trade_csv(self, trade_path: Path):
         if not trade_path.exists():
             return None
@@ -8963,6 +9083,7 @@ class Step1App:
             else:
                 self.saved_runs_combo.current(0)
                 self.saved_run_index = 0
+            self._update_saved_bookmark_marker()
         else:
             self.saved_runs_combo.set("")
             self.saved_runs_combo.config(state="disabled")
@@ -8971,6 +9092,7 @@ class Step1App:
             self.saved_runs_next_button.config(state="disabled")
             self.saved_runs_apply_button.config(state="disabled")
             self.saved_run_index = None
+            self._update_saved_bookmark_marker()
 
     def _collect_saved_runs(self):
         index_path = self._results_root() / "index.csv"
@@ -9042,6 +9164,7 @@ class Step1App:
             self.chart_saved_refresh_button.config(state="normal")
             self.chart_saved_show_button.config(state="normal")
             self._update_chart_saved_months()
+            self._update_chart_saved_bookmark_marker()
         else:
             self.chart_saved_runs_combo.set("")
             self.chart_saved_runs_combo.config(state="disabled")
@@ -9054,13 +9177,15 @@ class Step1App:
             self.chart_saved_run_index = None
             self.chart_saved_months = []
             self.chart_saved_trades = []
+            self._update_chart_saved_bookmark_marker()
 
     def _on_chart_saved_select(self, _event=None):
         selection = self.chart_saved_runs_combo.current()
-        if selection is None or selection < 0:
+        if selection is None or selection < 0 or selection >= len(self.chart_saved_runs):
             return
         self.chart_saved_run_index = selection
         self._update_chart_saved_months()
+        self._update_chart_saved_bookmark_marker()
 
     def _select_prev_chart_run(self):
         if not self.chart_saved_runs:
@@ -9071,6 +9196,7 @@ class Step1App:
             self.chart_saved_run_index = max(0, self.chart_saved_run_index - 1)
         self.chart_saved_runs_combo.current(self.chart_saved_run_index)
         self._update_chart_saved_months()
+        self._update_chart_saved_bookmark_marker()
 
     def _select_next_chart_run(self):
         if not self.chart_saved_runs:
@@ -9081,6 +9207,7 @@ class Step1App:
             self.chart_saved_run_index = min(len(self.chart_saved_runs) - 1, self.chart_saved_run_index + 1)
         self.chart_saved_runs_combo.current(self.chart_saved_run_index)
         self._update_chart_saved_months()
+        self._update_chart_saved_bookmark_marker()
 
     def _update_chart_saved_months(self):
         if not self.chart_saved_runs:
@@ -9240,6 +9367,7 @@ class Step1App:
             messagebox.showerror("エラー", "保存先が見つかりません。")
             return
         self._apply_pnl_csv(trade_path, source_label="保存結果")
+        self._update_saved_bookmark_marker()
 
     def _select_prev_run(self):
         if not self.saved_runs:
@@ -9249,6 +9377,7 @@ class Step1App:
         else:
             self.saved_run_index = max(0, self.saved_run_index - 1)
         self.saved_runs_combo.current(self.saved_run_index)
+        self._update_saved_bookmark_marker()
         self._load_selected_run()
 
     def _select_next_run(self):
@@ -9259,6 +9388,7 @@ class Step1App:
         else:
             self.saved_run_index = min(len(self.saved_runs) - 1, self.saved_run_index + 1)
         self.saved_runs_combo.current(self.saved_run_index)
+        self._update_saved_bookmark_marker()
         self._load_selected_run()
 
     def _apply_selected_settings(self):

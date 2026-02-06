@@ -1,5 +1,6 @@
 import calendar
 import csv
+import hashlib
 import json
 import lzma
 import queue
@@ -29,6 +30,7 @@ from tkinter import filedialog, messagebox, ttk
 PAIR = "USDJPY"
 BASE_URL = "https://datafeed.dukascopy.com/datafeed"
 PIP_SIZE = 0.01
+RESULTS_DIR_NAME = "results"
 
 
 def freeze_value(value):
@@ -3648,7 +3650,7 @@ class Step1App:
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
         self.pnl_log_enabled_var = tk.BooleanVar(value=False)
         self.pnl_log_path_var = tk.StringVar(
-            value=str(Path.cwd() / "pnl_results.csv")
+            value=str(project_root() / RESULTS_DIR_NAME)
         )
         self.trade_jump_var = tk.StringVar(value="1")
         self.trade_nav_info_var = tk.StringVar(value="取引: 0件")
@@ -4461,7 +4463,7 @@ class Step1App:
             command=self._on_pnl_log_toggle,
         )
         self.pnl_log_check.grid(row=0, column=0, sticky="w")
-        ttk.Label(pnl_log_frame, text="保存先").grid(
+        ttk.Label(pnl_log_frame, text="保存先フォルダ").grid(
             row=0, column=1, sticky="w", padx=(6, 0)
         )
         self.pnl_log_path_entry = ttk.Entry(
@@ -5091,6 +5093,10 @@ class Step1App:
         pnl_tab.rowconfigure(1, weight=1)
 
         ttk.Label(pnl_tab, textvariable=self.pnl_info_var).grid(row=0, column=0, sticky="w")
+        self.pnl_load_button = ttk.Button(
+            pnl_tab, text="CSV読込", command=self._load_pnl_csv
+        )
+        self.pnl_load_button.grid(row=0, column=1, padx=(8, 0), sticky="e")
         self.pnl_canvas = tk.Canvas(pnl_tab, bg="white")
         self.pnl_canvas.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
         self.pnl_canvas.bind("<Configure>", self._on_pnl_resize)
@@ -6232,6 +6238,12 @@ class Step1App:
         set_bool(self.hide_chart_var, data.get("hide_chart"))
         set_bool(self.pnl_log_enabled_var, data.get("pnl_log_enabled"))
         set_var(self.pnl_log_path_var, data.get("pnl_log_path"))
+        current_log_path = (self.pnl_log_path_var.get() or "").strip()
+        if current_log_path and current_log_path.lower().endswith(".csv"):
+            try:
+                self.pnl_log_path_var.set(str(Path(current_log_path).parent))
+            except Exception:
+                pass
         set_bool(self.ma_filter_var, data.get("ma_filter"))
         set_var(self.ma_period_var, data.get("ma_period"))
         set_var(self.ma_unit_var, data.get("ma_unit"))
@@ -7256,6 +7268,7 @@ class Step1App:
                 runtime_cache=cache.get("backtest_cache"),
                 should_cancel=self.chart_cancel_event.is_set,
             )
+            backtest["run_params"] = params
             self.queue.put(("backtest_data", backtest))
         except InterruptedError:
             self.queue.put(("chart_cancelled", None))
@@ -8040,189 +8053,402 @@ class Step1App:
     def _select_pnl_log_path(self):
         current = (self.pnl_log_path_var.get() or "").strip()
         initial_dir = ""
-        initial_file = ""
         if current:
             try:
                 path = Path(current)
-                initial_dir = str(path.parent)
-                initial_file = path.name
+                if path.suffix.lower() == ".csv":
+                    initial_dir = str(path.parent)
+                else:
+                    initial_dir = str(path)
             except Exception:
                 initial_dir = ""
-                initial_file = ""
-        chosen = filedialog.asksaveasfilename(
-            title="損益記録の保存先",
-            defaultextension=".csv",
-            filetypes=[("CSV", "*.csv"), ("すべて", "*.*")],
+        chosen = filedialog.askdirectory(
+            title="損益記録の保存先フォルダ",
             initialdir=initial_dir or None,
-            initialfile=initial_file or None,
         )
         if not chosen:
             return
         self.pnl_log_path_var.set(chosen)
 
+    def _format_csv_time(self, ts: datetime) -> str:
+        if ts is None:
+            return ""
+        return ts.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+    def _parse_csv_time(self, value: str):
+        if not value:
+            return None
+        text = value.strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(text, fmt)
+            except Exception:
+                continue
+        try:
+            return datetime.fromisoformat(text)
+        except Exception:
+            return None
+
+    def _normalize_json_value(self, value):
+        if isinstance(value, dict):
+            return {k: self._normalize_json_value(v) for k, v in sorted(value.items())}
+        if isinstance(value, set):
+            return [
+                self._normalize_json_value(v) for v in sorted(value, key=lambda x: str(x))
+            ]
+        if isinstance(value, (list, tuple)):
+            return [self._normalize_json_value(v) for v in value]
+        return value
+
+    def _results_root(self) -> Path:
+        raw = (self.pnl_log_path_var.get() or "").strip()
+        if raw:
+            path = Path(raw)
+            if path.suffix.lower() == ".csv":
+                return path.parent
+            return path
+        return project_root() / RESULTS_DIR_NAME
+
+    def _strategy_label(self, payload) -> str:
+        labels = []
+        if payload.get("entry_spike_enabled"):
+            labels.append("スパイク")
+        if payload.get("entry_sr_enabled"):
+            labels.append("水平線")
+        if payload.get("entry_momentum_enabled"):
+            labels.append("勢い追随")
+        if payload.get("entry_reverse_enabled"):
+            labels.append("秒逆張り")
+        if not labels:
+            return "未設定"
+        return "+".join(labels)
+
+    def _settings_id(self, params) -> str:
+        normalized = self._normalize_json_value(params or {})
+        text = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
+
     def _append_pnl_log(self, payload):
         if not self.pnl_log_enabled_var.get():
             return
-        path_raw = (self.pnl_log_path_var.get() or "").strip()
-        if not path_raw:
-            messagebox.showerror("エラー", "損益記録の保存先が未設定です。")
-            return
-        path = Path(path_raw)
+
+        base_dir = self._results_root()
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            base_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        run_at = datetime.now(JST)
+        run_id = run_at.strftime("%Y%m%d_%H%M%S")
+        strategy_label = self._strategy_label(payload)
+        run_params = payload.get("run_params") or {}
+        settings_id = self._settings_id(run_params)
+
+        pair_label = "ドル円" if PAIR == "USDJPY" else PAIR
+        settings_dir = base_dir / pair_label / strategy_label / f"設定_{settings_id}"
+        try:
+            settings_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        settings_path = settings_dir / "設定.json"
+        ui_state = self._collect_persistent_state()
+        for key in ("start_date", "end_date", "view_start_date", "view_end_date"):
+            ui_state.pop(key, None)
+        settings_payload = {
+            "通貨": PAIR,
+            "戦略": strategy_label,
+            "設定ID": settings_id,
+            "保存日時": self._format_csv_time(run_at),
+            "パラメータ": self._normalize_json_value(run_params),
+            "画面設定": self._normalize_json_value(ui_state),
+        }
+        try:
+            settings_path.write_text(
+                json.dumps(settings_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         except Exception:
             pass
 
         summary = payload.get("summary", {})
-        month_label = ""
-        if self.view_start_date:
-            month_label = f"{self.view_start_date.year}年{self.view_start_date.month:02d}月"
         total = summary.get("total", 0)
         wins = summary.get("wins", 0)
         losses = summary.get("losses", 0)
         total_pips = summary.get("total_pips", 0.0)
         max_dd = summary.get("max_dd", 0.0)
+
+        start_date = self.view_start_date.isoformat() if self.view_start_date else ""
+        end_date = self.view_end_date.isoformat() if self.view_end_date else ""
+
         trades = payload.get("trades", [])
-        long_trades = [t for t in trades if t.get("side") == "long"]
-        short_trades = [t for t in trades if t.get("side") == "short"]
-        long_pips = sum(t.get("pips", 0.0) for t in long_trades)
-        short_pips = sum(t.get("pips", 0.0) for t in short_trades)
-        reverse_pips = sum(
-            t.get("pips", 0.0)
-            for t in trades
-            if t.get("entry_reason") == "秒逆張り"
-        )
-        momentum_pips = sum(
-            t.get("pips", 0.0) for t in trades if t.get("entry_reason") == "勢い追随"
-        )
-        sr_total_pips = sum(
-            t.get("pips", 0.0)
-            for t in trades
-            if t.get("entry_reason") == "水平線戻り"
-        )
-        spike_pips = sum(
-            t.get("pips", 0.0)
-            for t in trades
-            if t.get("entry_reason") == "スパイク戻り"
-        )
-        sr_target = payload.get("sr_target")
-        range_pips = None
-        sr_pips = sr_total_pips
-        if sr_target == "both":
-            sr_pips = sum(
-                t.get("pips", 0.0)
-                for t in trades
-                if t.get("line_source") == "sr"
-            )
-            range_pips = sum(
-                t.get("pips", 0.0)
-                for t in trades
-                if t.get("line_source") == "range"
+        def trade_time_key(trade):
+            fallback = datetime.min.replace(tzinfo=JST)
+            return trade.get("exit_time") or trade.get("entry_time") or fallback
+
+        trades_sorted = sorted(trades, key=trade_time_key)
+
+        trade_path = settings_dir / "取引一覧.csv"
+        trade_header = [
+            "開始日",
+            "終了日",
+            "実行ID",
+            "取引ID",
+            "in時刻",
+            "out時刻",
+            "方向",
+            "in価格",
+            "out価格",
+            "ロット合計",
+            "損益",
+            "累計損益",
+            "in理由",
+            "out理由",
+            "ライン種別",
+            "ナンピン回数",
+            "平均in価格",
+        ]
+
+        last_cum = 0.0
+        if trade_path.exists():
+            try:
+                with trade_path.open(encoding="utf-8", newline="") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        value = row.get("累計損益")
+                        if value is None or value == "":
+                            continue
+                        try:
+                            last_cum = float(value)
+                        except Exception:
+                            continue
+            except Exception:
+                last_cum = 0.0
+
+        new_rows = []
+        cumulative = last_cum
+
+        def safe_float(value, default=0.0):
+            try:
+                return float(value)
+            except Exception:
+                return default
+
+        for idx, trade in enumerate(trades_sorted):
+            pips = safe_float(trade.get("pips", 0.0))
+            cumulative += pips
+            trade_id = f"{run_id}-{idx + 1:04d}"
+            side = trade.get("side", "")
+            if side == "long":
+                side_label = "買い"
+            elif side == "short":
+                side_label = "売り"
+            else:
+                side_label = side
+            line_source = trade.get("line_source")
+            if line_source == "sr":
+                line_label = "支持抵抗"
+            elif line_source == "range":
+                line_label = "補助線"
+            else:
+                line_label = ""
+            namping_entries = trade.get("namping_entries") or []
+            namping_count = max(0, len(namping_entries) - 1)
+            new_rows.append(
+                [
+                    start_date,
+                    end_date,
+                    run_id,
+                    trade_id,
+                    self._format_csv_time(trade.get("entry_time")),
+                    self._format_csv_time(trade.get("exit_time")),
+                    side_label,
+                    f"{safe_float(trade.get('entry_price', 0.0)):.5f}",
+                    f"{safe_float(trade.get('exit_price', 0.0)):.5f}",
+                    f"{safe_float(trade.get('lot_total', 0.0)):.2f}",
+                    f"{pips:.2f}",
+                    f"{cumulative:.2f}",
+                    trade.get("entry_reason", ""),
+                    trade.get("exit_reason", ""),
+                    line_label,
+                    str(namping_count),
+                    f"{safe_float(trade.get('avg_entry_price', 0.0)):.5f}",
+                ]
             )
 
-        base_header = [
-            "年月",
+        try:
+            write_header = not trade_path.exists() or trade_path.stat().st_size == 0
+            with trade_path.open("a", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                if write_header:
+                    writer.writerow(trade_header)
+                writer.writerows(new_rows)
+        except Exception as e:
+            messagebox.showerror("エラー", f"損益記録の保存に失敗しました: {e}")
+
+        namping_path = settings_dir / "ナンピン詳細.csv"
+        namping_header = [
+            "開始日",
+            "終了日",
+            "実行ID",
+            "取引ID",
+            "段階",
+            "種別",
+            "in時刻",
+            "in価格",
+            "ロット",
+        ]
+        points_all = None
+        if self.chart_data is not None:
+            points_all = self.chart_data.get("all_points")
+
+        namping_rows = []
+        for idx, trade in enumerate(trades_sorted):
+            trade_id = f"{run_id}-{idx + 1:04d}"
+            entries = trade.get("namping_entries") or []
+            for step_idx, entry in enumerate(entries):
+                entry_time = None
+                entry_idx = entry.get("idx")
+                if points_all and entry_idx is not None and 0 <= entry_idx < len(points_all):
+                    entry_time = points_all[entry_idx][0]
+                if entry_time is None:
+                    entry_time = trade.get("entry_time")
+                namping_rows.append(
+                    [
+                        start_date,
+                        end_date,
+                        run_id,
+                        trade_id,
+                        str(step_idx + 1),
+                        entry.get("kind", ""),
+                        self._format_csv_time(entry_time),
+                        f"{safe_float(entry.get('price', 0.0)):.5f}",
+                        f"{safe_float(entry.get('lot', 0.0)):.2f}",
+                    ]
+                )
+
+        if namping_rows:
+            try:
+                write_header = not namping_path.exists() or namping_path.stat().st_size == 0
+                with namping_path.open("a", encoding="utf-8", newline="") as f:
+                    writer = csv.writer(f)
+                    if write_header:
+                        writer.writerow(namping_header)
+                    writer.writerows(namping_rows)
+            except Exception:
+                pass
+
+        index_path = base_dir / "index.csv"
+        index_header = [
+            "実行時刻",
+            "通貨",
+            "戦略",
+            "設定ID",
+            "保存先",
+            "開始日",
+            "終了日",
             "取引数",
             "勝ち",
             "負け",
             "合計損益",
             "最大DD",
-            "ロング損益",
-            "ショート損益",
-            "秒逆張り損益",
-            "勢い追随損益",
-            "水平線戻り損益",
-            "スパイク損益",
         ]
-        if sr_target == "both":
-            base_header.extend(["水平線(支持抵抗)損益", "補助線損益"])
-        row = [
-            month_label,
-            total,
-            wins,
-            losses,
-            f"{total_pips:.2f}",
-            f"{max_dd:.2f}",
-            f"{long_pips:.2f}",
-            f"{short_pips:.2f}",
-            f"{reverse_pips:.2f}",
-            f"{momentum_pips:.2f}",
-            f"{sr_total_pips:.2f}",
-            f"{spike_pips:.2f}",
+        index_row = [
+            self._format_csv_time(run_at),
+            PAIR,
+            strategy_label,
+            settings_id,
+            str(trade_path.relative_to(base_dir)) if trade_path.exists() else "",
+            start_date,
+            end_date,
+            str(total),
+            str(wins),
+            str(losses),
+            f"{safe_float(total_pips):.2f}",
+            f"{safe_float(max_dd):.2f}",
         ]
-        if sr_target == "both":
-            row.extend(
-                [
-                    f"{0.0 if sr_pips is None else sr_pips:.2f}",
-                    f"{0.0 if range_pips is None else range_pips:.2f}",
-                ]
-            )
-        rows = []
-        old_header = []
-        if path.exists():
-            try:
-                with path.open(encoding="utf-8", newline="") as f:
-                    rows = [r for r in csv.reader(f)]
-                if rows:
-                    old_header = rows[0]
-                    rows = rows[1:]
-            except Exception:
-                rows = []
-                old_header = []
-
-        header = [c for c in old_header if c and c not in ("開始日", "終了日")]
-        if "年月" not in header:
-            header = ["年月"] + [c for c in header if c != "年月"]
-        for col in base_header:
-            if col not in header:
-                header.append(col)
-
-        normalized_rows = []
-        if old_header:
-            for r in rows:
-                if not r or all(not c for c in r):
-                    continue
-                row_map = {
-                    old_header[i]: r[i] if i < len(r) else "" for i in range(len(old_header))
-                }
-                if "年月" not in row_map or not row_map.get("年月"):
-                    start_text = row_map.get("開始日", "")
-                    row_map["年月"] = self._normalize_month_label(start_text)
-                normalized_rows.append([row_map.get(col, "") for col in header])
-
-        row_map = {col: "" for col in header}
-        for col, value in zip(base_header, row):
-            row_map[col] = value
-        if "年月" in row_map:
-            row_map["年月"] = month_label
-        new_row = [row_map.get(col, "") for col in header]
-
-        month_index = header.index("年月") if "年月" in header else None
-        rows_by_month = {}
-        other_rows = []
-        for r in normalized_rows:
-            label = ""
-            if month_index is not None and month_index < len(r):
-                label = r[month_index]
-            if label:
-                rows_by_month[label] = r
-            else:
-                other_rows.append(r)
-        if month_index is not None:
-            rows_by_month[month_label] = new_row
-        else:
-            other_rows.append(new_row)
-
-        sorted_labels = sorted(rows_by_month.keys(), key=self._month_label_key)
-        final_rows = [rows_by_month[label] for label in sorted_labels] + other_rows
-
         try:
-            with path.open("w", encoding="utf-8", newline="") as f:
+            write_header = not index_path.exists() or index_path.stat().st_size == 0
+            with index_path.open("a", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(header)
-                writer.writerows(final_rows)
+                if write_header:
+                    writer.writerow(index_header)
+                writer.writerow(index_row)
+        except Exception:
+            pass
+
+    def _load_pnl_csv(self):
+        chosen = filedialog.askopenfilename(
+            title="損益CSVを選択",
+            filetypes=[("CSV", "*.csv"), ("すべて", "*.*")],
+        )
+        if not chosen:
+            return
+        self._apply_pnl_csv(Path(chosen))
+
+    def _apply_pnl_csv(self, path: Path):
+        if not path.exists():
+            messagebox.showerror("エラー", "指定したCSVが見つかりません。")
+            return
+        try:
+            with path.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                rows = [row for row in reader]
         except Exception as e:
-            messagebox.showerror("エラー", f"損益記録の保存に失敗しました: {e}")
+            messagebox.showerror("エラー", f"CSVの読み込みに失敗しました: {e}")
+            return
+
+        def pick(row, keys):
+            for key in keys:
+                if key in row and row.get(key):
+                    return row.get(key)
+            return ""
+
+        equity_curve = []
+        total = 0
+        wins = 0
+        losses = 0
+        cumulative = 0.0
+        for row in rows:
+            out_time_raw = pick(row, ["out時刻", "out_time", "決済時刻"])
+            ts = self._parse_csv_time(out_time_raw)
+            if ts is None:
+                continue
+            cum_raw = pick(row, ["累計損益", "cum_pips"])
+            pips_raw = pick(row, ["損益", "pips"])
+            if cum_raw:
+                try:
+                    cumulative = float(cum_raw)
+                except Exception:
+                    continue
+            else:
+                try:
+                    cumulative += float(pips_raw)
+                except Exception:
+                    continue
+            total += 1
+            try:
+                pips_value = float(pips_raw)
+                if pips_value > 0:
+                    wins += 1
+                elif pips_value < 0:
+                    losses += 1
+            except Exception:
+                pass
+            equity_curve.append((ts, cumulative))
+
+        if not equity_curve:
+            messagebox.showerror("エラー", "有効な損益データが見つかりません。")
+            return
+
+        max_dd = compute_max_drawdown(equity_curve)
+        self.pnl_data = equity_curve
+        self._reset_pnl_view()
+        self.backtest_ready = True
+        self.pnl_info_var.set(
+            f"損益: CSV読込 取引{total}件 合計損益{cumulative:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
+        )
+        self._draw_pnl_chart()
 
     def _get_backtest_exclude_hours(self):
         return {i for i, var in enumerate(self.backtest_exclude_hours_vars) if var.get()}

@@ -8795,6 +8795,9 @@ class Step1App:
         wins = 0
         losses = 0
         cumulative = 0.0
+        prev_cum = 0.0
+        year_totals = {}
+        month_totals = {}
         for row in rows:
             out_time_raw = pick(row, ["out時刻", "out_time", "決済時刻"])
             ts = self._parse_csv_time(out_time_raw)
@@ -8813,14 +8816,22 @@ class Step1App:
                 except Exception:
                     continue
             total += 1
+            pips_value = None
             try:
                 pips_value = float(pips_raw)
+            except Exception:
+                pips_value = None
+            if pips_value is None:
+                pips_value = cumulative - prev_cum
+            prev_cum = cumulative
+            if pips_value is not None:
                 if pips_value > 0:
                     wins += 1
                 elif pips_value < 0:
                     losses += 1
-            except Exception:
-                pass
+                year_totals[ts.year] = year_totals.get(ts.year, 0.0) + pips_value
+                month_key = f"{ts.year}-{ts.month:02d}"
+                month_totals[month_key] = month_totals.get(month_key, 0.0) + pips_value
             equity_curve.append((ts, cumulative))
 
         if not equity_curve:
@@ -8833,8 +8844,8 @@ class Step1App:
         self.backtest_ready = True
         self.batch_results = []
         self.batch_total_equity = None
-        self.batch_yearly_data = None
-        self.batch_monthly_data = None
+        self.batch_yearly_data = sorted(year_totals.items(), key=lambda x: x[0])
+        self.batch_monthly_data = sorted(month_totals.items(), key=lambda x: x[0])
         self.pnl_info_var.set(
             f"損益: {source_label} 取引{total}件 合計損益{cumulative:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
         )

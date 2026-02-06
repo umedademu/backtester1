@@ -1,9 +1,7 @@
 import calendar
 import csv
-import io
 import json
 import lzma
-import os
 import queue
 import re
 import struct
@@ -5107,6 +5105,20 @@ class Step1App:
             return None
         return date(year, month, 1)
 
+    def _normalize_month_label(self, text: str) -> str:
+        if not text:
+            return ""
+        parts = [int(p) for p in re.findall(r"\d+", text)]
+        if len(parts) >= 2:
+            return f"{parts[0]}年{parts[1]:02d}月"
+        return text
+
+    def _month_label_key(self, label: str):
+        parts = [int(p) for p in re.findall(r"\d+", label)]
+        if len(parts) >= 2:
+            return parts[0], parts[1]
+        return 9999, 99
+
     def _start_month_batch(self):
         start = self._parse_month_text(self.batch_start_month_var.get())
         end = self._parse_month_text(self.batch_end_month_var.get())
@@ -7887,7 +7899,7 @@ class Step1App:
                 if t.get("line_source") == "range"
             )
 
-        header = [
+        base_header = [
             "年月",
             "取引数",
             "勝ち",
@@ -7902,7 +7914,7 @@ class Step1App:
             "スパイク損益",
         ]
         if sr_target == "both":
-            header.extend(["水平線(支持抵抗)損益", "補助線損益"])
+            base_header.extend(["水平線(支持抵抗)損益", "補助線損益"])
         row = [
             month_label,
             total,
@@ -7924,31 +7936,72 @@ class Step1App:
                     f"{0.0 if range_pips is None else range_pips:.2f}",
                 ]
             )
+        rows = []
+        old_header = []
+        if path.exists():
+            try:
+                with path.open(encoding="utf-8", newline="") as f:
+                    rows = [r for r in csv.reader(f)]
+                if rows:
+                    old_header = rows[0]
+                    rows = rows[1:]
+            except Exception:
+                rows = []
+                old_header = []
 
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        need_header = True
+        header = [c for c in old_header if c and c not in ("開始日", "終了日")]
+        if "年月" not in header:
+            header = ["年月"] + [c for c in header if c != "年月"]
+        for col in base_header:
+            if col not in header:
+                header.append(col)
+
+        normalized_rows = []
+        if old_header:
+            for r in rows:
+                if not r or all(not c for c in r):
+                    continue
+                row_map = {
+                    old_header[i]: r[i] if i < len(r) else "" for i in range(len(old_header))
+                }
+                if "年月" not in row_map or not row_map.get("年月"):
+                    start_text = row_map.get("開始日", "")
+                    row_map["年月"] = self._normalize_month_label(start_text)
+                normalized_rows.append([row_map.get(col, "") for col in header])
+
+        row_map = {col: "" for col in header}
+        for col, value in zip(base_header, row):
+            row_map[col] = value
+        if "年月" in row_map:
+            row_map["年月"] = month_label
+        new_row = [row_map.get(col, "") for col in header]
+
+        month_index = header.index("年月") if "年月" in header else None
+        rows_by_month = {}
+        other_rows = []
+        for r in normalized_rows:
+            label = ""
+            if month_index is not None and month_index < len(r):
+                label = r[month_index]
+            if label:
+                rows_by_month[label] = r
+            else:
+                other_rows.append(r)
+        if month_index is not None:
+            rows_by_month[month_label] = new_row
+        else:
+            other_rows.append(new_row)
+
+        sorted_labels = sorted(rows_by_month.keys(), key=self._month_label_key)
+        final_rows = [rows_by_month[label] for label in sorted_labels] + other_rows
+
         try:
-            if path.exists() and path.stat().st_size > 0:
-                need_header = False
-        except Exception:
-            need_header = True
-        if need_header:
-            writer.writerow(header)
-        writer.writerow(row)
-        data = buf.getvalue().encode("utf-8")
-        fd = None
-        try:
-            fd = os.open(str(path), os.O_APPEND | os.O_CREAT | os.O_WRONLY)
-            os.write(fd, data)
+            with path.open("w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+                writer.writerows(final_rows)
         except Exception as e:
             messagebox.showerror("エラー", f"損益記録の保存に失敗しました: {e}")
-        finally:
-            if fd is not None:
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
 
     def _get_backtest_exclude_hours(self):
         return {i for i, var in enumerate(self.backtest_exclude_hours_vars) if var.get()}

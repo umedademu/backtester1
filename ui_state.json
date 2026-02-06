@@ -1,8 +1,8 @@
 {
   "start_date": "2026-02-05",
   "end_date": "2026-02-05",
-  "view_start_date": "2025-11-01",
-  "view_end_date": "2025-11-30",
+  "view_start_date": "2025-04-01",
+  "view_end_date": "2025-04-30",
   "view_range_months": "1",
   "exclude_weekends": true,
   "x_axis_mode": "time",

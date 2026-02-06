@@ -5258,6 +5258,7 @@ class Step1App:
             if hasattr(self, "batch_run_button"):
                 self.batch_run_button.config(state="normal")
             self._stop_batch_timer()
+            self._notify_batch_done()
             return
         target = self.batch_months[self.batch_index]
         self.batch_index += 1
@@ -7612,6 +7613,14 @@ class Step1App:
         self._notify_backtest_done()
 
     def _notify_backtest_done(self):
+        if self.batch_active:
+            return
+        try:
+            self.root.bell()
+        except Exception:
+            pass
+
+    def _notify_batch_done(self):
         try:
             self.root.bell()
         except Exception:

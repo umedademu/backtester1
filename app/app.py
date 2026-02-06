@@ -3663,6 +3663,11 @@ class Step1App:
         self.trade_nav_info_var = tk.StringVar(value="取引: 0件")
         self.trade_focus_index = None
         self.pnl_data = None
+        self.pnl_full_data = None
+        self.pnl_filter = None
+        self.pnl_info_base = None
+        self.pnl_year_hits = []
+        self.pnl_month_hits = []
         self.pnl_view_start = 0
         self.pnl_view_end = 0
         self.backtest_ready = False
@@ -5156,10 +5161,7 @@ class Step1App:
         self.log.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
 
         pnl_tab.columnconfigure(0, weight=1)
-        pnl_tab.columnconfigure(1, weight=1)
-        pnl_tab.rowconfigure(1, weight=3)
-        pnl_tab.rowconfigure(3, weight=1)
-        pnl_tab.rowconfigure(5, weight=1)
+        pnl_tab.rowconfigure(1, weight=1)
 
         ttk.Label(pnl_tab, textvariable=self.pnl_info_var).grid(row=0, column=0, sticky="w")
         pnl_select_frame = ttk.Frame(pnl_tab)
@@ -5189,22 +5191,45 @@ class Step1App:
             pnl_select_frame, text="設定反映", command=self._apply_selected_settings
         )
         self.saved_runs_apply_button.grid(row=0, column=6, padx=(6, 0), sticky="w")
-        self.pnl_canvas = tk.Canvas(pnl_tab, bg="white")
-        self.pnl_canvas.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+
+        pnl_body = ttk.Frame(pnl_tab)
+        pnl_body.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
+        pnl_body.columnconfigure(0, weight=7)
+        pnl_body.columnconfigure(1, weight=3)
+        pnl_body.rowconfigure(0, weight=1)
+
+        self.pnl_canvas = tk.Canvas(pnl_body, bg="white")
+        self.pnl_canvas.grid(row=0, column=0, sticky="nsew")
         self.pnl_canvas.bind("<Configure>", self._on_pnl_resize)
         self.pnl_canvas.bind("<MouseWheel>", self._on_pnl_mouse_wheel)
         self.pnl_canvas.bind("<Button-4>", self._on_pnl_mouse_wheel)
         self.pnl_canvas.bind("<Button-5>", self._on_pnl_mouse_wheel)
 
-        ttk.Label(pnl_tab, text="年別損益").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        self.pnl_year_canvas = tk.Canvas(pnl_tab, bg="white")
-        self.pnl_year_canvas.grid(row=3, column=0, sticky="nsew", pady=(4, 0))
-        self.pnl_year_canvas.bind("<Configure>", self._on_pnl_resize)
+        right_panel = ttk.Frame(pnl_body)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.rowconfigure(0, weight=1)
+        right_panel.rowconfigure(1, weight=1)
 
-        ttk.Label(pnl_tab, text="月別損益").grid(row=4, column=0, sticky="w", pady=(8, 0))
-        self.pnl_month_canvas = tk.Canvas(pnl_tab, bg="white")
-        self.pnl_month_canvas.grid(row=5, column=0, sticky="nsew", pady=(4, 0))
+        year_frame = ttk.Frame(right_panel)
+        year_frame.grid(row=0, column=0, sticky="nsew")
+        year_frame.columnconfigure(0, weight=1)
+        year_frame.rowconfigure(1, weight=1)
+        ttk.Label(year_frame, text="年別損益").grid(row=0, column=0, sticky="w")
+        self.pnl_year_canvas = tk.Canvas(year_frame, bg="white")
+        self.pnl_year_canvas.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
+        self.pnl_year_canvas.bind("<Configure>", self._on_pnl_resize)
+        self.pnl_year_canvas.bind("<Button-1>", self._on_year_chart_click)
+
+        month_frame = ttk.Frame(right_panel)
+        month_frame.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
+        month_frame.columnconfigure(0, weight=1)
+        month_frame.rowconfigure(1, weight=1)
+        ttk.Label(month_frame, text="月別損益").grid(row=0, column=0, sticky="w")
+        self.pnl_month_canvas = tk.Canvas(month_frame, bg="white")
+        self.pnl_month_canvas.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
         self.pnl_month_canvas.bind("<Configure>", self._on_pnl_resize)
+        self.pnl_month_canvas.bind("<Button-1>", self._on_month_chart_click)
 
     def _apply_ui_state(self):
         self._on_ma_filter_toggle()
@@ -7237,15 +7262,20 @@ class Step1App:
                 f"{draw_text} 合計損益{total_pips:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
             )
             self.pnl_data = combined
+            self.pnl_full_data = list(combined)
+            self.pnl_filter = None
             self._reset_pnl_view()
             self.backtest_ready = True
             self._draw_pnl_chart()
         else:
             self.pnl_data = None
+            self.pnl_full_data = None
+            self.pnl_filter = None
             self.backtest_ready = False
             self.pnl_info_var.set("一括損益: データなし")
             self._draw_pnl_chart()
 
+        self.pnl_info_base = self.pnl_info_var.get()
         self._draw_batch_year_chart()
         self._draw_batch_month_chart()
 
@@ -7802,6 +7832,8 @@ class Step1App:
             self.pnl_info_var.set(self.pnl_info_var.get() + side_breakdown)
 
         self.pnl_data = payload.get("equity_curve") or []
+        self.pnl_full_data = list(self.pnl_data) if self.pnl_data else None
+        self.pnl_filter = None
         self._reset_pnl_view()
         self.backtest_ready = True
         if self.chart_data is not None:
@@ -7811,6 +7843,7 @@ class Step1App:
             self._draw_chart()
         self._update_trade_nav_state()
         self._draw_pnl_chart()
+        self.pnl_info_base = self.pnl_info_var.get()
         self._stop_backtest_timer()
         self._append_pnl_log(payload)
         if self.batch_active:
@@ -8840,6 +8873,8 @@ class Step1App:
 
         max_dd = compute_max_drawdown(equity_curve)
         self.pnl_data = equity_curve
+        self.pnl_full_data = list(equity_curve)
+        self.pnl_filter = None
         self._reset_pnl_view()
         self.backtest_ready = True
         self.batch_results = []
@@ -8849,6 +8884,7 @@ class Step1App:
         self.pnl_info_var.set(
             f"損益: {source_label} 取引{total}件 合計損益{cumulative:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
         )
+        self.pnl_info_base = self.pnl_info_var.get()
         self._draw_pnl_chart()
         self._draw_batch_year_chart()
         self._draw_batch_month_chart()
@@ -9936,10 +9972,12 @@ class Step1App:
                 fill="#333333",
             )
 
-    def _draw_bar_chart(self, canvas, data, empty_message):
+    def _draw_bar_chart(self, canvas, data, empty_message, record_hits=None):
         if not canvas:
             return
         canvas.delete("all")
+        if record_hits is not None:
+            record_hits.clear()
         if not data:
             canvas.create_text(
                 canvas.winfo_width() // 2,
@@ -9989,6 +10027,16 @@ class Step1App:
                 y1 = y_value
                 color = "#d62728"
             canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline=color)
+            if record_hits is not None:
+                record_hits.append(
+                    {
+                        "x0": x0,
+                        "x1": x1,
+                        "label": label,
+                        "top": top,
+                        "bottom": height - bottom,
+                    }
+                )
 
             if idx % label_step == 0:
                 canvas.create_text(
@@ -10012,17 +10060,87 @@ class Step1App:
                 fill="#333333",
             )
 
+    def _parse_month_label(self, label):
+        parts = [int(p) for p in re.findall(r"\d+", str(label))]
+        if len(parts) >= 2:
+            return parts[0], parts[1]
+        return None
+
+    def _apply_pnl_filter(self, kind, label):
+        if not self.pnl_full_data:
+            return
+        if self.pnl_filter == (kind, label):
+            self.pnl_filter = None
+            self.pnl_data = list(self.pnl_full_data)
+            self._reset_pnl_view()
+            if self.pnl_info_base:
+                self.pnl_info_var.set(self.pnl_info_base)
+            self._draw_pnl_chart()
+            return
+
+        filtered = []
+        label_text = ""
+        if kind == "year":
+            parts = [int(p) for p in re.findall(r"\d+", str(label))]
+            if not parts:
+                return
+            year = parts[0]
+            filtered = [(ts, value) for ts, value in self.pnl_full_data if ts.year == year]
+            label_text = f"{year}年"
+        elif kind == "month":
+            parsed = self._parse_month_label(label)
+            if not parsed:
+                return
+            year, month = parsed
+            filtered = [
+                (ts, value)
+                for ts, value in self.pnl_full_data
+                if ts.year == year and ts.month == month
+            ]
+            label_text = f"{year}-{month:02d}"
+        else:
+            return
+
+        if not filtered:
+            messagebox.showinfo("お知らせ", "該当するデータがありません。")
+            return
+
+        offset = filtered[0][1]
+        rebased = [(ts, value - offset) for ts, value in filtered]
+        total_pips = rebased[-1][1] if rebased else 0.0
+        max_dd = compute_max_drawdown(rebased)
+        self.pnl_filter = (kind, label)
+        self.pnl_data = rebased
+        self._reset_pnl_view()
+        base = self.pnl_info_base or "損益"
+        self.pnl_info_var.set(
+            f"{base} / 期間{label_text} 合計損益{total_pips:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
+        )
+        self._draw_pnl_chart()
+
+    def _on_year_chart_click(self, event):
+        for hit in self.pnl_year_hits:
+            if hit["x0"] <= event.x <= hit["x1"] and hit["top"] <= event.y <= hit["bottom"]:
+                self._apply_pnl_filter("year", hit["label"])
+                return
+
+    def _on_month_chart_click(self, event):
+        for hit in self.pnl_month_hits:
+            if hit["x0"] <= event.x <= hit["x1"] and hit["top"] <= event.y <= hit["bottom"]:
+                self._apply_pnl_filter("month", hit["label"])
+                return
+
     def _draw_batch_year_chart(self):
         if not hasattr(self, "pnl_year_canvas"):
             return
         data = self.batch_yearly_data or []
-        self._draw_bar_chart(self.pnl_year_canvas, data, "一括未実行")
+        self._draw_bar_chart(self.pnl_year_canvas, data, "一括未実行", self.pnl_year_hits)
 
     def _draw_batch_month_chart(self):
         if not hasattr(self, "pnl_month_canvas"):
             return
         data = self.batch_monthly_data or []
-        self._draw_bar_chart(self.pnl_month_canvas, data, "一括未実行")
+        self._draw_bar_chart(self.pnl_month_canvas, data, "一括未実行", self.pnl_month_hits)
 
 
 def main():

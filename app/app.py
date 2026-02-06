@@ -1721,7 +1721,7 @@ def simulate_namping_trade(
         if side == "long":
             stop_price = last_entry_price - stop
             take_price = avg_price + take
-            if stop_ready and bid <= stop_price:
+            if stop > 0 and stop_ready and bid <= stop_price:
                 exit_price = stop_price if fixed_exit_price else bid
                 return {
                     "entry_idx": first_entry_idx,
@@ -1733,7 +1733,7 @@ def simulate_namping_trade(
                     "exit_price": exit_price,
                     "exit_reason": "損切",
                 }
-            if bid >= take_price:
+            if take > 0 and bid >= take_price:
                 exit_price = take_price if fixed_exit_price else bid
                 return {
                     "entry_idx": first_entry_idx,
@@ -1748,7 +1748,7 @@ def simulate_namping_trade(
         else:
             stop_price = last_entry_price + stop
             take_price = avg_price - take
-            if stop_ready and ask >= stop_price:
+            if stop > 0 and stop_ready and ask >= stop_price:
                 exit_price = stop_price if fixed_exit_price else ask
                 return {
                     "entry_idx": first_entry_idx,
@@ -1760,7 +1760,7 @@ def simulate_namping_trade(
                     "exit_price": exit_price,
                     "exit_reason": "損切",
                 }
-            if ask <= take_price:
+            if take > 0 and ask <= take_price:
                 exit_price = take_price if fixed_exit_price else ask
                 return {
                     "entry_idx": first_entry_idx,
@@ -1843,8 +1843,12 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     spike = params["spike_pips"] * PIP_SIZE
     retrace_rate = params["retrace_rate"]
     spread = params["spread_pips"] * PIP_SIZE
-    common_stop_pips = float(params.get("common_stop_pips", params.get("stop_pips", 0.0)))
-    common_take_pips = float(params.get("common_take_pips", params.get("take_pips", 0.0)))
+    common_stop_pips = float(
+        params.get("common_stop_pips", params.get("stop_pips", 0.0))
+    )
+    common_take_pips = float(
+        params.get("common_take_pips", params.get("take_pips", 0.0))
+    )
     common_time_close_seconds = float(
         params.get("common_time_close_seconds", params.get("time_close_seconds", 0.0))
     )
@@ -1854,6 +1858,10 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     common_fast_take_min = float(params.get("common_fast_take_min", 0.0))
     common_fast_take_window_ms = float(params.get("common_fast_take_window_ms", 0.0))
     common_fast_take_pips = float(params.get("common_fast_take_pips", 0.0))
+    common_stop_enabled = bool(params.get("common_stop_enabled", True))
+    common_take_enabled = bool(params.get("common_take_enabled", True))
+    common_time_enabled = bool(params.get("common_time_enabled", True))
+    common_fast_take_enabled = bool(params.get("common_fast_take_enabled", True))
     common_stop_override = bool(params.get("common_stop_override", True))
     common_take_override = bool(params.get("common_take_override", True))
     common_time_override = bool(params.get("common_time_override", True))
@@ -1998,6 +2006,26 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     }
 
     def resolve_trade_params(kind):
+        stop_enabled = (
+            common_stop_enabled
+            if common_stop_override
+            else bool(params.get(f"{kind}_stop_enabled", True))
+        )
+        take_enabled = (
+            common_take_enabled
+            if common_take_override
+            else bool(params.get(f"{kind}_take_enabled", True))
+        )
+        time_enabled = (
+            common_time_enabled
+            if common_time_override
+            else bool(params.get(f"{kind}_time_enabled", True))
+        )
+        fast_enabled = (
+            common_fast_take_enabled
+            if common_fast_take_override
+            else bool(params.get(f"{kind}_fast_take_enabled", True))
+        )
         stop_pips = (
             common_stop_pips
             if common_stop_override
@@ -2041,13 +2069,13 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         )
         namping = common_namping if common_namping_override else namping_map[kind]
         return {
-            "stop": stop_pips * PIP_SIZE,
-            "take": take_pips * PIP_SIZE,
-            "time_close_seconds": time_close_seconds,
+            "stop": stop_pips * PIP_SIZE if stop_enabled else 0.0,
+            "take": take_pips * PIP_SIZE if take_enabled else 0.0,
+            "time_close_seconds": time_close_seconds if time_enabled else 0.0,
             "fixed_exit_price": fixed_exit_price,
-            "fast_take_min": fast_take_min,
-            "fast_take_window_ms": fast_take_window_ms,
-            "fast_take_pips": fast_take_pips,
+            "fast_take_min": fast_take_min if fast_enabled else 0.0,
+            "fast_take_window_ms": fast_take_window_ms if fast_enabled else 0.0,
+            "fast_take_pips": fast_take_pips if fast_enabled else 0.0,
             "namping_first_enabled": namping["first_enabled"],
             "namping_steps": namping["steps"],
         }
@@ -3335,6 +3363,10 @@ class Step1App:
         self.fast_take_min_var = tk.StringVar(value="5")
         self.fast_take_window_ms_var = tk.StringVar(value="2000")
         self.fast_take_pips_var = tk.StringVar(value="5")
+        self.common_stop_enabled_var = tk.BooleanVar(value=True)
+        self.common_take_enabled_var = tk.BooleanVar(value=True)
+        self.common_time_enabled_var = tk.BooleanVar(value=True)
+        self.common_fast_take_enabled_var = tk.BooleanVar(value=True)
         self.common_stop_override_var = tk.BooleanVar(value=True)
         self.common_take_override_var = tk.BooleanVar(value=True)
         self.common_time_override_var = tk.BooleanVar(value=True)
@@ -3348,6 +3380,10 @@ class Step1App:
         self.reverse_fast_take_min_var = tk.StringVar(value="5")
         self.reverse_fast_take_window_ms_var = tk.StringVar(value="2000")
         self.reverse_fast_take_pips_var = tk.StringVar(value="5")
+        self.reverse_stop_enabled_var = tk.BooleanVar(value=True)
+        self.reverse_take_enabled_var = tk.BooleanVar(value=True)
+        self.reverse_time_enabled_var = tk.BooleanVar(value=True)
+        self.reverse_fast_take_enabled_var = tk.BooleanVar(value=True)
         self.momentum_stop_pips_var = tk.StringVar(value="10.0")
         self.momentum_take_pips_var = tk.StringVar(value="10.0")
         self.momentum_time_close_seconds_var = tk.StringVar(value="0")
@@ -3355,6 +3391,10 @@ class Step1App:
         self.momentum_fast_take_min_var = tk.StringVar(value="5")
         self.momentum_fast_take_window_ms_var = tk.StringVar(value="2000")
         self.momentum_fast_take_pips_var = tk.StringVar(value="5")
+        self.momentum_stop_enabled_var = tk.BooleanVar(value=True)
+        self.momentum_take_enabled_var = tk.BooleanVar(value=True)
+        self.momentum_time_enabled_var = tk.BooleanVar(value=True)
+        self.momentum_fast_take_enabled_var = tk.BooleanVar(value=True)
         self.sr_stop_pips_var = tk.StringVar(value="10.0")
         self.sr_take_pips_var = tk.StringVar(value="10.0")
         self.sr_time_close_seconds_var = tk.StringVar(value="0")
@@ -3362,6 +3402,10 @@ class Step1App:
         self.sr_fast_take_min_var = tk.StringVar(value="5")
         self.sr_fast_take_window_ms_var = tk.StringVar(value="2000")
         self.sr_fast_take_pips_var = tk.StringVar(value="5")
+        self.sr_stop_enabled_var = tk.BooleanVar(value=True)
+        self.sr_take_enabled_var = tk.BooleanVar(value=True)
+        self.sr_time_enabled_var = tk.BooleanVar(value=True)
+        self.sr_fast_take_enabled_var = tk.BooleanVar(value=True)
         self.spike_stop_pips_var = tk.StringVar(value="10.0")
         self.spike_take_pips_var = tk.StringVar(value="10.0")
         self.spike_time_close_seconds_var = tk.StringVar(value="0")
@@ -3369,6 +3413,10 @@ class Step1App:
         self.spike_fast_take_min_var = tk.StringVar(value="5")
         self.spike_fast_take_window_ms_var = tk.StringVar(value="2000")
         self.spike_fast_take_pips_var = tk.StringVar(value="5")
+        self.spike_stop_enabled_var = tk.BooleanVar(value=True)
+        self.spike_take_enabled_var = tk.BooleanVar(value=True)
+        self.spike_time_enabled_var = tk.BooleanVar(value=True)
+        self.spike_fast_take_enabled_var = tk.BooleanVar(value=True)
         self.allow_same_direction_var = tk.BooleanVar(value=False)
         self.allow_opposite_direction_var = tk.BooleanVar(value=False)
         self.namping_first_entry_var = tk.BooleanVar(value=True)
@@ -3505,6 +3553,15 @@ class Step1App:
         self.backtest_started_at = None
         self.backtest_elapsed_last_seconds = None
         self.last_view_range = None
+        self.close_enabled_vars = {}
+        self.close_toggle_widgets = {}
+        self.close_widget_groups = {}
+        self.close_override_vars = {
+            "stop": self.common_stop_override_var,
+            "take": self.common_take_override_var,
+            "time": self.common_time_override_var,
+            "fast": self.common_fast_take_override_var,
+        }
         self.namping_var_sets = {
             "common": {
                 "first_var": self.namping_first_entry_var,
@@ -3945,54 +4002,106 @@ class Step1App:
         ttk.Entry(common_close, textvariable=self.spread_var, width=8).grid(
             row=0, column=1, padx=(4, 12), sticky="w"
         )
+        self.common_stop_check = ttk.Checkbutton(
+            common_close,
+            text="",
+            variable=self.common_stop_enabled_var,
+            command=lambda: self._on_close_toggle("common", "stop"),
+        )
+        self.common_stop_check.grid(row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Label(common_close, text="損切幅（ピップス）").grid(
-            row=1, column=0, sticky="w", pady=(6, 0)
+            row=1, column=1, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(common_close, textvariable=self.stop_pips_var, width=8).grid(
-            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        self.common_stop_entry = ttk.Entry(
+            common_close, textvariable=self.stop_pips_var, width=8
         )
+        self.common_stop_entry.grid(row=1, column=2, padx=(4, 12), pady=(6, 0), sticky="w")
         ttk.Checkbutton(
-            common_close, text="共通優先", variable=self.common_stop_override_var
-        ).grid(row=1, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
+            common_close,
+            text="共通優先",
+            variable=self.common_stop_override_var,
+            command=self._on_common_override_toggle,
+        ).grid(row=1, column=3, padx=(6, 0), pady=(6, 0), sticky="w")
+        self.common_take_check = ttk.Checkbutton(
+            common_close,
+            text="",
+            variable=self.common_take_enabled_var,
+            command=lambda: self._on_close_toggle("common", "take"),
+        )
+        self.common_take_check.grid(row=2, column=0, sticky="w", pady=(6, 0))
         ttk.Label(common_close, text="利確幅（ピップス）").grid(
-            row=2, column=0, sticky="w", pady=(6, 0)
+            row=2, column=1, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(common_close, textvariable=self.take_pips_var, width=8).grid(
-            row=2, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        self.common_take_entry = ttk.Entry(
+            common_close, textvariable=self.take_pips_var, width=8
         )
+        self.common_take_entry.grid(row=2, column=2, padx=(4, 12), pady=(6, 0), sticky="w")
         ttk.Checkbutton(
-            common_close, text="共通優先", variable=self.common_take_override_var
-        ).grid(row=2, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
+            common_close,
+            text="共通優先",
+            variable=self.common_take_override_var,
+            command=self._on_common_override_toggle,
+        ).grid(row=2, column=3, padx=(6, 0), pady=(6, 0), sticky="w")
+        self.common_time_check = ttk.Checkbutton(
+            common_close,
+            text="",
+            variable=self.common_time_enabled_var,
+            command=lambda: self._on_close_toggle("common", "time"),
+        )
+        self.common_time_check.grid(row=3, column=0, sticky="w", pady=(6, 0))
         ttk.Label(common_close, text="時間経過(秒)").grid(
-            row=3, column=0, sticky="w", pady=(6, 0)
+            row=3, column=1, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(
+        self.common_time_entry = ttk.Entry(
             common_close, textvariable=self.time_close_seconds_var, width=8
-        ).grid(row=3, column=1, padx=(4, 12), pady=(6, 0), sticky="w")
-        ttk.Checkbutton(
-            common_close, text="共通優先", variable=self.common_time_override_var
-        ).grid(row=3, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
-        ttk.Label(common_close, text="急伸利確 最低幅（pp）").grid(
-            row=4, column=0, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(common_close, textvariable=self.fast_take_min_var, width=8).grid(
-            row=4, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+        self.common_time_entry.grid(row=3, column=2, padx=(4, 12), pady=(6, 0), sticky="w")
+        ttk.Checkbutton(
+            common_close,
+            text="共通優先",
+            variable=self.common_time_override_var,
+            command=self._on_common_override_toggle,
+        ).grid(row=3, column=3, padx=(6, 0), pady=(6, 0), sticky="w")
+        self.common_fast_take_check = ttk.Checkbutton(
+            common_close,
+            text="",
+            variable=self.common_fast_take_enabled_var,
+            command=lambda: self._on_close_toggle("common", "fast"),
+        )
+        self.common_fast_take_check.grid(row=4, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(common_close, text="急伸利確 最低幅（pp）").grid(
+            row=4, column=1, sticky="w", pady=(6, 0)
+        )
+        self.common_fast_take_min_entry = ttk.Entry(
+            common_close, textvariable=self.fast_take_min_var, width=8
+        )
+        self.common_fast_take_min_entry.grid(
+            row=4, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
         )
         ttk.Label(common_close, text="ミリ秒").grid(
-            row=4, column=2, sticky="w", pady=(6, 0)
+            row=4, column=3, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(common_close, textvariable=self.fast_take_window_ms_var, width=8).grid(
-            row=4, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
+        self.common_fast_take_window_entry = ttk.Entry(
+            common_close, textvariable=self.fast_take_window_ms_var, width=8
+        )
+        self.common_fast_take_window_entry.grid(
+            row=4, column=4, padx=(4, 12), pady=(6, 0), sticky="w"
         )
         ttk.Label(common_close, text="ピプス（pp）").grid(
-            row=4, column=4, sticky="w", pady=(6, 0)
+            row=4, column=5, sticky="w", pady=(6, 0)
         )
-        ttk.Entry(common_close, textvariable=self.fast_take_pips_var, width=8).grid(
-            row=4, column=5, padx=(4, 12), pady=(6, 0), sticky="w"
+        self.common_fast_take_pips_entry = ttk.Entry(
+            common_close, textvariable=self.fast_take_pips_var, width=8
+        )
+        self.common_fast_take_pips_entry.grid(
+            row=4, column=6, padx=(4, 12), pady=(6, 0), sticky="w"
         )
         ttk.Checkbutton(
-            common_close, text="共通優先", variable=self.common_fast_take_override_var
-        ).grid(row=4, column=6, padx=(6, 0), pady=(6, 0), sticky="w")
+            common_close,
+            text="共通優先",
+            variable=self.common_fast_take_override_var,
+            command=self._on_common_override_toggle,
+        ).grid(row=4, column=7, padx=(6, 0), pady=(6, 0), sticky="w")
         self.fixed_exit_price_check = ttk.Checkbutton(
             common_close,
             text="損切/利確を固定決済",
@@ -4217,6 +4326,7 @@ class Step1App:
 
         def build_close_frame(
             parent,
+            key,
             stop_var,
             take_var,
             time_var,
@@ -4224,47 +4334,96 @@ class Step1App:
             fast_min_var,
             fast_window_var,
             fast_pips_var,
+            stop_enabled_var,
+            take_enabled_var,
+            time_enabled_var,
+            fast_enabled_var,
         ):
             frame = ttk.LabelFrame(parent, text="決済条件")
-            ttk.Label(frame, text="損切幅（ピップス）").grid(
-                row=0, column=0, sticky="w"
+            stop_check = ttk.Checkbutton(
+                frame,
+                text="",
+                variable=stop_enabled_var,
+                command=lambda: self._on_close_toggle(key, "stop"),
             )
-            ttk.Entry(frame, textvariable=stop_var, width=8).grid(
-                row=0, column=1, padx=(4, 12), sticky="w"
+            stop_check.grid(row=0, column=0, sticky="w")
+            stop_label = ttk.Label(frame, text="損切幅（ピップス）")
+            stop_label.grid(row=0, column=1, sticky="w")
+            stop_entry = ttk.Entry(frame, textvariable=stop_var, width=8)
+            stop_entry.grid(row=0, column=2, padx=(4, 12), sticky="w")
+            take_check = ttk.Checkbutton(
+                frame,
+                text="",
+                variable=take_enabled_var,
+                command=lambda: self._on_close_toggle(key, "take"),
             )
-            ttk.Label(frame, text="利確幅（ピップス）").grid(
-                row=1, column=0, sticky="w", pady=(6, 0)
+            take_check.grid(row=1, column=0, sticky="w", pady=(6, 0))
+            take_label = ttk.Label(frame, text="利確幅（ピップス）")
+            take_label.grid(row=1, column=1, sticky="w", pady=(6, 0))
+            take_entry = ttk.Entry(frame, textvariable=take_var, width=8)
+            take_entry.grid(row=1, column=2, padx=(4, 12), pady=(6, 0), sticky="w")
+            time_check = ttk.Checkbutton(
+                frame,
+                text="",
+                variable=time_enabled_var,
+                command=lambda: self._on_close_toggle(key, "time"),
             )
-            ttk.Entry(frame, textvariable=take_var, width=8).grid(
-                row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+            time_check.grid(row=2, column=0, sticky="w", pady=(6, 0))
+            time_label = ttk.Label(frame, text="時間経過(秒)")
+            time_label.grid(row=2, column=1, sticky="w", pady=(6, 0))
+            time_entry = ttk.Entry(frame, textvariable=time_var, width=8)
+            time_entry.grid(row=2, column=2, padx=(4, 12), pady=(6, 0), sticky="w")
+            fast_check = ttk.Checkbutton(
+                frame,
+                text="",
+                variable=fast_enabled_var,
+                command=lambda: self._on_close_toggle(key, "fast"),
             )
-            ttk.Label(frame, text="時間経過(秒)").grid(
-                row=2, column=0, sticky="w", pady=(6, 0)
+            fast_check.grid(row=3, column=0, sticky="w", pady=(6, 0))
+            fast_label = ttk.Label(frame, text="急伸利確 最低幅（pp）")
+            fast_label.grid(row=3, column=1, sticky="w", pady=(6, 0))
+            fast_min_entry = ttk.Entry(frame, textvariable=fast_min_var, width=8)
+            fast_min_entry.grid(
+                row=3, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
             )
-            ttk.Entry(frame, textvariable=time_var, width=8).grid(
-                row=2, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
+            fast_window_label = ttk.Label(frame, text="ミリ秒")
+            fast_window_label.grid(row=3, column=3, sticky="w", pady=(6, 0))
+            fast_window_entry = ttk.Entry(frame, textvariable=fast_window_var, width=8)
+            fast_window_entry.grid(
+                row=3, column=4, padx=(4, 12), pady=(6, 0), sticky="w"
             )
-            ttk.Label(frame, text="急伸利確 最低幅（pp）").grid(
-                row=3, column=0, sticky="w", pady=(6, 0)
-            )
-            ttk.Entry(frame, textvariable=fast_min_var, width=8).grid(
-                row=3, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
-            )
-            ttk.Label(frame, text="ミリ秒").grid(
-                row=3, column=2, sticky="w", pady=(6, 0)
-            )
-            ttk.Entry(frame, textvariable=fast_window_var, width=8).grid(
-                row=3, column=3, padx=(4, 12), pady=(6, 0), sticky="w"
-            )
-            ttk.Label(frame, text="ピプス（pp）").grid(
-                row=3, column=4, sticky="w", pady=(6, 0)
-            )
-            ttk.Entry(frame, textvariable=fast_pips_var, width=8).grid(
-                row=3, column=5, padx=(4, 12), pady=(6, 0), sticky="w"
+            fast_pips_label = ttk.Label(frame, text="ピプス（pp）")
+            fast_pips_label.grid(row=3, column=5, sticky="w", pady=(6, 0))
+            fast_pips_entry = ttk.Entry(frame, textvariable=fast_pips_var, width=8)
+            fast_pips_entry.grid(
+                row=3, column=6, padx=(4, 12), pady=(6, 0), sticky="w"
             )
             ttk.Checkbutton(
                 frame, text="損切/利確を固定決済", variable=fixed_var
             ).grid(row=4, column=0, columnspan=2, pady=(6, 0), sticky="w")
+            self._register_close_condition(
+                key, "stop", stop_enabled_var, stop_check, [stop_label, stop_entry]
+            )
+            self._register_close_condition(
+                key, "take", take_enabled_var, take_check, [take_label, take_entry]
+            )
+            self._register_close_condition(
+                key, "time", time_enabled_var, time_check, [time_label, time_entry]
+            )
+            self._register_close_condition(
+                key,
+                "fast",
+                fast_enabled_var,
+                fast_check,
+                [
+                    fast_label,
+                    fast_min_entry,
+                    fast_window_label,
+                    fast_window_entry,
+                    fast_pips_label,
+                    fast_pips_entry,
+                ],
+            )
             return frame
 
         self.entry_reverse_check = ttk.Checkbutton(
@@ -4276,6 +4435,7 @@ class Step1App:
         self.entry_reverse_check.grid(row=0, column=0, sticky="w", pady=(0, 6))
         reverse_close = build_close_frame(
             reverse_tab,
+            "reverse",
             self.reverse_stop_pips_var,
             self.reverse_take_pips_var,
             self.reverse_time_close_seconds_var,
@@ -4283,6 +4443,10 @@ class Step1App:
             self.reverse_fast_take_min_var,
             self.reverse_fast_take_window_ms_var,
             self.reverse_fast_take_pips_var,
+            self.reverse_stop_enabled_var,
+            self.reverse_take_enabled_var,
+            self.reverse_time_enabled_var,
+            self.reverse_fast_take_enabled_var,
         )
         reverse_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         reverse_namping = ttk.LabelFrame(reverse_tab, text="ナンピン条件")
@@ -4337,6 +4501,7 @@ class Step1App:
         self.entry_momentum_check.grid(row=0, column=0, sticky="w", pady=(0, 6))
         momentum_close = build_close_frame(
             momentum_tab,
+            "momentum",
             self.momentum_stop_pips_var,
             self.momentum_take_pips_var,
             self.momentum_time_close_seconds_var,
@@ -4344,6 +4509,10 @@ class Step1App:
             self.momentum_fast_take_min_var,
             self.momentum_fast_take_window_ms_var,
             self.momentum_fast_take_pips_var,
+            self.momentum_stop_enabled_var,
+            self.momentum_take_enabled_var,
+            self.momentum_time_enabled_var,
+            self.momentum_fast_take_enabled_var,
         )
         momentum_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         momentum_namping = ttk.LabelFrame(momentum_tab, text="ナンピン条件")
@@ -4397,6 +4566,7 @@ class Step1App:
         self.entry_sr_check.grid(row=0, column=0, sticky="w", pady=(0, 6))
         sr_close = build_close_frame(
             sr_tab,
+            "sr",
             self.sr_stop_pips_var,
             self.sr_take_pips_var,
             self.sr_time_close_seconds_var,
@@ -4404,6 +4574,10 @@ class Step1App:
             self.sr_fast_take_min_var,
             self.sr_fast_take_window_ms_var,
             self.sr_fast_take_pips_var,
+            self.sr_stop_enabled_var,
+            self.sr_take_enabled_var,
+            self.sr_time_enabled_var,
+            self.sr_fast_take_enabled_var,
         )
         sr_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         sr_namping = ttk.LabelFrame(sr_tab, text="ナンピン条件")
@@ -4593,6 +4767,7 @@ class Step1App:
         self.entry_spike_check.grid(row=0, column=0, sticky="w", pady=(0, 6))
         spike_close = build_close_frame(
             spike_tab,
+            "spike",
             self.spike_stop_pips_var,
             self.spike_take_pips_var,
             self.spike_time_close_seconds_var,
@@ -4600,6 +4775,10 @@ class Step1App:
             self.spike_fast_take_min_var,
             self.spike_fast_take_window_ms_var,
             self.spike_fast_take_pips_var,
+            self.spike_stop_enabled_var,
+            self.spike_take_enabled_var,
+            self.spike_time_enabled_var,
+            self.spike_fast_take_enabled_var,
         )
         spike_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         spike_namping = ttk.LabelFrame(spike_tab, text="ナンピン条件")
@@ -4669,6 +4848,38 @@ class Step1App:
                 "toggle": self.entry_spike_check,
             },
         }
+        self._register_close_condition(
+            "common",
+            "stop",
+            self.common_stop_enabled_var,
+            self.common_stop_check,
+            [self.common_stop_entry],
+        )
+        self._register_close_condition(
+            "common",
+            "take",
+            self.common_take_enabled_var,
+            self.common_take_check,
+            [self.common_take_entry],
+        )
+        self._register_close_condition(
+            "common",
+            "time",
+            self.common_time_enabled_var,
+            self.common_time_check,
+            [self.common_time_entry],
+        )
+        self._register_close_condition(
+            "common",
+            "fast",
+            self.common_fast_take_enabled_var,
+            self.common_fast_take_check,
+            [
+                self.common_fast_take_min_entry,
+                self.common_fast_take_window_entry,
+                self.common_fast_take_pips_entry,
+            ],
+        )
         ttk.Label(chart_tab, textvariable=self.chart_info_var).grid(
             row=4, column=0, sticky="w"
         )
@@ -4742,6 +4953,10 @@ class Step1App:
         self._on_entry_tab_toggle("momentum")
         self._on_entry_tab_toggle("sr")
         self._on_entry_tab_toggle("spike")
+        self._on_close_toggle("common", "stop")
+        self._on_close_toggle("common", "take")
+        self._on_close_toggle("common", "time")
+        self._on_close_toggle("common", "fast")
         self._update_trade_nav_state()
 
     def _pick_start(self):
@@ -4851,13 +5066,19 @@ class Step1App:
             spread_pips = self._parse_number(self.spread_var.get())
             common_stop_pips = self._parse_number(self.stop_pips_var.get())
             common_take_pips = self._parse_number(self.take_pips_var.get())
-            common_time_close_seconds = self._parse_number(self.time_close_seconds_var.get())
+            common_time_close_seconds = self._parse_number(
+                self.time_close_seconds_var.get()
+            )
             common_fixed_exit_price = self.fixed_exit_price_var.get()
             common_fast_take_min = self._parse_number(self.fast_take_min_var.get())
             common_fast_take_window_ms = self._parse_number(
                 self.fast_take_window_ms_var.get()
             )
             common_fast_take_pips = self._parse_number(self.fast_take_pips_var.get())
+            common_stop_enabled = self.common_stop_enabled_var.get()
+            common_take_enabled = self.common_take_enabled_var.get()
+            common_time_enabled = self.common_time_enabled_var.get()
+            common_fast_take_enabled = self.common_fast_take_enabled_var.get()
             common_stop_override = self.common_stop_override_var.get()
             common_take_override = self.common_take_override_var.get()
             common_time_override = self.common_time_override_var.get()
@@ -4879,6 +5100,10 @@ class Step1App:
             reverse_fast_take_pips = self._parse_number(
                 self.reverse_fast_take_pips_var.get()
             )
+            reverse_stop_enabled = self.reverse_stop_enabled_var.get()
+            reverse_take_enabled = self.reverse_take_enabled_var.get()
+            reverse_time_enabled = self.reverse_time_enabled_var.get()
+            reverse_fast_take_enabled = self.reverse_fast_take_enabled_var.get()
             momentum_stop_pips = self._parse_number(self.momentum_stop_pips_var.get())
             momentum_take_pips = self._parse_number(self.momentum_take_pips_var.get())
             momentum_time_close_seconds = self._parse_number(
@@ -4894,6 +5119,10 @@ class Step1App:
             momentum_fast_take_pips = self._parse_number(
                 self.momentum_fast_take_pips_var.get()
             )
+            momentum_stop_enabled = self.momentum_stop_enabled_var.get()
+            momentum_take_enabled = self.momentum_take_enabled_var.get()
+            momentum_time_enabled = self.momentum_time_enabled_var.get()
+            momentum_fast_take_enabled = self.momentum_fast_take_enabled_var.get()
             sr_stop_pips = self._parse_number(self.sr_stop_pips_var.get())
             sr_take_pips = self._parse_number(self.sr_take_pips_var.get())
             sr_time_close_seconds = self._parse_number(self.sr_time_close_seconds_var.get())
@@ -4903,6 +5132,10 @@ class Step1App:
                 self.sr_fast_take_window_ms_var.get()
             )
             sr_fast_take_pips = self._parse_number(self.sr_fast_take_pips_var.get())
+            sr_stop_enabled = self.sr_stop_enabled_var.get()
+            sr_take_enabled = self.sr_take_enabled_var.get()
+            sr_time_enabled = self.sr_time_enabled_var.get()
+            sr_fast_take_enabled = self.sr_fast_take_enabled_var.get()
             spike_stop_pips = self._parse_number(self.spike_stop_pips_var.get())
             spike_take_pips = self._parse_number(self.spike_take_pips_var.get())
             spike_time_close_seconds = self._parse_number(
@@ -4916,6 +5149,10 @@ class Step1App:
             spike_fast_take_pips = self._parse_number(
                 self.spike_fast_take_pips_var.get()
             )
+            spike_stop_enabled = self.spike_stop_enabled_var.get()
+            spike_take_enabled = self.spike_take_enabled_var.get()
+            spike_time_enabled = self.spike_time_enabled_var.get()
+            spike_fast_take_enabled = self.spike_fast_take_enabled_var.get()
             ma_enabled = self.ma_filter_var.get()
             ma_period = self._parse_number(self.ma_period_var.get())
             ma_deviation_pct = self._parse_number(self.ma_deviation_var.get())
@@ -5032,22 +5269,22 @@ class Step1App:
             return True
 
         if any_entry_enabled:
-            if common_stop_override and common_stop_pips <= 0:
+            if common_stop_override and common_stop_enabled and common_stop_pips <= 0:
                 messagebox.showerror("エラー", "損切幅は0より大きくしてください。")
                 return None
-            if common_take_override and common_take_pips <= 0:
+            if common_take_override and common_take_enabled and common_take_pips <= 0:
                 messagebox.showerror("エラー", "利確幅は0より大きくしてください。")
                 return None
-            if common_time_override and common_time_close_seconds < 0:
+            if common_time_override and common_time_enabled and common_time_close_seconds < 0:
                 messagebox.showerror("エラー", "時間経過クローズは0以上にしてください。")
                 return None
-            if common_fast_take_min < 0:
+            if common_fast_take_enabled and common_fast_take_min <= 0:
                 messagebox.showerror("エラー", "急伸利確の最低幅は0以上にしてください。")
                 return None
-            if common_fast_take_window_ms < 0:
+            if common_fast_take_enabled and common_fast_take_window_ms <= 0:
                 messagebox.showerror("エラー", "急伸利確のミリ秒は0以上にしてください。")
                 return None
-            if common_fast_take_pips < 0:
+            if common_fast_take_enabled and common_fast_take_pips <= 0:
                 messagebox.showerror("エラー", "急伸利確のピプスは0以上にしてください。")
                 return None
             if common_namping_override:
@@ -5055,27 +5292,39 @@ class Step1App:
                     return None
 
         if entry_reverse_enabled:
-            if not common_stop_override and reverse_stop_pips <= 0:
+            if (
+                not common_stop_override
+                and reverse_stop_enabled
+                and reverse_stop_pips <= 0
+            ):
                 messagebox.showerror("エラー", "秒逆張りの損切幅は0より大きくしてください。")
                 return None
-            if not common_take_override and reverse_take_pips <= 0:
+            if (
+                not common_take_override
+                and reverse_take_enabled
+                and reverse_take_pips <= 0
+            ):
                 messagebox.showerror("エラー", "秒逆張りの利確幅は0より大きくしてください。")
                 return None
-            if not common_time_override and reverse_time_close_seconds < 0:
+            if (
+                not common_time_override
+                and reverse_time_enabled
+                and reverse_time_close_seconds < 0
+            ):
                 messagebox.showerror("エラー", "秒逆張りの時間経過クローズは0以上にしてください。")
                 return None
             if not common_fast_take_override:
-                if reverse_fast_take_min < 0:
+                if reverse_fast_take_enabled and reverse_fast_take_min <= 0:
                     messagebox.showerror(
                         "エラー", "秒逆張りの急伸利確最低幅は0以上にしてください。"
                     )
                     return None
-                if reverse_fast_take_window_ms < 0:
+                if reverse_fast_take_enabled and reverse_fast_take_window_ms <= 0:
                     messagebox.showerror(
                         "エラー", "秒逆張りの急伸利確ミリ秒は0以上にしてください。"
                     )
                     return None
-                if reverse_fast_take_pips < 0:
+                if reverse_fast_take_enabled and reverse_fast_take_pips <= 0:
                     messagebox.showerror(
                         "エラー", "秒逆張りの急伸利確ピプスは0以上にしてください。"
                     )
@@ -5085,27 +5334,39 @@ class Step1App:
                     return None
 
         if entry_momentum_enabled:
-            if not common_stop_override and momentum_stop_pips <= 0:
+            if (
+                not common_stop_override
+                and momentum_stop_enabled
+                and momentum_stop_pips <= 0
+            ):
                 messagebox.showerror("エラー", "勢い追随の損切幅は0より大きくしてください。")
                 return None
-            if not common_take_override and momentum_take_pips <= 0:
+            if (
+                not common_take_override
+                and momentum_take_enabled
+                and momentum_take_pips <= 0
+            ):
                 messagebox.showerror("エラー", "勢い追随の利確幅は0より大きくしてください。")
                 return None
-            if not common_time_override and momentum_time_close_seconds < 0:
+            if (
+                not common_time_override
+                and momentum_time_enabled
+                and momentum_time_close_seconds < 0
+            ):
                 messagebox.showerror("エラー", "勢い追随の時間経過クローズは0以上にしてください。")
                 return None
             if not common_fast_take_override:
-                if momentum_fast_take_min < 0:
+                if momentum_fast_take_enabled and momentum_fast_take_min <= 0:
                     messagebox.showerror(
                         "エラー", "勢い追随の急伸利確最低幅は0以上にしてください。"
                     )
                     return None
-                if momentum_fast_take_window_ms < 0:
+                if momentum_fast_take_enabled and momentum_fast_take_window_ms <= 0:
                     messagebox.showerror(
                         "エラー", "勢い追随の急伸利確ミリ秒は0以上にしてください。"
                     )
                     return None
-                if momentum_fast_take_pips < 0:
+                if momentum_fast_take_enabled and momentum_fast_take_pips <= 0:
                     messagebox.showerror(
                         "エラー", "勢い追随の急伸利確ピプスは0以上にしてください。"
                     )
@@ -5115,27 +5376,39 @@ class Step1App:
                     return None
 
         if entry_sr_enabled:
-            if not common_stop_override and sr_stop_pips <= 0:
+            if (
+                not common_stop_override
+                and sr_stop_enabled
+                and sr_stop_pips <= 0
+            ):
                 messagebox.showerror("エラー", "水平線戻りの損切幅は0より大きくしてください。")
                 return None
-            if not common_take_override and sr_take_pips <= 0:
+            if (
+                not common_take_override
+                and sr_take_enabled
+                and sr_take_pips <= 0
+            ):
                 messagebox.showerror("エラー", "水平線戻りの利確幅は0より大きくしてください。")
                 return None
-            if not common_time_override and sr_time_close_seconds < 0:
+            if (
+                not common_time_override
+                and sr_time_enabled
+                and sr_time_close_seconds < 0
+            ):
                 messagebox.showerror("エラー", "水平線戻りの時間経過クローズは0以上にしてください。")
                 return None
             if not common_fast_take_override:
-                if sr_fast_take_min < 0:
+                if sr_fast_take_enabled and sr_fast_take_min <= 0:
                     messagebox.showerror(
                         "エラー", "水平線戻りの急伸利確最低幅は0以上にしてください。"
                     )
                     return None
-                if sr_fast_take_window_ms < 0:
+                if sr_fast_take_enabled and sr_fast_take_window_ms <= 0:
                     messagebox.showerror(
                         "エラー", "水平線戻りの急伸利確ミリ秒は0以上にしてください。"
                     )
                     return None
-                if sr_fast_take_pips < 0:
+                if sr_fast_take_enabled and sr_fast_take_pips <= 0:
                     messagebox.showerror(
                         "エラー", "水平線戻りの急伸利確ピプスは0以上にしてください。"
                     )
@@ -5145,27 +5418,39 @@ class Step1App:
                     return None
 
         if entry_spike_enabled:
-            if not common_stop_override and spike_stop_pips <= 0:
+            if (
+                not common_stop_override
+                and spike_stop_enabled
+                and spike_stop_pips <= 0
+            ):
                 messagebox.showerror("エラー", "スパイクの損切幅は0より大きくしてください。")
                 return None
-            if not common_take_override and spike_take_pips <= 0:
+            if (
+                not common_take_override
+                and spike_take_enabled
+                and spike_take_pips <= 0
+            ):
                 messagebox.showerror("エラー", "スパイクの利確幅は0より大きくしてください。")
                 return None
-            if not common_time_override and spike_time_close_seconds < 0:
+            if (
+                not common_time_override
+                and spike_time_enabled
+                and spike_time_close_seconds < 0
+            ):
                 messagebox.showerror("エラー", "スパイクの時間経過クローズは0以上にしてください。")
                 return None
             if not common_fast_take_override:
-                if spike_fast_take_min < 0:
+                if spike_fast_take_enabled and spike_fast_take_min <= 0:
                     messagebox.showerror(
                         "エラー", "スパイクの急伸利確最低幅は0以上にしてください。"
                     )
                     return None
-                if spike_fast_take_window_ms < 0:
+                if spike_fast_take_enabled and spike_fast_take_window_ms <= 0:
                     messagebox.showerror(
                         "エラー", "スパイクの急伸利確ミリ秒は0以上にしてください。"
                     )
                     return None
-                if spike_fast_take_pips < 0:
+                if spike_fast_take_enabled and spike_fast_take_pips <= 0:
                     messagebox.showerror(
                         "エラー", "スパイクの急伸利確ピプスは0以上にしてください。"
                     )
@@ -5232,6 +5517,10 @@ class Step1App:
             "common_fast_take_min": common_fast_take_min,
             "common_fast_take_window_ms": common_fast_take_window_ms,
             "common_fast_take_pips": common_fast_take_pips,
+            "common_stop_enabled": common_stop_enabled,
+            "common_take_enabled": common_take_enabled,
+            "common_time_enabled": common_time_enabled,
+            "common_fast_take_enabled": common_fast_take_enabled,
             "common_stop_override": common_stop_override,
             "common_take_override": common_take_override,
             "common_time_override": common_time_override,
@@ -5245,6 +5534,10 @@ class Step1App:
             "reverse_fast_take_min": reverse_fast_take_min,
             "reverse_fast_take_window_ms": reverse_fast_take_window_ms,
             "reverse_fast_take_pips": reverse_fast_take_pips,
+            "reverse_stop_enabled": reverse_stop_enabled,
+            "reverse_take_enabled": reverse_take_enabled,
+            "reverse_time_enabled": reverse_time_enabled,
+            "reverse_fast_take_enabled": reverse_fast_take_enabled,
             "momentum_stop_pips": momentum_stop_pips,
             "momentum_take_pips": momentum_take_pips,
             "momentum_time_close_seconds": momentum_time_close_seconds,
@@ -5252,6 +5545,10 @@ class Step1App:
             "momentum_fast_take_min": momentum_fast_take_min,
             "momentum_fast_take_window_ms": momentum_fast_take_window_ms,
             "momentum_fast_take_pips": momentum_fast_take_pips,
+            "momentum_stop_enabled": momentum_stop_enabled,
+            "momentum_take_enabled": momentum_take_enabled,
+            "momentum_time_enabled": momentum_time_enabled,
+            "momentum_fast_take_enabled": momentum_fast_take_enabled,
             "sr_stop_pips": sr_stop_pips,
             "sr_take_pips": sr_take_pips,
             "sr_time_close_seconds": sr_time_close_seconds,
@@ -5259,6 +5556,10 @@ class Step1App:
             "sr_fast_take_min": sr_fast_take_min,
             "sr_fast_take_window_ms": sr_fast_take_window_ms,
             "sr_fast_take_pips": sr_fast_take_pips,
+            "sr_stop_enabled": sr_stop_enabled,
+            "sr_take_enabled": sr_take_enabled,
+            "sr_time_enabled": sr_time_enabled,
+            "sr_fast_take_enabled": sr_fast_take_enabled,
             "spike_stop_pips": spike_stop_pips,
             "spike_take_pips": spike_take_pips,
             "spike_time_close_seconds": spike_time_close_seconds,
@@ -5266,6 +5567,10 @@ class Step1App:
             "spike_fast_take_min": spike_fast_take_min,
             "spike_fast_take_window_ms": spike_fast_take_window_ms,
             "spike_fast_take_pips": spike_fast_take_pips,
+            "spike_stop_enabled": spike_stop_enabled,
+            "spike_take_enabled": spike_take_enabled,
+            "spike_time_enabled": spike_time_enabled,
+            "spike_fast_take_enabled": spike_fast_take_enabled,
             "ma_enabled": ma_enabled,
             "ma_period": int(ma_period),
             "ma_deviation_rate": ma_deviation_pct / 100.0,
@@ -5707,6 +6012,10 @@ class Step1App:
                     time_close_seconds = None
         set_var(self.time_close_seconds_var, time_close_seconds)
         set_bool(self.fixed_exit_price_var, data.get("fixed_exit_price"))
+        set_bool(self.common_stop_enabled_var, data.get("common_stop_enabled"))
+        set_bool(self.common_take_enabled_var, data.get("common_take_enabled"))
+        set_bool(self.common_time_enabled_var, data.get("common_time_enabled"))
+        set_bool(self.common_fast_take_enabled_var, data.get("common_fast_take_enabled"))
         set_bool(self.common_stop_override_var, data.get("common_stop_override"))
         set_bool(self.common_take_override_var, data.get("common_take_override"))
         set_bool(self.common_time_override_var, data.get("common_time_override"))
@@ -5726,6 +6035,10 @@ class Step1App:
             data.get("reverse_fast_take_window_ms"),
         )
         set_var(self.reverse_fast_take_pips_var, data.get("reverse_fast_take_pips"))
+        set_bool(self.reverse_stop_enabled_var, data.get("reverse_stop_enabled"))
+        set_bool(self.reverse_take_enabled_var, data.get("reverse_take_enabled"))
+        set_bool(self.reverse_time_enabled_var, data.get("reverse_time_enabled"))
+        set_bool(self.reverse_fast_take_enabled_var, data.get("reverse_fast_take_enabled"))
         set_var(self.momentum_stop_pips_var, data.get("momentum_stop_pips"))
         set_var(self.momentum_take_pips_var, data.get("momentum_take_pips"))
         set_var(
@@ -5741,6 +6054,10 @@ class Step1App:
             data.get("momentum_fast_take_window_ms"),
         )
         set_var(self.momentum_fast_take_pips_var, data.get("momentum_fast_take_pips"))
+        set_bool(self.momentum_stop_enabled_var, data.get("momentum_stop_enabled"))
+        set_bool(self.momentum_take_enabled_var, data.get("momentum_take_enabled"))
+        set_bool(self.momentum_time_enabled_var, data.get("momentum_time_enabled"))
+        set_bool(self.momentum_fast_take_enabled_var, data.get("momentum_fast_take_enabled"))
         set_var(self.sr_stop_pips_var, data.get("sr_stop_pips"))
         set_var(self.sr_take_pips_var, data.get("sr_take_pips"))
         set_var(self.sr_time_close_seconds_var, data.get("sr_time_close_seconds"))
@@ -5748,6 +6065,10 @@ class Step1App:
         set_var(self.sr_fast_take_min_var, data.get("sr_fast_take_min"))
         set_var(self.sr_fast_take_window_ms_var, data.get("sr_fast_take_window_ms"))
         set_var(self.sr_fast_take_pips_var, data.get("sr_fast_take_pips"))
+        set_bool(self.sr_stop_enabled_var, data.get("sr_stop_enabled"))
+        set_bool(self.sr_take_enabled_var, data.get("sr_take_enabled"))
+        set_bool(self.sr_time_enabled_var, data.get("sr_time_enabled"))
+        set_bool(self.sr_fast_take_enabled_var, data.get("sr_fast_take_enabled"))
         set_var(self.spike_stop_pips_var, data.get("spike_stop_pips"))
         set_var(self.spike_take_pips_var, data.get("spike_take_pips"))
         set_var(
@@ -5761,6 +6082,10 @@ class Step1App:
             data.get("spike_fast_take_window_ms"),
         )
         set_var(self.spike_fast_take_pips_var, data.get("spike_fast_take_pips"))
+        set_bool(self.spike_stop_enabled_var, data.get("spike_stop_enabled"))
+        set_bool(self.spike_take_enabled_var, data.get("spike_take_enabled"))
+        set_bool(self.spike_time_enabled_var, data.get("spike_time_enabled"))
+        set_bool(self.spike_fast_take_enabled_var, data.get("spike_fast_take_enabled"))
         set_bool(self.allow_same_direction_var, data.get("allow_same_direction"))
         set_bool(self.allow_opposite_direction_var, data.get("allow_opposite_direction"))
         set_bool(self.namping_first_entry_var, data.get("namping_first_enabled"))
@@ -6200,6 +6525,10 @@ class Step1App:
             "fast_take_min": self.fast_take_min_var.get(),
             "fast_take_window_ms": self.fast_take_window_ms_var.get(),
             "fast_take_pips": self.fast_take_pips_var.get(),
+            "common_stop_enabled": self.common_stop_enabled_var.get(),
+            "common_take_enabled": self.common_take_enabled_var.get(),
+            "common_time_enabled": self.common_time_enabled_var.get(),
+            "common_fast_take_enabled": self.common_fast_take_enabled_var.get(),
             "common_stop_override": self.common_stop_override_var.get(),
             "common_take_override": self.common_take_override_var.get(),
             "common_time_override": self.common_time_override_var.get(),
@@ -6213,6 +6542,10 @@ class Step1App:
             "reverse_fast_take_min": self.reverse_fast_take_min_var.get(),
             "reverse_fast_take_window_ms": self.reverse_fast_take_window_ms_var.get(),
             "reverse_fast_take_pips": self.reverse_fast_take_pips_var.get(),
+            "reverse_stop_enabled": self.reverse_stop_enabled_var.get(),
+            "reverse_take_enabled": self.reverse_take_enabled_var.get(),
+            "reverse_time_enabled": self.reverse_time_enabled_var.get(),
+            "reverse_fast_take_enabled": self.reverse_fast_take_enabled_var.get(),
             "momentum_stop_pips": self.momentum_stop_pips_var.get(),
             "momentum_take_pips": self.momentum_take_pips_var.get(),
             "momentum_time_close_seconds": self.momentum_time_close_seconds_var.get(),
@@ -6220,6 +6553,10 @@ class Step1App:
             "momentum_fast_take_min": self.momentum_fast_take_min_var.get(),
             "momentum_fast_take_window_ms": self.momentum_fast_take_window_ms_var.get(),
             "momentum_fast_take_pips": self.momentum_fast_take_pips_var.get(),
+            "momentum_stop_enabled": self.momentum_stop_enabled_var.get(),
+            "momentum_take_enabled": self.momentum_take_enabled_var.get(),
+            "momentum_time_enabled": self.momentum_time_enabled_var.get(),
+            "momentum_fast_take_enabled": self.momentum_fast_take_enabled_var.get(),
             "sr_stop_pips": self.sr_stop_pips_var.get(),
             "sr_take_pips": self.sr_take_pips_var.get(),
             "sr_time_close_seconds": self.sr_time_close_seconds_var.get(),
@@ -6227,6 +6564,10 @@ class Step1App:
             "sr_fast_take_min": self.sr_fast_take_min_var.get(),
             "sr_fast_take_window_ms": self.sr_fast_take_window_ms_var.get(),
             "sr_fast_take_pips": self.sr_fast_take_pips_var.get(),
+            "sr_stop_enabled": self.sr_stop_enabled_var.get(),
+            "sr_take_enabled": self.sr_take_enabled_var.get(),
+            "sr_time_enabled": self.sr_time_enabled_var.get(),
+            "sr_fast_take_enabled": self.sr_fast_take_enabled_var.get(),
             "spike_stop_pips": self.spike_stop_pips_var.get(),
             "spike_take_pips": self.spike_take_pips_var.get(),
             "spike_time_close_seconds": self.spike_time_close_seconds_var.get(),
@@ -6234,6 +6575,10 @@ class Step1App:
             "spike_fast_take_min": self.spike_fast_take_min_var.get(),
             "spike_fast_take_window_ms": self.spike_fast_take_window_ms_var.get(),
             "spike_fast_take_pips": self.spike_fast_take_pips_var.get(),
+            "spike_stop_enabled": self.spike_stop_enabled_var.get(),
+            "spike_take_enabled": self.spike_take_enabled_var.get(),
+            "spike_time_enabled": self.spike_time_enabled_var.get(),
+            "spike_fast_take_enabled": self.spike_fast_take_enabled_var.get(),
             "allow_same_direction": self.allow_same_direction_var.get(),
             "allow_opposite_direction": self.allow_opposite_direction_var.get(),
             "namping_first_enabled": self.namping_first_entry_var.get(),
@@ -7208,6 +7553,7 @@ class Step1App:
             self._on_namping_toggle_group(key)
             if key == "reverse":
                 self._on_reverse_monitor_stop_toggle()
+            self._apply_close_states_for_key(key)
 
     def _on_namping_toggle_group(self, key: str):
         group = self.namping_widget_groups.get(key)
@@ -7220,6 +7566,54 @@ class Step1App:
 
     def _on_namping_toggle(self):
         self._on_namping_toggle_group("common")
+
+    def _register_close_condition(self, key, condition, enabled_var, toggle, widgets):
+        self.close_enabled_vars[(key, condition)] = enabled_var
+        self.close_toggle_widgets[(key, condition)] = toggle
+        self.close_widget_groups[(key, condition)] = widgets
+
+    def _set_close_widgets(self, key, condition, enabled: bool):
+        widgets = self.close_widget_groups.get((key, condition)) or []
+        for widget in widgets:
+            self._set_widget_enabled(widget, enabled)
+
+    def _on_close_toggle(self, key, condition):
+        enabled_var = self.close_enabled_vars.get((key, condition))
+        if not enabled_var:
+            return
+        enabled = bool(enabled_var.get())
+        self._set_close_widgets(key, condition, enabled)
+        if key == "common":
+            self._apply_close_overrides(condition)
+
+    def _apply_close_overrides(self, condition=None):
+        conditions = [condition] if condition else ["stop", "take", "time", "fast"]
+        for cond in conditions:
+            override_var = self.close_override_vars.get(cond)
+            if not override_var:
+                continue
+            override = bool(override_var.get())
+            common_enabled = bool(
+                self.close_enabled_vars.get(("common", cond)).get()
+            )
+            for key in ("reverse", "momentum", "sr", "spike"):
+                enabled_var = self.close_enabled_vars.get((key, cond))
+                toggle = self.close_toggle_widgets.get((key, cond))
+                if enabled_var is None or toggle is None:
+                    continue
+                if override:
+                    enabled_var.set(common_enabled)
+                    self._set_widget_enabled(toggle, False)
+                else:
+                    self._set_widget_enabled(toggle, True)
+                self._set_close_widgets(key, cond, bool(enabled_var.get()))
+
+    def _on_common_override_toggle(self):
+        self._apply_close_overrides()
+
+    def _apply_close_states_for_key(self, key: str):
+        for cond in ("stop", "take", "time", "fast"):
+            self._on_close_toggle(key, cond)
 
     def _on_reverse_monitor_stop_toggle(self):
         enabled = self.reverse_monitor_stop_enabled_var.get()

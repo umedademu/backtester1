@@ -9,7 +9,6 @@ import re
 import struct
 import threading
 import time as pytime
-import shutil
 from collections import deque
 from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time, timedelta, timezone
@@ -3813,7 +3812,6 @@ class Step1App:
         self.namping_widget_groups = {}
         self.entry_tab_info = {}
 
-        self._ensure_results_structure()
         self._build_ui()
         self._load_persistent_state()
         self._apply_ui_state()
@@ -8280,57 +8278,6 @@ class Step1App:
         if isinstance(value, (list, tuple)):
             return [self._normalize_json_value(v) for v in value]
         return value
-
-    def _ensure_results_structure(self):
-        base_dir = project_root() / RESULTS_DIR_NAME
-        try:
-            base_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
-
-        old_dir = project_root() / "ドル円"
-        new_dir = base_dir / PAIR
-        if old_dir.exists() and old_dir.is_dir():
-            try:
-                if new_dir.exists():
-                    for item in old_dir.iterdir():
-                        target = new_dir / item.name
-                        if target.exists():
-                            try:
-                                if item.is_dir():
-                                    for child in item.iterdir():
-                                        shutil.move(str(child), str(target / child.name))
-                                    item.rmdir()
-                                else:
-                                    shutil.move(str(item), str(target))
-                            except Exception:
-                                continue
-                        else:
-                            shutil.move(str(item), str(target))
-                    try:
-                        old_dir.rmdir()
-                    except Exception:
-                        pass
-                else:
-                    shutil.move(str(old_dir), str(new_dir))
-            except Exception:
-                pass
-
-        old_index = project_root() / "index.csv"
-        new_index = base_dir / "index.csv"
-        if old_index.exists() and old_index.is_file():
-            try:
-                if new_index.exists():
-                    with old_index.open("r", encoding="utf-8", newline="") as f:
-                        rows = list(f.readlines())
-                    if rows:
-                        with new_index.open("a", encoding="utf-8", newline="") as f:
-                            f.writelines(rows[1:])
-                    old_index.unlink()
-                else:
-                    shutil.move(str(old_index), str(new_index))
-            except Exception:
-                pass
 
     def _results_root(self) -> Path:
         return project_root() / RESULTS_DIR_NAME

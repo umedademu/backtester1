@@ -8915,6 +8915,29 @@ class Step1App:
         self._update_chart_saved_bookmark_marker()
         self._save_persistent_state()
 
+    def _sync_chart_saved_selection(self, trade_path: Path):
+        if not trade_path or not self.chart_saved_runs:
+            return
+        target = Path(trade_path)
+        for idx, run in enumerate(self.chart_saved_runs):
+            candidate = run.get("trade_path")
+            if not candidate:
+                continue
+            try:
+                if target.resolve().samefile(Path(candidate).resolve()):
+                    self.chart_saved_runs_combo.current(idx)
+                    self.chart_saved_run_index = idx
+                    self._update_chart_saved_months()
+                    self._update_chart_saved_bookmark_marker()
+                    return
+            except Exception:
+                if str(Path(candidate)).lower() == str(target).lower():
+                    self.chart_saved_runs_combo.current(idx)
+                    self.chart_saved_run_index = idx
+                    self._update_chart_saved_months()
+                    self._update_chart_saved_bookmark_marker()
+                    return
+
     def _on_saved_run_select(self, _event=None):
         selection = self.saved_runs_combo.current()
         if selection is None or selection < 0 or selection >= len(self.saved_runs):
@@ -9368,6 +9391,7 @@ class Step1App:
             return
         self._apply_pnl_csv(trade_path, source_label="保存結果")
         self._update_saved_bookmark_marker()
+        self._sync_chart_saved_selection(trade_path)
 
     def _select_prev_run(self):
         if not self.saved_runs:

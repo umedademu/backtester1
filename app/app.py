@@ -7581,6 +7581,14 @@ class Step1App:
         enabled_var = self.close_enabled_vars.get((key, condition))
         if not enabled_var:
             return
+        if key != "common":
+            override_var = self.close_override_vars.get(condition)
+            if override_var and override_var.get():
+                common_enabled_var = self.close_enabled_vars.get(("common", condition))
+                common_enabled = bool(common_enabled_var.get()) if common_enabled_var else False
+                enabled_var.set(common_enabled)
+                self._set_close_widgets(key, condition, common_enabled)
+                return
         enabled = bool(enabled_var.get())
         self._set_close_widgets(key, condition, enabled)
         if key == "common":
@@ -7603,9 +7611,6 @@ class Step1App:
                     continue
                 if override:
                     enabled_var.set(common_enabled)
-                    self._set_widget_enabled(toggle, False)
-                else:
-                    self._set_widget_enabled(toggle, True)
                 self._set_close_widgets(key, cond, bool(enabled_var.get()))
 
     def _on_common_override_toggle(self):

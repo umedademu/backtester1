@@ -3659,6 +3659,12 @@ class Step1App:
         self.saved_runs = []
         self.saved_run_var = tk.StringVar(value="")
         self.saved_run_index = None
+        self.chart_saved_runs = []
+        self.chart_saved_run_var = tk.StringVar(value="")
+        self.chart_saved_run_index = None
+        self.chart_saved_month_var = tk.StringVar(value="")
+        self.chart_saved_months = []
+        self.chart_saved_trades = []
         self.trade_jump_var = tk.StringVar(value="1")
         self.trade_nav_info_var = tk.StringVar(value="取引: 0件")
         self.trade_focus_index = None
@@ -3667,6 +3673,7 @@ class Step1App:
         self.pnl_filter = None
         self.pnl_info_base = None
         self.pnl_info_label = "損益"
+        self.pnl_trade_records = []
         self.pnl_year_hits = []
         self.pnl_month_hits = []
         self.pnl_view_start = 0
@@ -3823,6 +3830,7 @@ class Step1App:
         self._load_persistent_state()
         self._apply_ui_state()
         self._refresh_saved_runs()
+        self._refresh_chart_saved_runs()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self._poll_queue()
 
@@ -3882,6 +3890,39 @@ class Step1App:
         chart_tab.rowconfigure(8, weight=1)
         param_tab.columnconfigure(0, weight=1)
         param_tab.rowconfigure(3, weight=1)
+
+        chart_saved_frame = ttk.Frame(chart_tab)
+        chart_saved_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        chart_saved_frame.columnconfigure(1, weight=1)
+        ttk.Label(chart_saved_frame, text="保存結果").grid(row=0, column=0, sticky="w")
+        self.chart_saved_runs_combo = ttk.Combobox(
+            chart_saved_frame, textvariable=self.chart_saved_run_var, width=44, state="readonly"
+        )
+        self.chart_saved_runs_combo.grid(row=0, column=1, padx=(4, 6), sticky="w")
+        self.chart_saved_runs_combo.bind(
+            "<<ComboboxSelected>>", self._on_chart_saved_select
+        )
+        self.chart_saved_refresh_button = ttk.Button(
+            chart_saved_frame, text="更新", command=self._refresh_chart_saved_runs
+        )
+        self.chart_saved_refresh_button.grid(row=0, column=2, sticky="w")
+        self.chart_saved_prev_button = ttk.Button(
+            chart_saved_frame, text="前へ", command=self._select_prev_chart_run
+        )
+        self.chart_saved_prev_button.grid(row=0, column=3, padx=(6, 0), sticky="w")
+        self.chart_saved_next_button = ttk.Button(
+            chart_saved_frame, text="次へ", command=self._select_next_chart_run
+        )
+        self.chart_saved_next_button.grid(row=0, column=4, padx=(6, 0), sticky="w")
+        ttk.Label(chart_saved_frame, text="月").grid(row=0, column=5, padx=(10, 4), sticky="w")
+        self.chart_saved_month_combo = ttk.Combobox(
+            chart_saved_frame, textvariable=self.chart_saved_month_var, width=8, state="readonly"
+        )
+        self.chart_saved_month_combo.grid(row=0, column=6, sticky="w")
+        self.chart_saved_show_button = ttk.Button(
+            chart_saved_frame, text="表示", command=self._load_chart_saved
+        )
+        self.chart_saved_show_button.grid(row=0, column=7, padx=(6, 0), sticky="w")
 
         view_row = ttk.Frame(param_tab)
         view_row.grid(row=0, column=0, sticky="ew")
@@ -7761,7 +7802,7 @@ class Step1App:
             "mode": self.x_axis_mode_var.get(),
             "view_start_time": view_start_time,
             "view_end_time": view_end_time,
-            "trades": [],
+            "trades": payload.get("trades") or [],
             "ma_series": [],
             "ma_enabled": False,
             "sr_params": sr_params,
@@ -8645,6 +8686,7 @@ class Step1App:
             index_path=index_path,
         )
         self._refresh_saved_runs()
+        self._refresh_chart_saved_runs()
 
     def _format_saved_run_label(self, row):
         run_time = (row.get("実行時刻") or "").strip()
@@ -8673,8 +8715,34 @@ class Step1App:
         return " | ".join([p for p in pieces if p])
 
     def _refresh_saved_runs(self):
+        self.saved_runs, values = self._collect_saved_runs()
+        current = self.saved_run_var.get()
+        self.saved_runs_combo["values"] = values
+        if values:
+            self.saved_runs_combo.config(state="readonly")
+            self.saved_runs_show_button.config(state="normal")
+            self.saved_runs_prev_button.config(state="normal")
+            self.saved_runs_next_button.config(state="normal")
+            self.saved_runs_apply_button.config(state="normal")
+            if current in values:
+                idx = values.index(current)
+                self.saved_runs_combo.set(current)
+                self.saved_run_index = idx
+            else:
+                self.saved_runs_combo.current(0)
+                self.saved_run_index = 0
+        else:
+            self.saved_runs_combo.set("")
+            self.saved_runs_combo.config(state="disabled")
+            self.saved_runs_show_button.config(state="disabled")
+            self.saved_runs_prev_button.config(state="disabled")
+            self.saved_runs_next_button.config(state="disabled")
+            self.saved_runs_apply_button.config(state="disabled")
+            self.saved_run_index = None
+
+    def _collect_saved_runs(self):
         index_path = self._results_root() / "index.csv"
-        self.saved_runs = []
+        runs = []
         values = []
         if index_path.exists():
             try:
@@ -8712,38 +8780,218 @@ class Step1App:
                 settings_path = None
                 if settings_id and strategy:
                     settings_path = base_dir / PAIR / strategy / f"設定_{settings_id}" / "設定.json"
-                self.saved_runs.append(
+                runs.append(
                     {
                         "display": display,
                         "trade_path": trade_path,
                         "settings_path": settings_path,
+                        "strategy": strategy,
+                        "settings_id": settings_id,
                     }
                 )
                 values.append(display)
+        return runs, values
 
-        current = self.saved_run_var.get()
-        self.saved_runs_combo["values"] = values
+    def _refresh_chart_saved_runs(self):
+        self.chart_saved_runs, values = self._collect_saved_runs()
+        current = self.chart_saved_run_var.get()
+        self.chart_saved_runs_combo["values"] = values
         if values:
-            self.saved_runs_combo.config(state="readonly")
-            self.saved_runs_show_button.config(state="normal")
-            self.saved_runs_prev_button.config(state="normal")
-            self.saved_runs_next_button.config(state="normal")
-            self.saved_runs_apply_button.config(state="normal")
+            self.chart_saved_runs_combo.config(state="readonly")
             if current in values:
                 idx = values.index(current)
-                self.saved_runs_combo.set(current)
-                self.saved_run_index = idx
+                self.chart_saved_runs_combo.set(current)
+                self.chart_saved_run_index = idx
             else:
-                self.saved_runs_combo.current(0)
-                self.saved_run_index = 0
+                self.chart_saved_runs_combo.current(0)
+                self.chart_saved_run_index = 0
+            self.chart_saved_prev_button.config(state="normal")
+            self.chart_saved_next_button.config(state="normal")
+            self.chart_saved_refresh_button.config(state="normal")
+            self.chart_saved_show_button.config(state="normal")
+            self._update_chart_saved_months()
         else:
-            self.saved_runs_combo.set("")
-            self.saved_runs_combo.config(state="disabled")
-            self.saved_runs_show_button.config(state="disabled")
-            self.saved_runs_prev_button.config(state="disabled")
-            self.saved_runs_next_button.config(state="disabled")
-            self.saved_runs_apply_button.config(state="disabled")
-            self.saved_run_index = None
+            self.chart_saved_runs_combo.set("")
+            self.chart_saved_runs_combo.config(state="disabled")
+            self.chart_saved_prev_button.config(state="disabled")
+            self.chart_saved_next_button.config(state="disabled")
+            self.chart_saved_refresh_button.config(state="disabled")
+            self.chart_saved_show_button.config(state="disabled")
+            self.chart_saved_month_combo.set("")
+            self.chart_saved_month_combo.config(state="disabled")
+            self.chart_saved_run_index = None
+            self.chart_saved_months = []
+            self.chart_saved_trades = []
+
+    def _on_chart_saved_select(self, _event=None):
+        selection = self.chart_saved_runs_combo.current()
+        if selection is None or selection < 0:
+            return
+        self.chart_saved_run_index = selection
+        self._update_chart_saved_months()
+
+    def _select_prev_chart_run(self):
+        if not self.chart_saved_runs:
+            return
+        if self.chart_saved_run_index is None:
+            self.chart_saved_run_index = 0
+        else:
+            self.chart_saved_run_index = max(0, self.chart_saved_run_index - 1)
+        self.chart_saved_runs_combo.current(self.chart_saved_run_index)
+        self._update_chart_saved_months()
+
+    def _select_next_chart_run(self):
+        if not self.chart_saved_runs:
+            return
+        if self.chart_saved_run_index is None:
+            self.chart_saved_run_index = 0
+        else:
+            self.chart_saved_run_index = min(len(self.chart_saved_runs) - 1, self.chart_saved_run_index + 1)
+        self.chart_saved_runs_combo.current(self.chart_saved_run_index)
+        self._update_chart_saved_months()
+
+    def _update_chart_saved_months(self):
+        if not self.chart_saved_runs:
+            return
+        selection = self.chart_saved_runs_combo.current()
+        if selection is None or selection < 0 or selection >= len(self.chart_saved_runs):
+            return
+        target = self.chart_saved_runs[selection]
+        trade_path = target.get("trade_path")
+        if not trade_path or not Path(trade_path).exists():
+            self.chart_saved_months = []
+            self.chart_saved_trades = []
+            self.chart_saved_month_combo.set("")
+            self.chart_saved_month_combo.config(state="disabled")
+            return
+        trades, months = self._load_saved_trades_file(Path(trade_path))
+        self.chart_saved_trades = trades
+        self.chart_saved_months = months
+        self.chart_saved_month_combo["values"] = months
+        if months:
+            self.chart_saved_month_combo.config(state="readonly")
+            current = self.chart_saved_month_var.get()
+            if current in months:
+                self.chart_saved_month_combo.set(current)
+            else:
+                self.chart_saved_month_combo.set(months[-1])
+        else:
+            self.chart_saved_month_combo.set("")
+            self.chart_saved_month_combo.config(state="disabled")
+
+    def _load_saved_trades_file(self, trade_path: Path):
+        trades = []
+        months = []
+        month_set = set()
+        try:
+            with trade_path.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    entry_time = self._parse_csv_time(row.get("in時刻") or "")
+                    exit_time = self._parse_csv_time(row.get("out時刻") or "")
+                    if entry_time is not None and entry_time.tzinfo is None:
+                        entry_time = entry_time.replace(tzinfo=JST)
+                    if exit_time is not None and exit_time.tzinfo is None:
+                        exit_time = exit_time.replace(tzinfo=JST)
+                    if entry_time is None or exit_time is None:
+                        continue
+                    try:
+                        entry_price = float(row.get("in価格") or 0.0)
+                        exit_price = float(row.get("out価格") or 0.0)
+                    except Exception:
+                        continue
+                    side_text = str(row.get("方向") or "")
+                    side_lower = side_text.lower()
+                    side = None
+                    if "買" in side_text or "long" in side_lower or "buy" in side_lower:
+                        side = "long"
+                    elif "売" in side_text or "short" in side_lower or "sell" in side_lower:
+                        side = "short"
+                    trades.append(
+                        {
+                            "entry_time": entry_time,
+                            "exit_time": exit_time,
+                            "entry_price": entry_price,
+                            "exit_price": exit_price,
+                            "side": side,
+                        }
+                    )
+                    key = f"{exit_time.year:04d}-{exit_time.month:02d}"
+                    if key not in month_set:
+                        month_set.add(key)
+                        months.append(key)
+        except Exception:
+            return [], []
+        months_sorted = sorted(months)
+        return trades, months_sorted
+
+    def _load_chart_saved(self):
+        if self.chart_worker and self.chart_worker.is_alive():
+            messagebox.showinfo("お知らせ", "表示処理中です。")
+            return
+        selection = self.chart_saved_runs_combo.current()
+        if selection is None or selection < 0 or selection >= len(self.chart_saved_runs):
+            messagebox.showinfo("お知らせ", "保存結果を選択してください。")
+            return
+        month_text = (self.chart_saved_month_var.get() or "").strip()
+        if not month_text:
+            messagebox.showinfo("お知らせ", "月を選択してください。")
+            return
+        month_start = self._parse_month_text(month_text)
+        if month_start is None:
+            messagebox.showerror("エラー", "月の形式が正しくありません。")
+            return
+        target = self.chart_saved_runs[selection]
+        trade_path = target.get("trade_path")
+        if not trade_path or not Path(trade_path).exists():
+            messagebox.showerror("エラー", "保存先が見つかりません。")
+            return
+
+        trades = [
+            t
+            for t in self.chart_saved_trades
+            if t["exit_time"].year == month_start.year
+            and t["exit_time"].month == month_start.month
+        ]
+        self._apply_view_month_range(month_start, 1)
+        self.status_var.set("保存結果を読み込み中...")
+        self.chart_cancel_event.clear()
+        if hasattr(self, "chart_button"):
+            self.chart_button.config(state="disabled")
+        if hasattr(self, "chart_cancel_button"):
+            self.chart_cancel_button.config(state="normal")
+        self.chart_worker = threading.Thread(
+            target=self._chart_saved_worker,
+            args=(self.view_start_date, self.view_end_date, trades),
+            daemon=True,
+        )
+        self.chart_worker.start()
+        if trade_path:
+            self._apply_pnl_csv(Path(trade_path), source_label="保存結果")
+            self._apply_pnl_filter("month", month_text)
+
+    def _chart_saved_worker(self, start: date, end: date, trades):
+        cache, cache_hit = self._load_analysis_cache(start, end)
+        points_sorted = cache.get("points_sorted") or []
+        missing = cache.get("missing") or ()
+        if missing and not cache_hit:
+            self.queue.put(("log", f"[表示] CSV不足 {len(missing)}件"))
+        if not points_sorted:
+            self.queue.put(("chart_error", "表示できるデータがありません。"))
+            self.queue.put(("chart_done", None))
+            return
+        payload = {
+            "start": start,
+            "end": end,
+            "points": points_sorted,
+            "missing_count": len(missing),
+            "sr_params": {},
+            "range_params": {},
+            "trades": trades,
+        }
+        self.queue.put(("chart_data", payload))
+        self.queue.put(("status", "保存結果の表示が完了しました。"))
+        self.queue.put(("chart_done", None))
 
     def _load_selected_run(self):
         if not self.saved_runs:

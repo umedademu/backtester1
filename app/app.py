@@ -3666,6 +3666,7 @@ class Step1App:
         self.pnl_full_data = None
         self.pnl_filter = None
         self.pnl_info_base = None
+        self.pnl_info_label = "損益"
         self.pnl_year_hits = []
         self.pnl_month_hits = []
         self.pnl_view_start = 0
@@ -7204,6 +7205,7 @@ class Step1App:
                 "end": self.view_end_date,
                 "summary": summary,
                 "equity_curve": payload.get("equity_curve") or [],
+                "trades": payload.get("trades") or [],
             }
         )
 
@@ -7227,6 +7229,7 @@ class Step1App:
         losses = 0
         draws = 0
         total_pips = 0.0
+        trade_records = []
         year_totals = {}
         month_totals = {}
 
@@ -7254,6 +7257,19 @@ class Step1App:
                     combined.append((ts, value + offset))
                 offset += curve[-1][1]
 
+            trades = result.get("trades") or []
+            for trade in trades:
+                ts = trade.get("exit_time") or trade.get("entry_time")
+                if not isinstance(ts, datetime):
+                    continue
+                pips = trade.get("pips", 0.0)
+                try:
+                    pips = float(pips)
+                except Exception:
+                    pips = 0.0
+                side = trade.get("side")
+                trade_records.append({"ts": ts, "pips": pips, "side": side})
+
         self.batch_total_equity = combined
         self.batch_yearly_data = sorted(year_totals.items(), key=lambda x: x[0])
         self.batch_monthly_data = sorted(month_totals.items(), key=lambda x: x[0])
@@ -7271,6 +7287,15 @@ class Step1App:
             self._reset_pnl_view()
             self.backtest_ready = True
             self._draw_pnl_chart()
+            if trade_records:
+                self.pnl_trade_records = trade_records
+                stats = self._compute_trade_stats(trade_records)
+                if stats["long_count"] or stats["short_count"]:
+                    self.pnl_info_var.set(
+                        self.pnl_info_var.get()
+                        + f"\n内訳: ロング 取引{stats['long_count']}件 合計損益{stats['long_pips']:.1f}ピップス"
+                        + f" / ショート 取引{stats['short_count']}件 合計損益{stats['short_pips']:.1f}ピップス"
+                    )
         else:
             self.pnl_data = None
             self.pnl_full_data = None
@@ -7279,6 +7304,7 @@ class Step1App:
             self.pnl_info_var.set("一括損益: データなし")
             self._draw_pnl_chart()
 
+        self.pnl_info_label = "一括損益"
         self.pnl_info_base = self.pnl_info_var.get()
         self._draw_batch_year_chart()
         self._draw_batch_month_chart()
@@ -7835,6 +7861,19 @@ class Step1App:
             )
             self.pnl_info_var.set(self.pnl_info_var.get() + side_breakdown)
 
+        self.pnl_trade_records = []
+        for trade in trades:
+            ts = trade.get("exit_time") or trade.get("entry_time")
+            if not isinstance(ts, datetime):
+                continue
+            pips = trade.get("pips", 0.0)
+            try:
+                pips = float(pips)
+            except Exception:
+                pips = 0.0
+            side = trade.get("side")
+            self.pnl_trade_records.append({"ts": ts, "pips": pips, "side": side})
+
         self.pnl_data = payload.get("equity_curve") or []
         self.pnl_full_data = list(self.pnl_data) if self.pnl_data else None
         self.pnl_filter = None
@@ -7847,6 +7886,7 @@ class Step1App:
             self._draw_chart()
         self._update_trade_nav_state()
         self._draw_pnl_chart()
+        self.pnl_info_label = "損益"
         self.pnl_info_base = self.pnl_info_var.get()
         self._stop_backtest_timer()
         self._append_pnl_log(payload)
@@ -8801,6 +8841,7 @@ class Step1App:
             return ""
 
         equity_curve = []
+        trade_records = []
         total = 0
         wins = 0
         losses = 0
@@ -8834,6 +8875,15 @@ class Step1App:
             if pips_value is None:
                 pips_value = cumulative - prev_cum
             prev_cum = cumulative
+            side_raw = pick(row, ["方向", "side"])
+            side = None
+            if side_raw:
+                side_text = str(side_raw).lower()
+                if "買" in side_raw or "long" in side_text or "buy" in side_text:
+                    side = "long"
+                elif "売" in side_raw or "short" in side_text or "sell" in side_text:
+                    side = "short"
+            trade_records.append({"ts": ts, "pips": pips_value, "side": side})
             if pips_value is not None:
                 if pips_value > 0:
                     wins += 1
@@ -8854,13 +8904,25 @@ class Step1App:
         self.pnl_filter = None
         self._reset_pnl_view()
         self.backtest_ready = True
+        self.pnl_trade_records = trade_records
         self.batch_results = []
         self.batch_total_equity = None
         self.batch_yearly_data = sorted(year_totals.items(), key=lambda x: x[0])
         self.batch_monthly_data = sorted(month_totals.items(), key=lambda x: x[0])
+        stats = self._compute_trade_stats(trade_records)
+        draw_text = f" 引き分け{stats['draws']}件" if stats["draws"] else ""
+        self.pnl_info_label = "損益"
         self.pnl_info_var.set(
-            f"損益: {source_label} 取引{total}件 合計損益{cumulative:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
+            f"損益: {source_label} 取引{stats['total']}件 勝ち{stats['wins']}件"
+            f" 負け{stats['losses']}件{draw_text} 合計損益{stats['total_pips']:.1f}ピップス"
+            f" 最大DD{max_dd:.1f}ピップス"
         )
+        if stats["long_count"] or stats["short_count"]:
+            self.pnl_info_var.set(
+                self.pnl_info_var.get()
+                + f"\n内訳: ロング 取引{stats['long_count']}件 合計損益{stats['long_pips']:.1f}ピップス"
+                + f" / ショート 取引{stats['short_count']}件 合計損益{stats['short_pips']:.1f}ピップス"
+            )
         self.pnl_info_base = self.pnl_info_var.get()
         self._draw_pnl_chart()
         self._draw_batch_year_chart()
@@ -10043,6 +10105,44 @@ class Step1App:
             return parts[0], parts[1]
         return None
 
+    def _compute_trade_stats(self, records):
+        stats = {
+            "total": 0,
+            "wins": 0,
+            "losses": 0,
+            "draws": 0,
+            "total_pips": 0.0,
+            "long_count": 0,
+            "short_count": 0,
+            "long_pips": 0.0,
+            "short_pips": 0.0,
+        }
+        for record in records or []:
+            stats["total"] += 1
+            pips = record.get("pips")
+            if pips is None:
+                pips = 0.0
+            else:
+                try:
+                    pips = float(pips)
+                except Exception:
+                    pips = 0.0
+            stats["total_pips"] += pips
+            if pips > 0:
+                stats["wins"] += 1
+            elif pips < 0:
+                stats["losses"] += 1
+            else:
+                stats["draws"] += 1
+            side = record.get("side")
+            if side == "long":
+                stats["long_count"] += 1
+                stats["long_pips"] += pips
+            elif side == "short":
+                stats["short_count"] += 1
+                stats["short_pips"] += pips
+        return stats
+
     def _apply_pnl_filter(self, kind, label):
         if not self.pnl_full_data:
             return
@@ -10082,6 +10182,25 @@ class Step1App:
             messagebox.showinfo("お知らせ", "該当するデータがありません。")
             return
 
+        records = []
+        if self.pnl_trade_records:
+            if kind == "year":
+                parts = [int(p) for p in re.findall(r"\d+", str(label))]
+                if parts:
+                    year = parts[0]
+                    records = [
+                        r for r in self.pnl_trade_records if r["ts"].year == year
+                    ]
+            elif kind == "month":
+                parsed = self._parse_month_label(label)
+                if parsed:
+                    year, month = parsed
+                    records = [
+                        r
+                        for r in self.pnl_trade_records
+                        if r["ts"].year == year and r["ts"].month == month
+                    ]
+
         offset = filtered[0][1]
         rebased = [(ts, value - offset) for ts, value in filtered]
         total_pips = rebased[-1][1] if rebased else 0.0
@@ -10089,10 +10208,27 @@ class Step1App:
         self.pnl_filter = (kind, label)
         self.pnl_data = rebased
         self._reset_pnl_view()
-        base = self.pnl_info_base or "損益"
-        self.pnl_info_var.set(
-            f"{base} / 期間{label_text} 合計損益{total_pips:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
-        )
+        stats = self._compute_trade_stats(records) if records else None
+        label_prefix = self.pnl_info_label or "損益"
+        draw_text = ""
+        if stats and stats["draws"]:
+            draw_text = f" 引き分け{stats['draws']}件"
+        if stats:
+            self.pnl_info_var.set(
+                f"{label_prefix}: 期間{label_text} 取引{stats['total']}件"
+                f" 勝ち{stats['wins']}件 負け{stats['losses']}件{draw_text}"
+                f" 合計損益{stats['total_pips']:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
+            )
+            if stats["long_count"] or stats["short_count"]:
+                self.pnl_info_var.set(
+                    self.pnl_info_var.get()
+                    + f"\n内訳: ロング 取引{stats['long_count']}件 合計損益{stats['long_pips']:.1f}ピップス"
+                    + f" / ショート 取引{stats['short_count']}件 合計損益{stats['short_pips']:.1f}ピップス"
+                )
+        else:
+            self.pnl_info_var.set(
+                f"{label_prefix}: 期間{label_text} 合計損益{total_pips:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
+            )
         self._draw_pnl_chart()
 
     def _on_year_chart_click(self, event):

@@ -5,6 +5,7 @@ import json
 import lzma
 import os
 import queue
+import re
 import struct
 import threading
 import time as pytime
@@ -3334,6 +3335,12 @@ class Step1App:
         self.view_month_label_var = tk.StringVar(
             value=f"{self.view_start_date.year}年{self.view_start_date.month:02d}月"
         )
+        month_text = f"{self.view_start_date.year}-{self.view_start_date.month:02d}"
+        self.batch_start_month_var = tk.StringVar(value=month_text)
+        self.batch_end_month_var = tk.StringVar(value=month_text)
+        self.batch_months = []
+        self.batch_index = 0
+        self.batch_active = False
         self.exclude_weekends_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="準備完了")
         self.chart_info_var = tk.StringVar(value="")
@@ -3778,7 +3785,7 @@ class Step1App:
 
         view_row = ttk.Frame(param_tab)
         view_row.grid(row=0, column=0, sticky="ew")
-        view_row.columnconfigure(3, weight=1)
+        view_row.columnconfigure(4, weight=1)
 
         ttk.Label(view_row, textvariable=self.view_month_label_var).grid(
             row=0, column=0, sticky="w"
@@ -3789,6 +3796,25 @@ class Step1App:
         ttk.Button(view_row, text="次", command=self._move_view_next).grid(
             row=0, column=2, padx=(6, 0), sticky="w"
         )
+
+        ttk.Label(view_row, text="開始年月").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
+        self.batch_start_entry = ttk.Entry(
+            view_row, textvariable=self.batch_start_month_var, width=8
+        )
+        self.batch_start_entry.grid(row=1, column=1, padx=(4, 6), pady=(6, 0), sticky="w")
+        ttk.Label(view_row, text="終了年月").grid(
+            row=1, column=2, sticky="w", pady=(6, 0)
+        )
+        self.batch_end_entry = ttk.Entry(
+            view_row, textvariable=self.batch_end_month_var, width=8
+        )
+        self.batch_end_entry.grid(row=1, column=3, padx=(4, 6), pady=(6, 0), sticky="w")
+        self.batch_run_button = ttk.Button(
+            view_row, text="一括実行", command=self._start_month_batch
+        )
+        self.batch_run_button.grid(row=1, column=4, padx=(6, 0), pady=(6, 0), sticky="w")
 
         run_row = ttk.Frame(param_tab)
         run_row.grid(row=1, column=0, sticky="w", pady=(6, 4))
@@ -5062,6 +5088,59 @@ class Step1App:
     def _move_view_next(self):
         self._shift_view_month_range(1)
 
+    def _parse_month_text(self, value: str):
+        text = value.strip()
+        if not text:
+            return None
+        parts = [p for p in re.split(r"\D+", text) if p]
+        year = None
+        month = None
+        if len(parts) >= 2:
+            year = int(parts[0])
+            month = int(parts[1])
+        elif len(text) == 6 and text.isdigit():
+            year = int(text[:4])
+            month = int(text[4:])
+        if year is None or month is None:
+            return None
+        if month < 1 or month > 12:
+            return None
+        return date(year, month, 1)
+
+    def _start_month_batch(self):
+        start = self._parse_month_text(self.batch_start_month_var.get())
+        end = self._parse_month_text(self.batch_end_month_var.get())
+        if start is None or end is None:
+            messagebox.showerror("エラー", "開始年月と終了年月を正しく入力してください。")
+            return
+        if end < start:
+            messagebox.showerror("エラー", "終了年月は開始年月より後にしてください。")
+            return
+        months = []
+        current = start
+        while current <= end:
+            months.append(current)
+            current = self._add_months(current, 1)
+        if not months:
+            return
+        self.batch_months = months
+        self.batch_index = 0
+        self.batch_active = True
+        self._run_next_batch()
+
+    def _run_next_batch(self):
+        if not self.batch_active:
+            return
+        if self.chart_worker and self.chart_worker.is_alive():
+            return
+        if self.batch_index >= len(self.batch_months):
+            self.batch_active = False
+            return
+        target = self.batch_months[self.batch_index]
+        self.batch_index += 1
+        self._apply_view_month_range(target, 1)
+        self._show_chart()
+
     def _parse_number(self, value: str) -> float:
         cleaned = value.strip().replace(",", ".").replace("，", ".")
         filtered = "".join(ch for ch in cleaned if ch.isdigit() or ch in ".-")
@@ -5875,6 +5954,10 @@ class Step1App:
         if self.chart_worker and self.chart_worker.is_alive():
             self.chart_cancel_event.set()
             self.status_var.set("中止要求を受け付けました...")
+        if self.batch_active:
+            self.batch_active = False
+            self.batch_months = []
+            self.batch_index = 0
         else:
             self.chart_cancel_button.config(state="disabled")
 
@@ -5922,6 +6005,8 @@ class Step1App:
         set_date_value("view_start_date", "view_start_date", self.view_start_var)
         set_date_value("view_end_date", "view_end_date", self.view_end_var)
         set_var(self.view_range_months_var, data.get("view_range_months"))
+        set_var(self.batch_start_month_var, data.get("batch_start_month"))
+        set_var(self.batch_end_month_var, data.get("batch_end_month"))
         if self.view_start_date:
             self.view_month_label_var.set(
                 f"{self.view_start_date.year}年{self.view_start_date.month:02d}月"
@@ -6514,6 +6599,8 @@ class Step1App:
             "view_start_date": self.view_start_date.isoformat(),
             "view_end_date": self.view_end_date.isoformat(),
             "view_range_months": self.view_range_months_var.get(),
+            "batch_start_month": self.batch_start_month_var.get(),
+            "batch_end_month": self.batch_end_month_var.get(),
             "exclude_weekends": self.exclude_weekends_var.get(),
             "x_axis_mode": self.x_axis_mode_var.get(),
             "chart_type": self.chart_type_var.get(),
@@ -7098,6 +7185,8 @@ class Step1App:
                 elif kind == "chart_done":
                     self.chart_button.config(state="normal")
                     self.chart_cancel_button.config(state="disabled")
+                    if self.batch_active:
+                        self._run_next_batch()
                 elif kind == "chart_error":
                     messagebox.showerror("エラー", payload)
                     self.backtest_info_var.set("バックテスト: データなし")
@@ -7107,6 +7196,10 @@ class Step1App:
                     self.pnl_data = None
                     self._draw_pnl_chart()
                     self.chart_cancel_button.config(state="disabled")
+                    if self.batch_active:
+                        self.batch_active = False
+                        self.batch_months = []
+                        self.batch_index = 0
                 elif kind == "chart_data":
                     self._render_chart(payload)
                 elif kind == "backtest_data":
@@ -7120,6 +7213,10 @@ class Step1App:
                     self.pnl_data = None
                     self._draw_pnl_chart()
                     self.chart_cancel_button.config(state="disabled")
+                    if self.batch_active:
+                        self.batch_active = False
+                        self.batch_months = []
+                        self.batch_index = 0
                 elif kind == "chart_cancelled":
                     self.status_var.set("表示計算を中止しました")
                     self.backtest_info_var.set("バックテスト: 中止")
@@ -7128,6 +7225,10 @@ class Step1App:
                     self.backtest_ready = False
                     self.pnl_data = None
                     self._draw_pnl_chart()
+                    if self.batch_active:
+                        self.batch_active = False
+                        self.batch_months = []
+                        self.batch_index = 0
                 elif kind == "cancelled":
                     self.status_var.set("キャンセルしました")
                     self.run_button.config(state="normal")

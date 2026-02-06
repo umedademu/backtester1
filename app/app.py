@@ -6919,8 +6919,8 @@ class Step1App:
             "entry_momentum_enabled": self.entry_momentum_var.get(),
             "entry_reverse_enabled": self.entry_reverse_var.get(),
             "hide_chart": self.hide_chart_var.get(),
-            "pnl_log_enabled": self.pnl_log_enabled_var.get(),
-            "pnl_log_path": self.pnl_log_path_var.get(),
+            "pnl_log_enabled": True,
+            "pnl_log_path": str(project_root() / RESULTS_DIR_NAME),
             "ma_filter": self.ma_filter_var.get(),
             "ma_period": self.ma_period_var.get(),
             "ma_unit": self.ma_unit_var.get(),
@@ -8271,33 +8271,6 @@ class Step1App:
         state = "normal" if enabled else "disabled"
         self.extreme_hold_entry.config(state=state)
         self.extreme_distance_entry.config(state=state)
-
-    def _on_pnl_log_toggle(self):
-        enabled = self.pnl_log_enabled_var.get()
-        if hasattr(self, "pnl_log_path_entry"):
-            self._set_widget_enabled(self.pnl_log_path_entry, enabled)
-        if hasattr(self, "pnl_log_select_button"):
-            self._set_widget_enabled(self.pnl_log_select_button, enabled)
-
-    def _select_pnl_log_path(self):
-        current = (self.pnl_log_path_var.get() or "").strip()
-        initial_dir = ""
-        if current:
-            try:
-                path = Path(current)
-                if path.suffix.lower() == ".csv":
-                    initial_dir = str(path.parent)
-                else:
-                    initial_dir = str(path)
-            except Exception:
-                initial_dir = ""
-        chosen = filedialog.askdirectory(
-            title="損益記録の保存先フォルダ",
-            initialdir=initial_dir or None,
-        )
-        if not chosen:
-            return
-        self.pnl_log_path_var.set(chosen)
 
     def _format_csv_time(self, ts: datetime) -> str:
         if ts is None:

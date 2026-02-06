@@ -3333,6 +3333,9 @@ class Step1App:
         self.view_month_label_var = tk.StringVar(
             value=f"{self.view_start_date.year}年{self.view_start_date.month:02d}月"
         )
+        download_month_text = f"{self.start_date.year}-{self.start_date.month:02d}"
+        self.download_start_month_var = tk.StringVar(value=download_month_text)
+        self.download_end_month_var = tk.StringVar(value=download_month_text)
         month_text = f"{self.view_start_date.year}-{self.view_start_date.month:02d}"
         self.batch_start_month_var = tk.StringVar(value=month_text)
         self.batch_end_month_var = tk.StringVar(value=month_text)
@@ -4976,15 +4979,17 @@ class Step1App:
         row.grid(row=1, column=0, sticky="ew")
         row.columnconfigure(1, weight=1)
 
-        ttk.Label(row, text="開始日（JST）").grid(row=0, column=0, sticky="w")
-        start_entry = ttk.Entry(row, textvariable=self.start_var, width=12, state="readonly")
+        ttk.Label(row, text="開始年月").grid(row=0, column=0, sticky="w")
+        start_entry = ttk.Entry(
+            row, textvariable=self.download_start_month_var, width=8
+        )
         start_entry.grid(row=0, column=1, padx=6)
-        ttk.Button(row, text="選択", command=self._pick_start).grid(row=0, column=2)
 
-        ttk.Label(row, text="終了日（JST）").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        end_entry = ttk.Entry(row, textvariable=self.end_var, width=12, state="readonly")
+        ttk.Label(row, text="終了年月").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        end_entry = ttk.Entry(
+            row, textvariable=self.download_end_month_var, width=8
+        )
         end_entry.grid(row=1, column=1, padx=6, pady=(6, 0))
-        ttk.Button(row, text="選択", command=self._pick_end).grid(row=1, column=2, pady=(6, 0))
 
         self.run_button = ttk.Button(download_tab, text="ダウンロード", command=self._start_download)
         self.run_button.grid(row=2, column=0, sticky="w", pady=(8, 6))
@@ -5077,6 +5082,14 @@ class Step1App:
         self.view_start_var.set(start.isoformat())
         self.view_end_var.set(end.isoformat())
         self.view_month_label_var.set(f"{start.year}年{start.month:02d}月")
+
+    def _apply_download_month_range(self, start_month: date, end_month: date):
+        start = start_month.replace(day=1)
+        end = self._month_end(end_month)
+        self.start_date = start
+        self.end_date = end
+        self.start_var.set(start.isoformat())
+        self.end_var.set(end.isoformat())
 
     def _shift_view_month_range(self, direction: int):
         months = self._get_view_range_months()
@@ -5957,9 +5970,15 @@ class Step1App:
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("お知らせ", "ダウンロード中です。")
             return
-        if self.end_date < self.start_date:
-            messagebox.showerror("エラー", "終了日は開始日より後にしてください。")
+        start_month = self._parse_month_text(self.download_start_month_var.get())
+        end_month = self._parse_month_text(self.download_end_month_var.get())
+        if start_month is None or end_month is None:
+            messagebox.showerror("エラー", "開始年月と終了年月を正しく入力してください。")
             return
+        if end_month < start_month:
+            messagebox.showerror("エラー", "終了年月は開始年月より後にしてください。")
+            return
+        self._apply_download_month_range(start_month, end_month)
         self.run_button.config(state="disabled")
         self.cancel_button.config(state="normal")
         self.cancel_event.clear()
@@ -6038,12 +6057,24 @@ class Step1App:
         set_date_value("view_start_date", "view_start_date", self.view_start_var)
         set_date_value("view_end_date", "view_end_date", self.view_end_var)
         set_var(self.view_range_months_var, data.get("view_range_months"))
+        set_var(self.download_start_month_var, data.get("download_start_month"))
+        set_var(self.download_end_month_var, data.get("download_end_month"))
         set_var(self.batch_start_month_var, data.get("batch_start_month"))
         set_var(self.batch_end_month_var, data.get("batch_end_month"))
         if self.view_start_date:
             self.view_month_label_var.set(
                 f"{self.view_start_date.year}年{self.view_start_date.month:02d}月"
             )
+        if not (self.download_start_month_var.get() or "").strip():
+            if self.start_date:
+                self.download_start_month_var.set(
+                    f"{self.start_date.year}-{self.start_date.month:02d}"
+                )
+        if not (self.download_end_month_var.get() or "").strip():
+            if self.end_date:
+                self.download_end_month_var.set(
+                    f"{self.end_date.year}-{self.end_date.month:02d}"
+                )
 
         set_bool(self.exclude_weekends_var, data.get("exclude_weekends"))
         set_var(self.x_axis_mode_var, data.get("x_axis_mode"))
@@ -6632,6 +6663,8 @@ class Step1App:
             "view_start_date": self.view_start_date.isoformat(),
             "view_end_date": self.view_end_date.isoformat(),
             "view_range_months": self.view_range_months_var.get(),
+            "download_start_month": self.download_start_month_var.get(),
+            "download_end_month": self.download_end_month_var.get(),
             "batch_start_month": self.batch_start_month_var.get(),
             "batch_end_month": self.batch_end_month_var.get(),
             "exclude_weekends": self.exclude_weekends_var.get(),

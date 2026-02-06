@@ -3,6 +3,7 @@ import csv
 import hashlib
 import json
 import lzma
+import os
 import queue
 import re
 import struct
@@ -3652,6 +3653,11 @@ class Step1App:
         self.pnl_log_path_var = tk.StringVar(
             value=str(project_root() / RESULTS_DIR_NAME)
         )
+        self.last_save_dir_var = tk.StringVar(value="")
+        self.last_settings_path_var = tk.StringVar(value="")
+        self.last_trade_path_var = tk.StringVar(value="")
+        self.last_namping_path_var = tk.StringVar(value="")
+        self.last_index_path_var = tk.StringVar(value="")
         self.trade_jump_var = tk.StringVar(value="1")
         self.trade_nav_info_var = tk.StringVar(value="取引: 0件")
         self.trade_focus_index = None
@@ -4479,6 +4485,83 @@ class Step1App:
         )
         self.pnl_log_select_button.grid(row=0, column=3, sticky="w")
         self._on_pnl_log_toggle()
+
+        save_info_frame = ttk.LabelFrame(common_panel, text="保存結果（最新）")
+        save_info_frame.grid(row=5, column=0, sticky="ew", pady=(0, 6))
+        save_info_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(save_info_frame, text="保存先フォルダ").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.last_save_dir_entry = ttk.Entry(
+            save_info_frame, textvariable=self.last_save_dir_var, width=40, state="readonly"
+        )
+        self.last_save_dir_entry.grid(row=0, column=1, padx=(4, 6), sticky="ew")
+        ttk.Button(
+            save_info_frame,
+            text="開く",
+            command=lambda: self._open_path_var(self.last_save_dir_var),
+        ).grid(row=0, column=2, sticky="w")
+
+        ttk.Label(save_info_frame, text="設定ファイル").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
+        self.last_settings_entry = ttk.Entry(
+            save_info_frame,
+            textvariable=self.last_settings_path_var,
+            width=40,
+            state="readonly",
+        )
+        self.last_settings_entry.grid(row=1, column=1, padx=(4, 6), pady=(6, 0), sticky="ew")
+        ttk.Button(
+            save_info_frame,
+            text="開く",
+            command=lambda: self._open_path_var(self.last_settings_path_var),
+        ).grid(row=1, column=2, pady=(6, 0), sticky="w")
+
+        ttk.Label(save_info_frame, text="取引一覧").grid(
+            row=2, column=0, sticky="w", pady=(6, 0)
+        )
+        self.last_trade_entry = ttk.Entry(
+            save_info_frame, textvariable=self.last_trade_path_var, width=40, state="readonly"
+        )
+        self.last_trade_entry.grid(row=2, column=1, padx=(4, 6), pady=(6, 0), sticky="ew")
+        ttk.Button(
+            save_info_frame,
+            text="開く",
+            command=lambda: self._open_path_var(self.last_trade_path_var),
+        ).grid(row=2, column=2, pady=(6, 0), sticky="w")
+
+        ttk.Label(save_info_frame, text="ナンピン詳細").grid(
+            row=3, column=0, sticky="w", pady=(6, 0)
+        )
+        self.last_namping_entry = ttk.Entry(
+            save_info_frame,
+            textvariable=self.last_namping_path_var,
+            width=40,
+            state="readonly",
+        )
+        self.last_namping_entry.grid(
+            row=3, column=1, padx=(4, 6), pady=(6, 0), sticky="ew"
+        )
+        ttk.Button(
+            save_info_frame,
+            text="開く",
+            command=lambda: self._open_path_var(self.last_namping_path_var),
+        ).grid(row=3, column=2, pady=(6, 0), sticky="w")
+
+        ttk.Label(save_info_frame, text="一覧").grid(
+            row=4, column=0, sticky="w", pady=(6, 0)
+        )
+        self.last_index_entry = ttk.Entry(
+            save_info_frame, textvariable=self.last_index_path_var, width=40, state="readonly"
+        )
+        self.last_index_entry.grid(row=4, column=1, padx=(4, 6), pady=(6, 0), sticky="ew")
+        ttk.Button(
+            save_info_frame,
+            text="開く",
+            command=lambda: self._open_path_var(self.last_index_path_var),
+        ).grid(row=4, column=2, pady=(6, 0), sticky="w")
 
         def build_close_frame(
             parent,
@@ -8240,6 +8323,34 @@ class Step1App:
         text = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
 
+    def _set_last_save_paths(
+        self,
+        base_dir: Path,
+        settings_path: Path,
+        trade_path: Path,
+        namping_path: Path,
+        index_path: Path,
+    ):
+        self.last_save_dir_var.set(str(base_dir))
+        self.last_settings_path_var.set(str(settings_path))
+        self.last_trade_path_var.set(str(trade_path))
+        self.last_namping_path_var.set(str(namping_path))
+        self.last_index_path_var.set(str(index_path))
+
+    def _open_path_var(self, path_var: tk.StringVar):
+        raw = (path_var.get() or "").strip()
+        if not raw:
+            messagebox.showinfo("お知らせ", "保存先がありません。")
+            return
+        try:
+            path = Path(raw)
+            if not path.exists():
+                messagebox.showerror("エラー", "指定したパスが見つかりません。")
+                return
+            os.startfile(str(path))
+        except Exception as e:
+            messagebox.showerror("エラー", f"開くことに失敗しました: {e}")
+
     def _append_pnl_log(self, payload):
         if not self.pnl_log_enabled_var.get():
             return
@@ -8488,6 +8599,14 @@ class Step1App:
                 writer.writerow(index_row)
         except Exception:
             pass
+
+        self._set_last_save_paths(
+            base_dir=base_dir,
+            settings_path=settings_path,
+            trade_path=trade_path,
+            namping_path=namping_path,
+            index_path=index_path,
+        )
 
     def _load_pnl_csv(self):
         chosen = filedialog.askopenfilename(

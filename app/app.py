@@ -9,6 +9,7 @@ import re
 import struct
 import threading
 import time as pytime
+import shutil
 from collections import deque
 from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time, timedelta, timezone
@@ -3649,15 +3650,15 @@ class Step1App:
         self.backtest_elapsed_var = tk.StringVar(value="計算時間: -")
         self.batch_elapsed_var = tk.StringVar(value="一括時間: -")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
-        self.pnl_log_enabled_var = tk.BooleanVar(value=False)
-        self.pnl_log_path_var = tk.StringVar(
-            value=str(project_root() / RESULTS_DIR_NAME)
-        )
+        self.pnl_log_enabled_var = tk.BooleanVar(value=True)
+        self.pnl_log_path_var = tk.StringVar(value=str(project_root() / RESULTS_DIR_NAME))
         self.last_save_dir_var = tk.StringVar(value="")
         self.last_settings_path_var = tk.StringVar(value="")
         self.last_trade_path_var = tk.StringVar(value="")
         self.last_namping_path_var = tk.StringVar(value="")
         self.last_index_path_var = tk.StringVar(value="")
+        self.saved_runs = []
+        self.saved_run_var = tk.StringVar(value="")
         self.trade_jump_var = tk.StringVar(value="1")
         self.trade_nav_info_var = tk.StringVar(value="取引: 0件")
         self.trade_focus_index = None
@@ -3812,9 +3813,11 @@ class Step1App:
         self.namping_widget_groups = {}
         self.entry_tab_info = {}
 
+        self._ensure_results_structure()
         self._build_ui()
         self._load_persistent_state()
         self._apply_ui_state()
+        self._refresh_saved_runs()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self._poll_queue()
 
@@ -4463,31 +4466,8 @@ class Step1App:
             row=5, column=4, sticky="w", pady=(6, 0)
         )
 
-        pnl_log_frame = ttk.LabelFrame(common_panel, text="損益結果の記録")
-        pnl_log_frame.grid(row=4, column=0, sticky="ew", pady=(0, 6))
-        pnl_log_frame.columnconfigure(2, weight=1)
-        self.pnl_log_check = ttk.Checkbutton(
-            pnl_log_frame,
-            text="損益を記録",
-            variable=self.pnl_log_enabled_var,
-            command=self._on_pnl_log_toggle,
-        )
-        self.pnl_log_check.grid(row=0, column=0, sticky="w")
-        ttk.Label(pnl_log_frame, text="保存先フォルダ").grid(
-            row=0, column=1, sticky="w", padx=(6, 0)
-        )
-        self.pnl_log_path_entry = ttk.Entry(
-            pnl_log_frame, textvariable=self.pnl_log_path_var, width=40
-        )
-        self.pnl_log_path_entry.grid(row=0, column=2, padx=(4, 6), sticky="ew")
-        self.pnl_log_select_button = ttk.Button(
-            pnl_log_frame, text="選択", command=self._select_pnl_log_path
-        )
-        self.pnl_log_select_button.grid(row=0, column=3, sticky="w")
-        self._on_pnl_log_toggle()
-
         save_info_frame = ttk.LabelFrame(common_panel, text="保存結果（最新）")
-        save_info_frame.grid(row=5, column=0, sticky="ew", pady=(0, 6))
+        save_info_frame.grid(row=4, column=0, sticky="ew", pady=(0, 6))
         save_info_frame.columnconfigure(1, weight=1)
 
         ttk.Label(save_info_frame, text="保存先フォルダ").grid(
@@ -5177,15 +5157,27 @@ class Step1App:
         self.log.grid(row=4, column=0, sticky="nsew", pady=(6, 0))
 
         pnl_tab.columnconfigure(0, weight=1)
+        pnl_tab.columnconfigure(1, weight=1)
         pnl_tab.rowconfigure(1, weight=3)
         pnl_tab.rowconfigure(3, weight=1)
         pnl_tab.rowconfigure(5, weight=1)
 
         ttk.Label(pnl_tab, textvariable=self.pnl_info_var).grid(row=0, column=0, sticky="w")
-        self.pnl_load_button = ttk.Button(
-            pnl_tab, text="CSV読込", command=self._load_pnl_csv
+        pnl_select_frame = ttk.Frame(pnl_tab)
+        pnl_select_frame.grid(row=0, column=1, sticky="e")
+        ttk.Label(pnl_select_frame, text="保存結果").grid(row=0, column=0, sticky="w")
+        self.saved_runs_combo = ttk.Combobox(
+            pnl_select_frame, textvariable=self.saved_run_var, width=48, state="readonly"
         )
-        self.pnl_load_button.grid(row=0, column=1, padx=(8, 0), sticky="e")
+        self.saved_runs_combo.grid(row=0, column=1, padx=(4, 6), sticky="w")
+        self.saved_runs_show_button = ttk.Button(
+            pnl_select_frame, text="表示", command=self._load_selected_run
+        )
+        self.saved_runs_show_button.grid(row=0, column=2, sticky="w")
+        self.saved_runs_refresh_button = ttk.Button(
+            pnl_select_frame, text="更新", command=self._refresh_saved_runs
+        )
+        self.saved_runs_refresh_button.grid(row=0, column=3, padx=(6, 0), sticky="w")
         self.pnl_canvas = tk.Canvas(pnl_tab, bg="white")
         self.pnl_canvas.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
         self.pnl_canvas.bind("<Configure>", self._on_pnl_resize)
@@ -6340,14 +6332,8 @@ class Step1App:
         if entry_reverse is not None:
             set_bool(self.entry_reverse_var, entry_reverse)
         set_bool(self.hide_chart_var, data.get("hide_chart"))
-        set_bool(self.pnl_log_enabled_var, data.get("pnl_log_enabled"))
-        set_var(self.pnl_log_path_var, data.get("pnl_log_path"))
-        current_log_path = (self.pnl_log_path_var.get() or "").strip()
-        if current_log_path and current_log_path.lower().endswith(".csv"):
-            try:
-                self.pnl_log_path_var.set(str(Path(current_log_path).parent))
-            except Exception:
-                pass
+        self.pnl_log_enabled_var.set(True)
+        self.pnl_log_path_var.set(str(project_root() / RESULTS_DIR_NAME))
         set_bool(self.ma_filter_var, data.get("ma_filter"))
         set_var(self.ma_period_var, data.get("ma_period"))
         set_var(self.ma_unit_var, data.get("ma_unit"))
@@ -8295,13 +8281,58 @@ class Step1App:
             return [self._normalize_json_value(v) for v in value]
         return value
 
+    def _ensure_results_structure(self):
+        base_dir = project_root() / RESULTS_DIR_NAME
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        old_dir = project_root() / "ドル円"
+        new_dir = base_dir / PAIR
+        if old_dir.exists() and old_dir.is_dir():
+            try:
+                if new_dir.exists():
+                    for item in old_dir.iterdir():
+                        target = new_dir / item.name
+                        if target.exists():
+                            try:
+                                if item.is_dir():
+                                    for child in item.iterdir():
+                                        shutil.move(str(child), str(target / child.name))
+                                    item.rmdir()
+                                else:
+                                    shutil.move(str(item), str(target))
+                            except Exception:
+                                continue
+                        else:
+                            shutil.move(str(item), str(target))
+                    try:
+                        old_dir.rmdir()
+                    except Exception:
+                        pass
+                else:
+                    shutil.move(str(old_dir), str(new_dir))
+            except Exception:
+                pass
+
+        old_index = project_root() / "index.csv"
+        new_index = base_dir / "index.csv"
+        if old_index.exists() and old_index.is_file():
+            try:
+                if new_index.exists():
+                    with old_index.open("r", encoding="utf-8", newline="") as f:
+                        rows = list(f.readlines())
+                    if rows:
+                        with new_index.open("a", encoding="utf-8", newline="") as f:
+                            f.writelines(rows[1:])
+                    old_index.unlink()
+                else:
+                    shutil.move(str(old_index), str(new_index))
+            except Exception:
+                pass
+
     def _results_root(self) -> Path:
-        raw = (self.pnl_log_path_var.get() or "").strip()
-        if raw:
-            path = Path(raw)
-            if path.suffix.lower() == ".csv":
-                return path.parent
-            return path
         return project_root() / RESULTS_DIR_NAME
 
     def _strategy_label(self, payload) -> str:
@@ -8352,9 +8383,6 @@ class Step1App:
             messagebox.showerror("エラー", f"開くことに失敗しました: {e}")
 
     def _append_pnl_log(self, payload):
-        if not self.pnl_log_enabled_var.get():
-            return
-
         base_dir = self._results_root()
         try:
             base_dir.mkdir(parents=True, exist_ok=True)
@@ -8367,8 +8395,7 @@ class Step1App:
         run_params = payload.get("run_params") or {}
         settings_id = self._settings_id(run_params)
 
-        pair_label = "ドル円" if PAIR == "USDJPY" else PAIR
-        settings_dir = base_dir / pair_label / strategy_label / f"設定_{settings_id}"
+        settings_dir = base_dir / PAIR / strategy_label / f"設定_{settings_id}"
         try:
             settings_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -8607,6 +8634,91 @@ class Step1App:
             namping_path=namping_path,
             index_path=index_path,
         )
+        self._refresh_saved_runs()
+
+    def _format_saved_run_label(self, row):
+        run_time = (row.get("実行時刻") or "").strip()
+        pair = (row.get("通貨") or "").strip()
+        strategy = (row.get("戦略") or "").strip()
+        settings_id = (row.get("設定ID") or "").strip()
+        start_date = (row.get("開始日") or "").strip()
+        end_date = (row.get("終了日") or "").strip()
+        total_pips = (row.get("合計損益") or "").strip()
+
+        range_text = ""
+        if start_date or end_date:
+            range_text = f"{start_date}〜{end_date}".strip("〜")
+        total_text = ""
+        if total_pips:
+            total_text = f"損益{total_pips}ピップス"
+
+        pieces = [
+            run_time,
+            pair,
+            strategy,
+            f"設定{settings_id}" if settings_id else "",
+            range_text,
+            total_text,
+        ]
+        return " | ".join([p for p in pieces if p])
+
+    def _refresh_saved_runs(self):
+        index_path = self._results_root() / "index.csv"
+        self.saved_runs = []
+        values = []
+        if index_path.exists():
+            try:
+                with index_path.open("r", encoding="utf-8", newline="") as f:
+                    rows = list(csv.DictReader(f))
+            except Exception:
+                rows = []
+            for row in reversed(rows):
+                rel_path = (row.get("保存先") or "").strip()
+                if not rel_path:
+                    continue
+                try:
+                    trade_path = project_root() / rel_path
+                except Exception:
+                    continue
+                display = self._format_saved_run_label(row)
+                if not display:
+                    display = rel_path
+                self.saved_runs.append(
+                    {
+                        "display": display,
+                        "trade_path": trade_path,
+                    }
+                )
+                values.append(display)
+
+        current = self.saved_run_var.get()
+        self.saved_runs_combo["values"] = values
+        if values:
+            self.saved_runs_combo.config(state="readonly")
+            self.saved_runs_show_button.config(state="normal")
+            if current in values:
+                self.saved_runs_combo.set(current)
+            else:
+                self.saved_runs_combo.current(0)
+        else:
+            self.saved_runs_combo.set("")
+            self.saved_runs_combo.config(state="disabled")
+            self.saved_runs_show_button.config(state="disabled")
+
+    def _load_selected_run(self):
+        if not self.saved_runs:
+            messagebox.showinfo("お知らせ", "保存結果がありません。")
+            return
+        selection = self.saved_runs_combo.current()
+        if selection is None or selection < 0 or selection >= len(self.saved_runs):
+            messagebox.showinfo("お知らせ", "保存結果を選択してください。")
+            return
+        target = self.saved_runs[selection]
+        trade_path = target.get("trade_path")
+        if not trade_path:
+            messagebox.showerror("エラー", "保存先が見つかりません。")
+            return
+        self._apply_pnl_csv(trade_path, source_label="保存結果")
 
     def _load_pnl_csv(self):
         chosen = filedialog.askopenfilename(
@@ -8615,9 +8727,9 @@ class Step1App:
         )
         if not chosen:
             return
-        self._apply_pnl_csv(Path(chosen))
+        self._apply_pnl_csv(Path(chosen), source_label="CSV読込")
 
-    def _apply_pnl_csv(self, path: Path):
+    def _apply_pnl_csv(self, path: Path, source_label: str = "CSV読込"):
         if not path.exists():
             messagebox.showerror("エラー", "指定したCSVが見つかりません。")
             return
@@ -8681,7 +8793,7 @@ class Step1App:
         self.batch_yearly_data = None
         self.batch_monthly_data = None
         self.pnl_info_var.set(
-            f"損益: CSV読込 取引{total}件 合計損益{cumulative:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
+            f"損益: {source_label} 取引{total}件 合計損益{cumulative:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
         )
         self._draw_pnl_chart()
         self._draw_batch_year_chart()

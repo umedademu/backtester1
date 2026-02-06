@@ -3567,6 +3567,7 @@ class Step1App:
         self.signal_chain_trigger_spike_var = tk.BooleanVar(value=True)
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.backtest_elapsed_var = tk.StringVar(value="計算時間: -")
+        self.batch_elapsed_var = tk.StringVar(value="一括時間: -")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
         self.pnl_log_enabled_var = tk.BooleanVar(value=False)
         self.pnl_log_path_var = tk.StringVar(
@@ -3584,6 +3585,9 @@ class Step1App:
         self.backtest_timer_running = False
         self.backtest_started_at = None
         self.backtest_elapsed_last_seconds = None
+        self.batch_timer_running = False
+        self.batch_started_at = None
+        self.batch_elapsed_last_seconds = None
         self.last_view_range = None
         self.close_enabled_vars = {}
         self.close_toggle_widgets = {}
@@ -3830,6 +3834,9 @@ class Step1App:
         )
         ttk.Label(run_row, textvariable=self.backtest_elapsed_var).grid(
             row=2, column=0, columnspan=3, sticky="w"
+        )
+        ttk.Label(run_row, textvariable=self.batch_elapsed_var).grid(
+            row=3, column=0, columnspan=3, sticky="w"
         )
 
         chart_controls = ttk.Frame(chart_tab)
@@ -5138,6 +5145,9 @@ class Step1App:
         self.batch_months = months
         self.batch_index = 0
         self.batch_active = True
+        if hasattr(self, "batch_run_button"):
+            self.batch_run_button.config(state="disabled")
+        self._start_batch_timer()
         self._run_next_batch()
 
     def _run_next_batch(self):
@@ -5147,11 +5157,19 @@ class Step1App:
             return
         if self.batch_index >= len(self.batch_months):
             self.batch_active = False
+            if hasattr(self, "batch_run_button"):
+                self.batch_run_button.config(state="normal")
+            self._stop_batch_timer()
             return
         target = self.batch_months[self.batch_index]
         self.batch_index += 1
         self._apply_view_month_range(target, 1)
-        self._show_chart()
+        started = self._show_chart()
+        if not started:
+            self.batch_active = False
+            if hasattr(self, "batch_run_button"):
+                self.batch_run_button.config(state="normal")
+            self._stop_batch_timer()
 
     def _parse_number(self, value: str) -> float:
         cleaned = value.strip().replace(",", ".").replace("，", ".")
@@ -5970,6 +5988,9 @@ class Step1App:
             self.batch_active = False
             self.batch_months = []
             self.batch_index = 0
+            if hasattr(self, "batch_run_button"):
+                self.batch_run_button.config(state="normal")
+            self._stop_batch_timer()
         else:
             self.chart_cancel_button.config(state="disabled")
 
@@ -6880,6 +6901,14 @@ class Step1App:
         remain = total_seconds - minutes * 60
         return f"計算時間: {minutes}分{remain}秒"
 
+    def _format_batch_elapsed_text(self, seconds):
+        total_seconds = int(seconds)
+        if total_seconds < 60:
+            return f"一括時間: {total_seconds}秒"
+        minutes = total_seconds // 60
+        remain = total_seconds - minutes * 60
+        return f"一括時間: {minutes}分{remain}秒"
+
     def _start_backtest_timer(self):
         self.backtest_started_at = pytime.perf_counter()
         self.backtest_timer_running = True
@@ -6906,20 +6935,46 @@ class Step1App:
         self.backtest_elapsed_var.set(self._format_elapsed_text(elapsed_seconds))
         self.backtest_timer_running = False
 
+    def _start_batch_timer(self):
+        self.batch_started_at = pytime.perf_counter()
+        self.batch_timer_running = True
+        self.batch_elapsed_last_seconds = 0
+        self.batch_elapsed_var.set("一括時間: 0秒")
+
+    def _update_batch_timer(self):
+        if not self.batch_timer_running or self.batch_started_at is None:
+            return
+        elapsed = pytime.perf_counter() - self.batch_started_at
+        elapsed_seconds = int(elapsed)
+        if elapsed_seconds == self.batch_elapsed_last_seconds:
+            return
+        self.batch_elapsed_last_seconds = elapsed_seconds
+        self.batch_elapsed_var.set(self._format_batch_elapsed_text(elapsed_seconds))
+
+    def _stop_batch_timer(self):
+        if self.batch_started_at is None:
+            self.batch_timer_running = False
+            return
+        elapsed = pytime.perf_counter() - self.batch_started_at
+        elapsed_seconds = int(elapsed)
+        self.batch_elapsed_last_seconds = elapsed_seconds
+        self.batch_elapsed_var.set(self._format_batch_elapsed_text(elapsed_seconds))
+        self.batch_timer_running = False
+
     def _show_chart(self):
         if self.chart_worker and self.chart_worker.is_alive():
             messagebox.showinfo("お知らせ", "表示処理中です。")
-            return
+            return False
         months = self._get_view_range_months()
         if months is None:
-            return
+            return False
         self._apply_view_month_range(self.view_start_date or date.today(), months)
         if self.view_end_date < self.view_start_date:
             messagebox.showerror("エラー", "終了日は開始日より後にしてください。")
-            return
+            return False
         params = self._get_backtest_params()
         if not params:
-            return
+            return False
         entry_spike_enabled = self.entry_spike_var.get()
         entry_sr_enabled = self.entry_sr_var.get()
         entry_momentum_enabled = self.entry_momentum_var.get()
@@ -6938,17 +6993,17 @@ class Step1App:
             and not entry_reverse_enabled
         ):
             messagebox.showerror("エラー", "戦略は最低1つ選択してください。")
-            return
+            return False
         sr_reentry_params = {}
         if entry_sr_enabled:
             sr_reentry_params = self._get_sr_reentry_params()
             if not sr_reentry_params:
-                return
+                return False
         momentum_params = {}
         if entry_momentum_enabled:
             momentum_params = self._get_momentum_params()
             if not momentum_params:
-                return
+                return False
         try:
             line_interval = int(self.candle_interval_var.get())
         except Exception:
@@ -7007,6 +7062,7 @@ class Step1App:
             daemon=True,
         )
         self.chart_worker.start()
+        return True
 
     def _chart_worker(self, start: date, end: date, params, sr_params, range_params):
         cache, cache_hit = self._load_analysis_cache(start, end)
@@ -7212,6 +7268,9 @@ class Step1App:
                         self.batch_active = False
                         self.batch_months = []
                         self.batch_index = 0
+                        if hasattr(self, "batch_run_button"):
+                            self.batch_run_button.config(state="normal")
+                        self._stop_batch_timer()
                 elif kind == "chart_data":
                     self._render_chart(payload)
                 elif kind == "backtest_data":
@@ -7229,6 +7288,9 @@ class Step1App:
                         self.batch_active = False
                         self.batch_months = []
                         self.batch_index = 0
+                        if hasattr(self, "batch_run_button"):
+                            self.batch_run_button.config(state="normal")
+                        self._stop_batch_timer()
                 elif kind == "chart_cancelled":
                     self.status_var.set("表示計算を中止しました")
                     self.backtest_info_var.set("バックテスト: 中止")
@@ -7241,6 +7303,9 @@ class Step1App:
                         self.batch_active = False
                         self.batch_months = []
                         self.batch_index = 0
+                        if hasattr(self, "batch_run_button"):
+                            self.batch_run_button.config(state="normal")
+                        self._stop_batch_timer()
                 elif kind == "cancelled":
                     self.status_var.set("キャンセルしました")
                     self.run_button.config(state="normal")
@@ -7249,6 +7314,7 @@ class Step1App:
         except queue.Empty:
             pass
         self._update_backtest_timer()
+        self._update_batch_timer()
         self.root.after(200, self._poll_queue)
 
     def _render_chart(self, payload):

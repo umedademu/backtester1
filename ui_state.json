@@ -1,9 +1,11 @@
 {
   "start_date": "2026-02-05",
   "end_date": "2026-02-05",
-  "view_start_date": "2025-04-01",
-  "view_end_date": "2025-04-30",
+  "view_start_date": "2024-02-01",
+  "view_end_date": "2024-02-29",
   "view_range_months": "1",
+  "batch_start_month": "2024-01",
+  "batch_end_month": "2024-12",
   "exclude_weekends": true,
   "x_axis_mode": "time",
   "chart_type": "tick",

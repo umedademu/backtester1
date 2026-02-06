@@ -1,7 +1,9 @@
 import calendar
 import csv
+import io
 import json
 import lzma
+import os
 import queue
 import struct
 import threading
@@ -22,7 +24,7 @@ except Exception:
     NEW_YORK = None
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 
 PAIR = "USDJPY"
@@ -3542,10 +3544,16 @@ class Step1App:
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.backtest_elapsed_var = tk.StringVar(value="計算時間: -")
         self.pnl_info_var = tk.StringVar(value="損益: 未実行")
+        self.pnl_log_enabled_var = tk.BooleanVar(value=False)
+        self.pnl_log_path_var = tk.StringVar(
+            value=str(Path.cwd() / "pnl_results.csv")
+        )
         self.trade_jump_var = tk.StringVar(value="1")
         self.trade_nav_info_var = tk.StringVar(value="取引: 0件")
         self.trade_focus_index = None
         self.pnl_data = None
+        self.pnl_view_start = 0
+        self.pnl_view_end = 0
         self.backtest_ready = False
         self.analysis_cache_key = None
         self.analysis_cache = None
@@ -4324,6 +4332,29 @@ class Step1App:
             row=5, column=4, sticky="w", pady=(6, 0)
         )
 
+        pnl_log_frame = ttk.LabelFrame(common_panel, text="損益結果の記録")
+        pnl_log_frame.grid(row=4, column=0, sticky="ew", pady=(0, 6))
+        pnl_log_frame.columnconfigure(2, weight=1)
+        self.pnl_log_check = ttk.Checkbutton(
+            pnl_log_frame,
+            text="損益を記録",
+            variable=self.pnl_log_enabled_var,
+            command=self._on_pnl_log_toggle,
+        )
+        self.pnl_log_check.grid(row=0, column=0, sticky="w")
+        ttk.Label(pnl_log_frame, text="保存先").grid(
+            row=0, column=1, sticky="w", padx=(6, 0)
+        )
+        self.pnl_log_path_entry = ttk.Entry(
+            pnl_log_frame, textvariable=self.pnl_log_path_var, width=40
+        )
+        self.pnl_log_path_entry.grid(row=0, column=2, padx=(4, 6), sticky="ew")
+        self.pnl_log_select_button = ttk.Button(
+            pnl_log_frame, text="選択", command=self._select_pnl_log_path
+        )
+        self.pnl_log_select_button.grid(row=0, column=3, sticky="w")
+        self._on_pnl_log_toggle()
+
         def build_close_frame(
             parent,
             key,
@@ -4942,6 +4973,9 @@ class Step1App:
         self.pnl_canvas = tk.Canvas(pnl_tab, bg="white")
         self.pnl_canvas.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
         self.pnl_canvas.bind("<Configure>", self._on_pnl_resize)
+        self.pnl_canvas.bind("<MouseWheel>", self._on_pnl_mouse_wheel)
+        self.pnl_canvas.bind("<Button-4>", self._on_pnl_mouse_wheel)
+        self.pnl_canvas.bind("<Button-5>", self._on_pnl_mouse_wheel)
 
         self._on_ma_filter_toggle()
         self._on_extreme_filter_toggle()
@@ -5948,6 +5982,8 @@ class Step1App:
         if entry_reverse is not None:
             set_bool(self.entry_reverse_var, entry_reverse)
         set_bool(self.hide_chart_var, data.get("hide_chart"))
+        set_bool(self.pnl_log_enabled_var, data.get("pnl_log_enabled"))
+        set_var(self.pnl_log_path_var, data.get("pnl_log_path"))
         set_bool(self.ma_filter_var, data.get("ma_filter"))
         set_var(self.ma_period_var, data.get("ma_period"))
         set_var(self.ma_deviation_var, data.get("ma_deviation"))
@@ -6488,6 +6524,8 @@ class Step1App:
             "entry_momentum_enabled": self.entry_momentum_var.get(),
             "entry_reverse_enabled": self.entry_reverse_var.get(),
             "hide_chart": self.hide_chart_var.get(),
+            "pnl_log_enabled": self.pnl_log_enabled_var.get(),
+            "pnl_log_path": self.pnl_log_path_var.get(),
             "ma_filter": self.ma_filter_var.get(),
             "ma_period": self.ma_period_var.get(),
             "ma_deviation": self.ma_deviation_var.get(),
@@ -7232,6 +7270,7 @@ class Step1App:
             self.pnl_info_var.set(self.pnl_info_var.get() + side_breakdown)
 
         self.pnl_data = payload.get("equity_curve") or []
+        self._reset_pnl_view()
         self.backtest_ready = True
         if self.chart_data is not None:
             self.chart_data["trades"] = payload.get("trades") or []
@@ -7241,6 +7280,7 @@ class Step1App:
         self._update_trade_nav_state()
         self._draw_pnl_chart()
         self._stop_backtest_timer()
+        self._append_pnl_log(payload)
         self._notify_backtest_done()
 
     def _notify_backtest_done(self):
@@ -7633,6 +7673,121 @@ class Step1App:
         state = "normal" if enabled else "disabled"
         self.extreme_hold_entry.config(state=state)
         self.extreme_distance_entry.config(state=state)
+
+    def _on_pnl_log_toggle(self):
+        enabled = self.pnl_log_enabled_var.get()
+        if hasattr(self, "pnl_log_path_entry"):
+            self._set_widget_enabled(self.pnl_log_path_entry, enabled)
+        if hasattr(self, "pnl_log_select_button"):
+            self._set_widget_enabled(self.pnl_log_select_button, enabled)
+
+    def _select_pnl_log_path(self):
+        current = (self.pnl_log_path_var.get() or "").strip()
+        initial_dir = ""
+        initial_file = ""
+        if current:
+            try:
+                path = Path(current)
+                initial_dir = str(path.parent)
+                initial_file = path.name
+            except Exception:
+                initial_dir = ""
+                initial_file = ""
+        chosen = filedialog.asksaveasfilename(
+            title="損益記録の保存先",
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv"), ("すべて", "*.*")],
+            initialdir=initial_dir or None,
+            initialfile=initial_file or None,
+        )
+        if not chosen:
+            return
+        self.pnl_log_path_var.set(chosen)
+
+    def _serialize_log_params(self):
+        data = self._collect_persistent_state()
+        try:
+            return json.dumps(data, ensure_ascii=True, separators=(",", ":"))
+        except Exception:
+            return ""
+
+    def _append_pnl_log(self, payload):
+        if not self.pnl_log_enabled_var.get():
+            return
+        path_raw = (self.pnl_log_path_var.get() or "").strip()
+        if not path_raw:
+            messagebox.showerror("エラー", "損益記録の保存先が未設定です。")
+            return
+        path = Path(path_raw)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        summary = payload.get("summary", {})
+        now = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
+        start = self.view_start_date.isoformat() if self.view_start_date else ""
+        end = self.view_end_date.isoformat() if self.view_end_date else ""
+        total = summary.get("total", 0)
+        wins = summary.get("wins", 0)
+        losses = summary.get("losses", 0)
+        draws = summary.get("draws", 0)
+        total_pips = summary.get("total_pips", 0.0)
+        avg_pips = summary.get("avg_pips", 0.0)
+        win_rate = summary.get("win_rate", 0.0)
+        params_json = self._serialize_log_params()
+
+        header = [
+            "実行日時",
+            "開始日",
+            "終了日",
+            "取引数",
+            "勝ち",
+            "負け",
+            "引き分け",
+            "合計損益",
+            "平均損益",
+            "勝率",
+            "パラメータ",
+        ]
+        row = [
+            now,
+            start,
+            end,
+            total,
+            wins,
+            losses,
+            draws,
+            f"{total_pips:.2f}",
+            f"{avg_pips:.2f}",
+            f"{win_rate:.2f}",
+            params_json,
+        ]
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        need_header = True
+        try:
+            if path.exists() and path.stat().st_size > 0:
+                need_header = False
+        except Exception:
+            need_header = True
+        if need_header:
+            writer.writerow(header)
+        writer.writerow(row)
+        data = buf.getvalue().encode("utf-8")
+        fd = None
+        try:
+            fd = os.open(str(path), os.O_APPEND | os.O_CREAT | os.O_WRONLY)
+            os.write(fd, data)
+        except Exception as e:
+            messagebox.showerror("エラー", f"損益記録の保存に失敗しました: {e}")
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
 
     def _get_backtest_exclude_hours(self):
         return {i for i, var in enumerate(self.backtest_exclude_hours_vars) if var.get()}
@@ -8548,6 +8703,75 @@ class Step1App:
     def _on_pnl_resize(self, _event):
         self._draw_pnl_chart()
 
+    def _reset_pnl_view(self):
+        if not self.pnl_data:
+            self.pnl_view_start = 0
+            self.pnl_view_end = 0
+            return
+        self.pnl_view_start = 0
+        self.pnl_view_end = len(self.pnl_data) - 1
+
+    def _get_pnl_view_data(self):
+        if not self.pnl_data:
+            self.pnl_view_start = 0
+            self.pnl_view_end = 0
+            return []
+        n = len(self.pnl_data)
+        if self.pnl_view_start is None or self.pnl_view_end is None:
+            self.pnl_view_start = 0
+            self.pnl_view_end = n - 1
+        self.pnl_view_start = max(0, min(self.pnl_view_start, n - 1))
+        self.pnl_view_end = max(self.pnl_view_start, min(self.pnl_view_end, n - 1))
+        return self.pnl_data[self.pnl_view_start : self.pnl_view_end + 1]
+
+    def _on_pnl_mouse_wheel(self, event):
+        if not self.pnl_data or len(self.pnl_data) < 2:
+            return
+        if hasattr(event, "delta") and event.delta:
+            direction = 1 if event.delta > 0 else -1
+        elif hasattr(event, "num"):
+            direction = 1 if event.num == 4 else -1
+        else:
+            return
+
+        total = len(self.pnl_data)
+        start = self.pnl_view_start
+        end = self.pnl_view_end
+        if start is None or end is None or end < start:
+            start = 0
+            end = total - 1
+        start = max(0, min(start, total - 1))
+        end = max(start, min(end, total - 1))
+        visible = end - start + 1
+        if visible <= 2:
+            return
+
+        width, _height, left, _top, right, _bottom, plot_width, _plot_height = (
+            self._get_plot_area(self.pnl_canvas)
+        )
+        if plot_width <= 1:
+            return
+        if left <= event.x <= width - right:
+            ratio = (event.x - left) / plot_width
+            ratio = min(max(ratio, 0.0), 1.0)
+        else:
+            ratio = 0.5
+
+        min_visible = 10
+        if direction > 0:
+            new_visible = max(min_visible, int(visible * 0.8))
+        else:
+            new_visible = min(total, int(visible * 1.25))
+        if new_visible == visible:
+            return
+
+        anchor = start + int(ratio * (visible - 1))
+        new_start = anchor - int(ratio * (new_visible - 1))
+        new_start = max(0, min(new_start, total - new_visible))
+        self.pnl_view_start = new_start
+        self.pnl_view_end = new_start + new_visible - 1
+        self._draw_pnl_chart()
+
     def _draw_pnl_chart(self):
         if not hasattr(self, "pnl_canvas"):
             return
@@ -8564,7 +8788,8 @@ class Step1App:
             )
             return
 
-        if not self.pnl_data or len(self.pnl_data) < 2:
+        view_data = self._get_pnl_view_data()
+        if not view_data or len(view_data) < 2:
             canvas.create_text(
                 canvas.winfo_width() // 2,
                 canvas.winfo_height() // 2,
@@ -8573,8 +8798,8 @@ class Step1App:
             )
             return
 
-        times = [ts for ts, _v in self.pnl_data]
-        values = [v for _ts, v in self.pnl_data]
+        times = [ts for ts, _v in view_data]
+        values = [v for _ts, v in view_data]
 
         min_v = min(values)
         max_v = max(values)
@@ -8591,7 +8816,7 @@ class Step1App:
 
         span_seconds = (times[-1] - times[0]).total_seconds()
         coords = []
-        for ts, value in self.pnl_data:
+        for ts, value in view_data:
             if span_seconds > 0:
                 x = left + (ts - times[0]).total_seconds() / span_seconds * plot_width
             else:

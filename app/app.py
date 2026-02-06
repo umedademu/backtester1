@@ -1450,6 +1450,20 @@ def summarize_trades(trades):
     }
 
 
+def compute_max_drawdown(equity_curve):
+    if not equity_curve:
+        return 0.0
+    max_peak = None
+    max_dd = 0.0
+    for _ts, value in equity_curve:
+        if max_peak is None or value > max_peak:
+            max_peak = value
+        drawdown = max_peak - value
+        if drawdown > max_dd:
+            max_dd = drawdown
+    return max_dd
+
+
 def simulate_exit(
     points,
     entry_idx,
@@ -3186,9 +3200,11 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     elif entry_spike_enabled:
         entry_mode = "spike"
 
+    summary = summarize_trades(trades)
+    summary["max_dd"] = compute_max_drawdown(equity_curve)
     return {
         "trades": trades,
-        "summary": summarize_trades(trades),
+        "summary": summary,
         "equity_curve": equity_curve,
         "ma_series": ma_series,
         "ma_enabled": ma_enabled,
@@ -3315,6 +3331,9 @@ class Step1App:
         self.view_start_var = tk.StringVar(value=self.view_start_date.isoformat())
         self.view_end_var = tk.StringVar(value=self.view_end_date.isoformat())
         self.view_range_months_var = tk.StringVar(value="1")
+        self.view_month_label_var = tk.StringVar(
+            value=f"{self.view_start_date.year}年{self.view_start_date.month:02d}月"
+        )
         self.exclude_weekends_var = tk.BooleanVar(value=True)
         self.status_var = tk.StringVar(value="準備完了")
         self.chart_info_var = tk.StringVar(value="")
@@ -3759,35 +3778,17 @@ class Step1App:
 
         view_row = ttk.Frame(param_tab)
         view_row.grid(row=0, column=0, sticky="ew")
-        view_row.columnconfigure(6, weight=1)
+        view_row.columnconfigure(3, weight=1)
 
-        ttk.Label(view_row, text="範囲").grid(row=0, column=0, sticky="w")
-        self.view_range_months_entry = ttk.Entry(
-            view_row, textvariable=self.view_range_months_var, width=6
+        ttk.Label(view_row, textvariable=self.view_month_label_var).grid(
+            row=0, column=0, sticky="w"
         )
-        self.view_range_months_entry.grid(row=0, column=1, padx=(4, 6), sticky="w")
-        ttk.Label(view_row, text="ヶ月").grid(row=0, column=2, sticky="w")
         ttk.Button(view_row, text="前", command=self._move_view_prev).grid(
-            row=0, column=3, padx=(12, 0), sticky="w"
+            row=0, column=1, padx=(12, 0), sticky="w"
         )
         ttk.Button(view_row, text="次", command=self._move_view_next).grid(
-            row=0, column=4, padx=(6, 0), sticky="w"
+            row=0, column=2, padx=(6, 0), sticky="w"
         )
-
-        ttk.Label(view_row, text="開始日（JST）").grid(
-            row=1, column=0, sticky="w", pady=(6, 0)
-        )
-        view_start_entry = ttk.Entry(
-            view_row, textvariable=self.view_start_var, width=12, state="readonly"
-        )
-        view_start_entry.grid(row=1, column=1, padx=(4, 6), pady=(6, 0), sticky="w")
-        ttk.Label(view_row, text="終了日（JST）").grid(
-            row=1, column=2, padx=(12, 0), sticky="w", pady=(6, 0)
-        )
-        view_end_entry = ttk.Entry(
-            view_row, textvariable=self.view_end_var, width=12, state="readonly"
-        )
-        view_end_entry.grid(row=1, column=3, padx=(4, 6), pady=(6, 0), sticky="w")
 
         run_row = ttk.Frame(param_tab)
         run_row.grid(row=1, column=0, sticky="w", pady=(6, 4))
@@ -5016,22 +5017,15 @@ class Step1App:
     def _set_view_start(self, picked: date):
         self.view_start_date = picked
         self.view_start_var.set(picked.isoformat())
+        self.view_month_label_var.set(f"{picked.year}年{picked.month:02d}月")
 
     def _set_view_end(self, picked: date):
         self.view_end_date = picked
         self.view_end_var.set(picked.isoformat())
 
     def _get_view_range_months(self):
-        try:
-            raw = self._parse_number(self.view_range_months_var.get())
-        except Exception:
-            messagebox.showerror("エラー", "範囲（月）は1以上にしてください。")
-            return None
-        months = int(raw)
-        if months < 1 or abs(raw - months) > 1e-9:
-            messagebox.showerror("エラー", "範囲（月）は1以上の整数にしてください。")
-            return None
-        return months
+        self.view_range_months_var.set("1")
+        return 1
 
     def _add_months(self, base_date: date, months: int) -> date:
         month_index = base_date.month - 1 + months
@@ -5051,6 +5045,7 @@ class Step1App:
         self.view_end_date = end
         self.view_start_var.set(start.isoformat())
         self.view_end_var.set(end.isoformat())
+        self.view_month_label_var.set(f"{start.year}年{start.month:02d}月")
 
     def _shift_view_month_range(self, direction: int):
         months = self._get_view_range_months()
@@ -5927,6 +5922,10 @@ class Step1App:
         set_date_value("view_start_date", "view_start_date", self.view_start_var)
         set_date_value("view_end_date", "view_end_date", self.view_end_var)
         set_var(self.view_range_months_var, data.get("view_range_months"))
+        if self.view_start_date:
+            self.view_month_label_var.set(
+                f"{self.view_start_date.year}年{self.view_start_date.month:02d}月"
+            )
 
         set_bool(self.exclude_weekends_var, data.get("exclude_weekends"))
         set_var(self.x_axis_mode_var, data.get("x_axis_mode"))
@@ -7199,6 +7198,7 @@ class Step1App:
         total_pips = summary.get("total_pips", 0.0)
         avg_pips = summary.get("avg_pips", 0.0)
         win_rate = summary.get("win_rate", 0.0)
+        max_dd = summary.get("max_dd", 0.0)
         entry_mode = payload.get("entry_mode")
         sr_target = payload.get("sr_target")
         entry_spike_enabled = payload.get(
@@ -7215,19 +7215,19 @@ class Step1App:
         )
 
         if total == 0:
-            self.backtest_info_var.set("バックテスト: 取引0件")
-            self.pnl_info_var.set("損益: 取引0件")
+            self.backtest_info_var.set("バックテスト: 取引0件 最大DD0.0ピップス")
+            self.pnl_info_var.set("損益: 取引0件 最大DD0.0ピップス")
         else:
             draw_text = f" 引き分け{draws}件" if draws else ""
             self.backtest_info_var.set(
                 f"バックテスト: 取引{total}件 勝ち{wins}件 負け{losses}件"
                 f"{draw_text} 勝率{win_rate:.1f}% 合計損益{total_pips:.1f}ピップス"
-                f" 平均損益{avg_pips:.2f}ピップス"
+                f" 平均損益{avg_pips:.2f}ピップス 最大DD{max_dd:.1f}ピップス"
             )
             draw_text_short = f" / 引き分け{draws}" if draws else ""
             self.pnl_info_var.set(
                 f"合計損益: {total_pips:.1f}ピップス 取引: {total}件"
-                f"（勝ち{wins} / 負け{losses}{draw_text_short}）"
+                f"（勝ち{wins} / 負け{losses}{draw_text_short}） 最大DD{max_dd:.1f}ピップス"
             )
 
         if entry_sr_enabled and sr_target == "both":
@@ -7740,12 +7740,14 @@ class Step1App:
             pass
 
         summary = payload.get("summary", {})
-        start = self.view_start_date.isoformat() if self.view_start_date else ""
-        end = self.view_end_date.isoformat() if self.view_end_date else ""
+        month_label = ""
+        if self.view_start_date:
+            month_label = f"{self.view_start_date.year}年{self.view_start_date.month:02d}月"
         total = summary.get("total", 0)
         wins = summary.get("wins", 0)
         losses = summary.get("losses", 0)
         total_pips = summary.get("total_pips", 0.0)
+        max_dd = summary.get("max_dd", 0.0)
         trades = payload.get("trades", [])
         long_trades = [t for t in trades if t.get("side") == "long"]
         short_trades = [t for t in trades if t.get("side") == "short"]
@@ -7759,7 +7761,7 @@ class Step1App:
         momentum_pips = sum(
             t.get("pips", 0.0) for t in trades if t.get("entry_reason") == "勢い追随"
         )
-        sr_pips = sum(
+        sr_total_pips = sum(
             t.get("pips", 0.0)
             for t in trades
             if t.get("entry_reason") == "水平線戻り"
@@ -7771,6 +7773,7 @@ class Step1App:
         )
         sr_target = payload.get("sr_target")
         range_pips = None
+        sr_pips = sr_total_pips
         if sr_target == "both":
             sr_pips = sum(
                 t.get("pips", 0.0)
@@ -7784,12 +7787,12 @@ class Step1App:
             )
 
         header = [
-            "開始日",
-            "終了日",
+            "年月",
             "取引数",
             "勝ち",
             "負け",
             "合計損益",
+            "最大DD",
             "ロング損益",
             "ショート損益",
             "秒逆張り損益",
@@ -7800,17 +7803,17 @@ class Step1App:
         if sr_target == "both":
             header.extend(["水平線(支持抵抗)損益", "補助線損益"])
         row = [
-            start,
-            end,
+            month_label,
             total,
             wins,
             losses,
             f"{total_pips:.2f}",
+            f"{max_dd:.2f}",
             f"{long_pips:.2f}",
             f"{short_pips:.2f}",
             f"{reverse_pips:.2f}",
             f"{momentum_pips:.2f}",
-            f"{sr_pips:.2f}",
+            f"{sr_total_pips:.2f}",
             f"{spike_pips:.2f}",
         ]
         if sr_target == "both":

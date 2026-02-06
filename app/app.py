@@ -333,6 +333,50 @@ def build_minute_ma(candles, period):
     return times, ma_values, series
 
 
+def build_second_closes(points):
+    if not points:
+        return [], []
+    start_time = points[0][0].replace(microsecond=0)
+    end_time = points[-1][0].replace(microsecond=0)
+    times = []
+    closes = []
+    idx = 0
+    last_price = points[0][1]
+    current_time = start_time
+    n = len(points)
+    while current_time <= end_time:
+        next_time = current_time + timedelta(seconds=1)
+        while idx < n and points[idx][0] < next_time:
+            last_price = points[idx][1]
+            idx += 1
+        times.append(current_time)
+        closes.append(last_price)
+        current_time = next_time
+    return times, closes
+
+
+def build_second_ma(points, period):
+    if period <= 0 or not points:
+        return [], [], []
+    times, closes = build_second_closes(points)
+    if not closes:
+        return [], [], []
+    ma_values = [None] * len(closes)
+    running = 0.0
+    for i, close in enumerate(closes):
+        running += close
+        if i >= period:
+            running -= closes[i - period]
+        if i >= period - 1:
+            ma_values[i] = running / period
+    series = [
+        (times[i], ma_values[i])
+        for i in range(len(times))
+        if ma_values[i] is not None
+    ]
+    return times, ma_values, series
+
+
 def build_minute_close_info(points):
     if not points:
         return [], [], []
@@ -1830,6 +1874,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             "ma_series": [],
             "ma_enabled": params.get("ma_enabled", False),
             "ma_period": params.get("ma_period", 0),
+            "ma_unit": params.get("ma_unit", "min"),
             "ma_deviation_rate": params.get("ma_deviation_rate", 0.0),
         }
 
@@ -1885,6 +1930,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     common_fast_take_override = bool(params.get("common_fast_take_override", True))
     ma_enabled = params.get("ma_enabled", False)
     ma_period = max(1, int(params.get("ma_period", 0)))
+    ma_unit = params.get("ma_unit", "min")
+    if ma_unit not in ("sec", "min"):
+        ma_unit = "min"
     ma_deviation = params.get("ma_deviation_rate", 0.0)
     extreme_enabled = params.get("extreme_enabled", False)
     extreme_hold_ms = params.get("extreme_hold_ms", 0.0)
@@ -2107,16 +2155,35 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     ma_series = []
     if ma_enabled:
         ma_cache = runtime_cache.setdefault("ma_cache", {})
-        ma_entry = ma_cache.get(ma_period)
+        ma_key = (ma_unit, ma_period)
+        ma_entry = ma_cache.get(ma_key)
         if ma_entry is None:
-            candle_cache = runtime_cache.setdefault("candle_cache", {})
-            minute_candles = candle_cache.get(1)
-            if minute_candles is None:
-                minute_candles = build_minute_candles(points_sorted)
-                candle_cache[1] = minute_candles
-            ma_entry = build_minute_ma(minute_candles, ma_period)
-            ma_cache[ma_period] = ma_entry
+            if ma_unit == "sec":
+                ma_entry = build_second_ma(points_sorted, ma_period)
+            else:
+                candle_cache = runtime_cache.setdefault("candle_cache", {})
+                minute_candles = candle_cache.get(1)
+                if minute_candles is None:
+                    minute_candles = build_minute_candles(points_sorted)
+                    candle_cache[1] = minute_candles
+                ma_entry = build_minute_ma(minute_candles, ma_period)
+            ma_cache[ma_key] = ma_entry
         candle_times, ma_values, ma_series = ma_entry
+        if ma_series and len(ma_series) > 10000:
+            ma_series = [point for _, point in downsample_points(ma_series, 5000)]
+
+    def resolve_ma_value(entry_time):
+        if not ma_enabled:
+            return None
+        if not candle_times:
+            return None
+        candle_idx = bisect_right(candle_times, entry_time) - 2
+        if candle_idx < 0 or candle_idx >= len(ma_values):
+            return None
+        ma_value = ma_values[candle_idx]
+        if ma_value is None or ma_value <= 0:
+            return None
+        return ma_value
 
     minute_close_info = None
 
@@ -2179,13 +2246,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         if exclude_enabled and entry_time.hour in exclude_hours:
             return False
         if ma_enabled:
-            if not candle_times:
-                return False
-            candle_idx = bisect_right(candle_times, entry_time) - 1
-            if candle_idx < 0 or candle_idx >= len(ma_values):
-                return False
-            ma_value = ma_values[candle_idx]
-            if ma_value is None or ma_value <= 0:
+            ma_value = resolve_ma_value(entry_time)
+            if ma_value is None:
                 return False
             if side == "long":
                 deviation = (ma_value - entry_price) / ma_value
@@ -2639,15 +2701,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 continue
 
             if ma_enabled:
-                if not candle_times:
-                    i = entry_idx + 1
-                    continue
-                candle_idx = bisect_right(candle_times, entry_time) - 1
-                if candle_idx < 0 or candle_idx >= len(ma_values):
-                    i = entry_idx + 1
-                    continue
-                ma_value = ma_values[candle_idx]
-                if ma_value is None or ma_value <= 0:
+                ma_value = resolve_ma_value(entry_time)
+                if ma_value is None:
                     i = entry_idx + 1
                     continue
                 if side == "long":
@@ -2806,15 +2861,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                     continue
 
             if ma_enabled:
-                if not candle_times:
-                    i = entry_idx + 1
-                    continue
-                candle_idx = bisect_right(candle_times, entry_time) - 1
-                if candle_idx < 0 or candle_idx >= len(ma_values):
-                    i = entry_idx + 1
-                    continue
-                ma_value = ma_values[candle_idx]
-                if ma_value is None or ma_value <= 0:
+                ma_value = resolve_ma_value(entry_time)
+                if ma_value is None:
                     i = entry_idx + 1
                     continue
                 if side == "long":
@@ -2931,15 +2979,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 continue
 
             if ma_enabled:
-                if not candle_times:
-                    i = entry_idx + 1
-                    continue
-                candle_idx = bisect_right(candle_times, entry_time) - 1
-                if candle_idx < 0 or candle_idx >= len(ma_values):
-                    i = entry_idx + 1
-                    continue
-                ma_value = ma_values[candle_idx]
-                if ma_value is None or ma_value <= 0:
+                ma_value = resolve_ma_value(entry_time)
+                if ma_value is None:
                     i = entry_idx + 1
                     continue
                 if side == "long":
@@ -3053,15 +3094,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 continue
 
             if ma_enabled:
-                if not candle_times:
-                    i = entry_idx + 1
-                    continue
-                candle_idx = bisect_right(candle_times, entry_time) - 1
-                if candle_idx < 0 or candle_idx >= len(ma_values):
-                    i = entry_idx + 1
-                    continue
-                ma_value = ma_values[candle_idx]
-                if ma_value is None or ma_value <= 0:
+                ma_value = resolve_ma_value(entry_time)
+                if ma_value is None:
                     i = entry_idx + 1
                     continue
                 if side == "long":
@@ -3208,6 +3242,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         "ma_series": ma_series,
         "ma_enabled": ma_enabled,
         "ma_period": ma_period,
+        "ma_unit": ma_unit,
         "ma_deviation_rate": ma_deviation,
         "entry_mode": entry_mode,
         "sr_target": params.get("sr_target"),
@@ -3355,6 +3390,7 @@ class Step1App:
         self.hide_chart_var = tk.BooleanVar(value=False)
         self.ma_filter_var = tk.BooleanVar(value=True)
         self.ma_period_var = tk.StringVar(value="200")
+        self.ma_unit_var = tk.StringVar(value="min")
         self.ma_deviation_var = tk.StringVar(value="0.01")
         self.zigzag_show_var = tk.BooleanVar(value=False)
         self.sr_line_show_var = tk.BooleanVar(value=True)
@@ -3726,8 +3762,9 @@ class Step1App:
         self.namping_widget_groups = {}
         self.entry_tab_info = {}
 
-        self._load_persistent_state()
         self._build_ui()
+        self._load_persistent_state()
+        self._apply_ui_state()
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
         self._poll_queue()
 
@@ -4178,11 +4215,20 @@ class Step1App:
             common_filter, textvariable=self.ma_period_var, width=8
         )
         self.ma_period_entry.grid(row=0, column=3, padx=(4, 12), sticky="w")
-        ttk.Label(common_filter, text="乖離率（％）").grid(row=0, column=4, sticky="w")
+        ttk.Label(common_filter, text="単位").grid(row=0, column=4, sticky="w")
+        self.ma_unit_seconds_radio = ttk.Radiobutton(
+            common_filter, text="秒", variable=self.ma_unit_var, value="sec"
+        )
+        self.ma_unit_seconds_radio.grid(row=0, column=5, sticky="w")
+        self.ma_unit_minutes_radio = ttk.Radiobutton(
+            common_filter, text="分", variable=self.ma_unit_var, value="min"
+        )
+        self.ma_unit_minutes_radio.grid(row=0, column=6, padx=(0, 12), sticky="w")
+        ttk.Label(common_filter, text="乖離率（％）").grid(row=0, column=7, sticky="w")
         self.ma_deviation_entry = ttk.Entry(
             common_filter, textvariable=self.ma_deviation_var, width=8
         )
-        self.ma_deviation_entry.grid(row=0, column=5, padx=(4, 0), sticky="w")
+        self.ma_deviation_entry.grid(row=0, column=8, padx=(4, 0), sticky="w")
         self.backtest_exclude_check = ttk.Checkbutton(
             common_filter,
             text="時間帯除外",
@@ -5014,6 +5060,7 @@ class Step1App:
         self.pnl_canvas.bind("<Button-4>", self._on_pnl_mouse_wheel)
         self.pnl_canvas.bind("<Button-5>", self._on_pnl_mouse_wheel)
 
+    def _apply_ui_state(self):
         self._on_ma_filter_toggle()
         self._on_extreme_filter_toggle()
         self._on_backtest_exclude_toggle()
@@ -5306,6 +5353,9 @@ class Step1App:
             spike_fast_take_enabled = self.spike_fast_take_enabled_var.get()
             ma_enabled = self.ma_filter_var.get()
             ma_period = self._parse_number(self.ma_period_var.get())
+            ma_unit = self.ma_unit_var.get()
+            if ma_unit not in ("sec", "min"):
+                ma_unit = "min"
             ma_deviation_pct = self._parse_number(self.ma_deviation_var.get())
             signal_chain_pos_pips = self._parse_number(self.signal_chain_pos_pips_var.get())
             signal_chain_neg_pips = self._parse_number(self.signal_chain_neg_pips_var.get())
@@ -5624,8 +5674,12 @@ class Step1App:
                 messagebox.showerror("エラー", "監視時間は0以上にしてください。")
                 return None
 
-        if ma_period < 2:
-            messagebox.showerror("エラー", "移動平均の期間は2以上にしてください。")
+        min_ma_period = 1 if ma_unit == "sec" else 2
+        if ma_period < min_ma_period:
+            if ma_unit == "sec":
+                messagebox.showerror("エラー", "移動平均の期間は1以上にしてください。")
+            else:
+                messagebox.showerror("エラー", "移動平均の期間は2以上にしてください。")
             return None
         if ma_deviation_pct < 0:
             messagebox.showerror("エラー", "乖離率は0以上にしてください。")
@@ -5724,6 +5778,7 @@ class Step1App:
             "spike_fast_take_enabled": spike_fast_take_enabled,
             "ma_enabled": ma_enabled,
             "ma_period": int(ma_period),
+            "ma_unit": ma_unit,
             "ma_deviation_rate": ma_deviation_pct / 100.0,
             "signal_chain_pos_pips": signal_chain_pos_pips,
             "signal_chain_neg_pips": signal_chain_neg_pips,
@@ -6023,7 +6078,13 @@ class Step1App:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            return
+            backup_path = path.with_suffix(path.suffix + ".bak")
+            if not backup_path.exists():
+                return
+            try:
+                data = json.loads(backup_path.read_text(encoding="utf-8"))
+            except Exception:
+                return
 
         def set_var(var, value):
             if value is None:
@@ -6134,6 +6195,7 @@ class Step1App:
         set_var(self.pnl_log_path_var, data.get("pnl_log_path"))
         set_bool(self.ma_filter_var, data.get("ma_filter"))
         set_var(self.ma_period_var, data.get("ma_period"))
+        set_var(self.ma_unit_var, data.get("ma_unit"))
         set_var(self.ma_deviation_var, data.get("ma_deviation"))
         set_bool(self.zigzag_show_var, data.get("zigzag_show"))
         set_bool(self.sr_line_show_var, data.get("sr_line_show"))
@@ -6680,6 +6742,7 @@ class Step1App:
             "pnl_log_path": self.pnl_log_path_var.get(),
             "ma_filter": self.ma_filter_var.get(),
             "ma_period": self.ma_period_var.get(),
+            "ma_unit": self.ma_unit_var.get(),
             "ma_deviation": self.ma_deviation_var.get(),
             "zigzag_show": self.zigzag_show_var.get(),
             "sr_line_show": self.sr_line_show_var.get(),
@@ -6915,10 +6978,20 @@ class Step1App:
         path = self._state_file_path()
         try:
             payload = self._collect_persistent_state()
-            path.write_text(
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            backup_path = path.with_suffix(path.suffix + ".bak")
+            tmp_path.write_text(
                 json.dumps(payload, ensure_ascii=True, indent=2),
                 encoding="utf-8",
             )
+            if path.exists():
+                try:
+                    if backup_path.exists():
+                        backup_path.unlink()
+                    path.replace(backup_path)
+                except Exception:
+                    pass
+            tmp_path.replace(path)
         except Exception:
             pass
 
@@ -7701,6 +7774,8 @@ class Step1App:
         state = "normal" if enabled else "disabled"
         self.ma_period_entry.config(state=state)
         self.ma_deviation_entry.config(state=state)
+        self.ma_unit_seconds_radio.config(state=state)
+        self.ma_unit_minutes_radio.config(state=state)
         if self.chart_data:
             self._draw_chart()
 

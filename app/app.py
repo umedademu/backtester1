@@ -3383,7 +3383,7 @@ class CalendarPopup:
 class Step1App:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("ティックデータ取得（STEP1）")
+        self.root.title("backtester1")
         self.queue = queue.Queue()
         self.worker = None
         self.chart_worker = None

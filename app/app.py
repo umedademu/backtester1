@@ -9082,7 +9082,15 @@ class Step1App:
         namping_path: Path,
         index_path: Path,
     ):
-        self.last_save_dir_var.set(str(base_dir))
+        save_dir = None
+        try:
+            if settings_path:
+                save_dir = settings_path.parent
+        except Exception:
+            save_dir = None
+        if save_dir is None:
+            save_dir = base_dir
+        self.last_save_dir_var.set(str(save_dir))
         self.last_settings_path_var.set(str(settings_path))
         self.last_trade_path_var.set(str(trade_path))
         self.last_namping_path_var.set(str(namping_path))

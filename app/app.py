@@ -9248,67 +9248,38 @@ class Step1App:
                 return datetime.min.replace(tzinfo=JST)
             return ts
 
-        if overwrite_months:
-            existing_rows = []
-            if trade_path.exists():
-                try:
-                    with trade_path.open("r", encoding="utf-8", newline="") as f:
-                        reader = csv.DictReader(f)
-                        for row in reader:
-                            ts = self._parse_csv_time(row.get("out時刻") or row.get("in時刻") or "")
+        existing_rows = []
+        if trade_path.exists():
+            try:
+                with trade_path.open("r", encoding="utf-8", newline="") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        if overwrite_months:
+                            ts = self._parse_csv_time(
+                                row.get("out時刻") or row.get("in時刻") or ""
+                            )
                             if ts is not None:
                                 key = f"{ts.year:04d}-{ts.month:02d}"
                                 if key in overwrite_months:
                                     continue
-                            existing_rows.append(row)
-                except Exception:
-                    existing_rows = []
-            combined_rows = existing_rows + trade_rows
-            combined_rows.sort(key=trade_time)
-            cumulative = 0.0
-            for row in combined_rows:
-                cumulative += safe_float(row.get("損益"), 0.0)
-                row["累計損益"] = f"{cumulative:.2f}"
-            try:
-                with trade_path.open("w", encoding="utf-8", newline="") as f:
-                    writer = csv.DictWriter(
-                        f, fieldnames=trade_header, extrasaction="ignore"
-                    )
-                    writer.writeheader()
-                    writer.writerows(combined_rows)
-            except Exception as e:
-                messagebox.showerror("エラー", f"損益記録の保存に失敗しました: {e}")
-        else:
-            last_cum = 0.0
-            if trade_path.exists():
-                try:
-                    with trade_path.open(encoding="utf-8", newline="") as f:
-                        reader = csv.DictReader(f)
-                        for row in reader:
-                            value = row.get("累計損益")
-                            if value is None or value == "":
-                                continue
-                            try:
-                                last_cum = float(value)
-                            except Exception:
-                                continue
-                except Exception:
-                    last_cum = 0.0
-            cumulative = last_cum
-            for row in trade_rows:
-                cumulative += safe_float(row.get("損益"), 0.0)
-                row["累計損益"] = f"{cumulative:.2f}"
-            try:
-                write_header = not trade_path.exists() or trade_path.stat().st_size == 0
-                with trade_path.open("a", encoding="utf-8", newline="") as f:
-                    writer = csv.DictWriter(
-                        f, fieldnames=trade_header, extrasaction="ignore"
-                    )
-                    if write_header:
-                        writer.writeheader()
-                    writer.writerows(trade_rows)
-            except Exception as e:
-                messagebox.showerror("エラー", f"損益記録の保存に失敗しました: {e}")
+                        existing_rows.append(row)
+            except Exception:
+                existing_rows = []
+        combined_rows = existing_rows + trade_rows
+        combined_rows.sort(key=trade_time)
+        cumulative = 0.0
+        for row in combined_rows:
+            cumulative += safe_float(row.get("損益"), 0.0)
+            row["累計損益"] = f"{cumulative:.2f}"
+        try:
+            with trade_path.open("w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(
+                    f, fieldnames=trade_header, extrasaction="ignore"
+                )
+                writer.writeheader()
+                writer.writerows(combined_rows)
+        except Exception as e:
+            messagebox.showerror("エラー", f"損益記録の保存に失敗しました: {e}")
 
         namping_path = settings_dir / "ナンピン詳細.csv"
         namping_header = [
@@ -10170,15 +10141,9 @@ class Step1App:
                     return row.get(key)
             return ""
 
-        equity_curve = []
-        trade_records = []
-        total = 0
-        wins = 0
-        losses = 0
-        cumulative = 0.0
+        parsed_records = []
         prev_cum = 0.0
-        year_totals = {}
-        month_totals = {}
+        record_order = 0
         for row in rows:
             out_time_raw = pick(row, ["out時刻", "out_time", "決済時刻"])
             ts = self._parse_csv_time(out_time_raw)
@@ -10186,25 +10151,29 @@ class Step1App:
                 continue
             cum_raw = pick(row, ["累計損益", "cum_pips"])
             pips_raw = pick(row, ["損益", "pips"])
-            if cum_raw:
+            pips_value = None
+            if pips_raw:
+                try:
+                    pips_value = float(pips_raw)
+                except Exception:
+                    pips_value = None
+            if pips_value is None:
+                if not cum_raw:
+                    continue
                 try:
                     cumulative = float(cum_raw)
                 except Exception:
                     continue
-            else:
-                try:
-                    cumulative += float(pips_raw)
-                except Exception:
-                    continue
-            total += 1
-            pips_value = None
-            try:
-                pips_value = float(pips_raw)
-            except Exception:
-                pips_value = None
-            if pips_value is None:
                 pips_value = cumulative - prev_cum
-            prev_cum = cumulative
+                prev_cum = cumulative
+            else:
+                if cum_raw:
+                    try:
+                        prev_cum = float(cum_raw)
+                    except Exception:
+                        prev_cum += pips_value
+                else:
+                    prev_cum += pips_value
             side_raw = pick(row, ["方向", "side"])
             side = None
             if side_raw:
@@ -10213,15 +10182,31 @@ class Step1App:
                     side = "long"
                 elif "売" in side_raw or "short" in side_text or "sell" in side_text:
                     side = "short"
+            parsed_records.append(
+                {"ts": ts, "pips": pips_value, "side": side, "order": record_order}
+            )
+            record_order += 1
+
+        if not parsed_records:
+            messagebox.showerror("エラー", "有効な損益データが見つかりません。")
+            return
+
+        parsed_records.sort(key=lambda record: (record["ts"], record["order"]))
+
+        equity_curve = []
+        trade_records = []
+        cumulative = 0.0
+        year_totals = {}
+        month_totals = {}
+        for record in parsed_records:
+            ts = record["ts"]
+            pips_value = record["pips"]
+            side = record["side"]
+            cumulative += pips_value
             trade_records.append({"ts": ts, "pips": pips_value, "side": side})
-            if pips_value is not None:
-                if pips_value > 0:
-                    wins += 1
-                elif pips_value < 0:
-                    losses += 1
-                year_totals[ts.year] = year_totals.get(ts.year, 0.0) + pips_value
-                month_key = f"{ts.year}-{ts.month:02d}"
-                month_totals[month_key] = month_totals.get(month_key, 0.0) + pips_value
+            year_totals[ts.year] = year_totals.get(ts.year, 0.0) + pips_value
+            month_key = f"{ts.year}-{ts.month:02d}"
+            month_totals[month_key] = month_totals.get(month_key, 0.0) + pips_value
             equity_curve.append((ts, cumulative))
 
         if not equity_curve:

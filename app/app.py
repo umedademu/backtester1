@@ -7931,6 +7931,18 @@ class Step1App:
         self.trade_focus_index = None
         if reset_trade_jump:
             self.trade_jump_var.set("1")
+
+        focus_index = payload.get("focus_trade_index")
+        trades = self.chart_data.get("trades") or []
+        if focus_index is not None and trades:
+            try:
+                focus_index = int(focus_index)
+            except Exception:
+                focus_index = 0
+            focus_index = max(0, min(focus_index, len(trades) - 1))
+            self._focus_trade_index(focus_index)
+            return
+
         self._update_trade_nav_state()
         self._draw_chart()
 
@@ -8148,26 +8160,26 @@ class Step1App:
         current_end = max(current_start, min(current_end, len(times) - 1))
         current_visible = max(1, current_end - current_start + 1)
 
-        target_visible = min(current_visible, trade_span)
-        if target_visible >= len(times):
-            start_idx = 0
-            end_idx = len(times) - 1
-        elif target_visible >= trade_span:
-            padding = target_visible - trade_span
-            start_idx = trade_start - padding // 2
-            if start_idx < 0:
-                start_idx = 0
-            if start_idx + target_visible > len(times):
-                start_idx = len(times) - target_visible
-            end_idx = start_idx + target_visible - 1
+        padding = max(30, int(trade_span * 0.3))
+        desired_span = trade_span + padding
+        target_visible = min(current_visible, desired_span)
+        target_visible = max(target_visible, trade_span)
+
+        min_visible = 300
+        max_visible = 3000
+        if trade_span > max_visible:
+            target_visible = trade_span
         else:
-            anchor_idx = (trade_start + trade_end) // 2
-            start_idx = anchor_idx - target_visible // 2
-            if start_idx < 0:
-                start_idx = 0
-            if start_idx + target_visible > len(times):
-                start_idx = len(times) - target_visible
-            end_idx = start_idx + target_visible - 1
+            target_visible = max(min_visible, min(max_visible, target_visible))
+        target_visible = min(target_visible, len(times))
+
+        anchor_idx = (trade_start + trade_end) // 2
+        start_idx = anchor_idx - target_visible // 2
+        if start_idx < 0:
+            start_idx = 0
+        if start_idx + target_visible > len(times):
+            start_idx = len(times) - target_visible
+        end_idx = start_idx + target_visible - 1
 
         self.chart_data["view_start"] = start_idx
         self.chart_data["view_end"] = end_idx
@@ -9471,6 +9483,7 @@ class Step1App:
             "ma_series": ma_series,
             "ma_enabled": ma_enabled,
             "ma_use_saved": ma_use_saved,
+            "focus_trade_index": 0 if trades else None,
         }
         self.queue.put(("chart_data", payload))
         self.queue.put(("status", "保存結果の表示が完了しました。"))

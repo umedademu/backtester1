@@ -34,6 +34,460 @@ PIP_SIZE = 0.01
 RESULTS_DIR_NAME = "results"
 
 
+def _coerce_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1", "yes", "on"):
+            return True
+        if text in ("false", "0", "no", "off"):
+            return False
+    return bool(value)
+
+
+def _coerce_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _coerce_int(value, default=0):
+    try:
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def normalize_json_value(value):
+    if isinstance(value, dict):
+        return {k: normalize_json_value(v) for k, v in sorted(value.items())}
+    if isinstance(value, set):
+        return [normalize_json_value(v) for v in sorted(value, key=lambda x: str(x))]
+    if isinstance(value, (list, tuple)):
+        return [normalize_json_value(v) for v in value]
+    return value
+
+
+def build_settings_id_params(params):
+    params = params or {}
+    entry_mode = params.get("entry_mode", "spike")
+    entry_spike_enabled = bool(
+        params.get("entry_spike_enabled", entry_mode in ("spike", "both", "multi"))
+    )
+    entry_sr_enabled = bool(
+        params.get("entry_sr_enabled", entry_mode in ("sr_reentry", "both", "multi"))
+    )
+    entry_momentum_enabled = bool(
+        params.get("entry_momentum_enabled", entry_mode in ("momentum", "multi"))
+    )
+    entry_reverse_enabled = bool(
+        params.get("entry_reverse_enabled", entry_mode in ("reverse", "multi"))
+    )
+
+    effective = {
+        "entry_spike_enabled": entry_spike_enabled,
+        "entry_sr_enabled": entry_sr_enabled,
+        "entry_momentum_enabled": entry_momentum_enabled,
+        "entry_reverse_enabled": entry_reverse_enabled,
+        "spread_pips": _coerce_float(params.get("spread_pips", 0.0)),
+        "allow_same_direction": _coerce_bool(
+            params.get("allow_same_direction", False)
+        ),
+        "allow_opposite_direction": _coerce_bool(
+            params.get("allow_opposite_direction", False)
+        ),
+    }
+
+    exclude_enabled = _coerce_bool(params.get("exclude_enabled", False))
+    effective["exclude_enabled"] = exclude_enabled
+    if exclude_enabled:
+        hours = params.get("exclude_hours", [])
+        if isinstance(hours, (list, tuple, set)):
+            hour_values = sorted({_coerce_int(value, 0) for value in hours})
+        else:
+            hour_values = []
+        effective["exclude_hours"] = hour_values
+
+    ma_enabled = _coerce_bool(params.get("ma_enabled", False))
+    effective["ma_enabled"] = ma_enabled
+    if ma_enabled:
+        ma_period = max(1, _coerce_int(params.get("ma_period", 0), 0))
+        ma_unit = params.get("ma_unit", "min")
+        if ma_unit not in ("sec", "min"):
+            ma_unit = "min"
+        effective["ma_period"] = ma_period
+        effective["ma_unit"] = ma_unit
+        effective["ma_deviation_rate"] = _coerce_float(
+            params.get("ma_deviation_rate", 0.0)
+        )
+
+    signal_chain_enabled = _coerce_bool(params.get("signal_chain_enabled", True))
+    effective["signal_chain_enabled"] = signal_chain_enabled
+    if signal_chain_enabled:
+        effective["signal_chain_pos_pips"] = _coerce_float(
+            params.get("signal_chain_pos_pips", 10.0)
+        )
+        effective["signal_chain_neg_pips"] = _coerce_float(
+            params.get("signal_chain_neg_pips", 5.0)
+        )
+        effective["signal_chain_count"] = max(
+            1, _coerce_int(params.get("signal_chain_count", 3), 3)
+        )
+        effective["signal_chain_monitor_minutes"] = _coerce_float(
+            params.get("signal_chain_monitor_minutes", 240.0)
+        )
+        if entry_reverse_enabled:
+            effective["signal_chain_ignore_reverse"] = _coerce_bool(
+                params.get("signal_chain_ignore_reverse", False)
+            )
+            effective["signal_chain_count_reverse"] = _coerce_bool(
+                params.get("signal_chain_count_reverse", True)
+            )
+            effective["signal_chain_trigger_reverse"] = _coerce_bool(
+                params.get("signal_chain_trigger_reverse", True)
+            )
+        if entry_momentum_enabled:
+            effective["signal_chain_ignore_momentum"] = _coerce_bool(
+                params.get("signal_chain_ignore_momentum", False)
+            )
+            effective["signal_chain_count_momentum"] = _coerce_bool(
+                params.get("signal_chain_count_momentum", True)
+            )
+            effective["signal_chain_trigger_momentum"] = _coerce_bool(
+                params.get("signal_chain_trigger_momentum", True)
+            )
+        if entry_sr_enabled:
+            effective["signal_chain_ignore_sr"] = _coerce_bool(
+                params.get("signal_chain_ignore_sr", False)
+            )
+            effective["signal_chain_count_sr"] = _coerce_bool(
+                params.get("signal_chain_count_sr", True)
+            )
+            effective["signal_chain_trigger_sr"] = _coerce_bool(
+                params.get("signal_chain_trigger_sr", True)
+            )
+        if entry_spike_enabled:
+            effective["signal_chain_ignore_spike"] = _coerce_bool(
+                params.get("signal_chain_ignore_spike", False)
+            )
+            effective["signal_chain_count_spike"] = _coerce_bool(
+                params.get("signal_chain_count_spike", True)
+            )
+            effective["signal_chain_trigger_spike"] = _coerce_bool(
+                params.get("signal_chain_trigger_spike", True)
+            )
+
+    if entry_spike_enabled:
+        effective["window_ms"] = _coerce_float(params.get("window_ms", 0.0))
+        effective["spike_pips"] = _coerce_float(params.get("spike_pips", 0.0))
+        effective["retrace_rate"] = _coerce_float(params.get("retrace_rate", 0.0))
+        extreme_enabled = _coerce_bool(params.get("extreme_enabled", False))
+        effective["extreme_enabled"] = extreme_enabled
+        if extreme_enabled:
+            effective["extreme_hold_ms"] = _coerce_float(
+                params.get("extreme_hold_ms", 0.0)
+            )
+            effective["extreme_distance_pips"] = _coerce_float(
+                params.get("extreme_distance_pips", 0.0)
+            )
+
+    if entry_reverse_enabled:
+        effective["reverse_window_seconds"] = _coerce_float(
+            params.get("reverse_window_seconds", 2.0)
+        )
+        effective["reverse_pips"] = _coerce_float(params.get("reverse_pips", 3.0))
+        effective["reverse_hold_seconds"] = _coerce_float(
+            params.get("reverse_hold_seconds", 2.0)
+        )
+        effective["reverse_max_pullback_pips"] = _coerce_float(
+            params.get("reverse_max_pullback_pips", 5.0)
+        )
+        reverse_monitor_stop_enabled = _coerce_bool(
+            params.get("reverse_monitor_stop_enabled", False)
+        )
+        effective["reverse_monitor_stop_enabled"] = reverse_monitor_stop_enabled
+        if reverse_monitor_stop_enabled:
+            effective["reverse_monitor_stop_pips"] = _coerce_float(
+                params.get("reverse_monitor_stop_pips", 0.0)
+            )
+
+    if entry_momentum_enabled:
+        effective["momentum_window_ms"] = _coerce_float(
+            params.get("momentum_window_ms", 1000.0)
+        )
+        effective["momentum_spike_pips"] = _coerce_float(
+            params.get("momentum_spike_pips", 3.0)
+        )
+        effective["momentum_boundary_pct"] = _coerce_float(
+            params.get("momentum_boundary_pct", 50.0)
+        )
+        effective["momentum_tick_min_per_min"] = _coerce_float(
+            params.get("momentum_tick_min_per_min", 100.0)
+        )
+        effective["momentum_hold_seconds"] = _coerce_float(
+            params.get("momentum_hold_seconds", 2.0)
+        )
+        effective["momentum_max_pips"] = _coerce_float(
+            params.get("momentum_max_pips", 0.0)
+        )
+
+    if entry_sr_enabled:
+        effective["line_interval"] = max(
+            1, _coerce_int(params.get("line_interval", 1), 1)
+        )
+        effective["sr_params"] = params.get("sr_params") or {}
+        effective["range_params"] = params.get("range_params") or {}
+        effective["sr_break_pips"] = _coerce_float(params.get("sr_break_pips", 5.0))
+        effective["sr_tick_limit"] = _coerce_int(params.get("sr_tick_limit", 10), 10)
+        effective["sr_tick_min"] = _coerce_float(params.get("sr_tick_min", 0.0))
+        effective["sr_wait_bars"] = _coerce_int(params.get("sr_wait_bars", 0), 0)
+        effective["sr_min_seconds"] = _coerce_float(params.get("sr_min_seconds", 0.0))
+        effective["sr_max_seconds"] = _coerce_float(params.get("sr_max_seconds", 60.0))
+        effective["sr_midpoint_pct"] = _coerce_float(
+            params.get("sr_midpoint_pct", 50.0)
+        )
+        effective["sr_dominance_pct"] = _coerce_float(
+            params.get("sr_dominance_pct", 50.0)
+        )
+        effective["sr_move_ratio_pct"] = _coerce_float(
+            params.get("sr_move_ratio_pct", 100.0)
+        )
+        effective["sr_move_speed_ratio_pct"] = _coerce_float(
+            params.get("sr_move_speed_ratio_pct", 100.0)
+        )
+        effective["sr_favored_tick_min_pips"] = _coerce_float(
+            params.get("sr_favored_tick_min_pips", 1.0)
+        )
+        effective["sr_move_ratio_enabled"] = _coerce_bool(
+            params.get("sr_move_ratio_enabled", True)
+        )
+        effective["sr_move_speed_ratio_enabled"] = _coerce_bool(
+            params.get("sr_move_speed_ratio_enabled", True)
+        )
+        effective["sr_ratio_join_mode"] = params.get("sr_ratio_join_mode", "and")
+        effective["sr_target"] = params.get("sr_target", "both")
+
+    common_stop_pips = _coerce_float(
+        params.get("common_stop_pips", params.get("stop_pips", 0.0))
+    )
+    common_take_pips = _coerce_float(
+        params.get("common_take_pips", params.get("take_pips", 0.0))
+    )
+    common_time_close_seconds = _coerce_float(
+        params.get(
+            "common_time_close_seconds", params.get("time_close_seconds", 0.0)
+        )
+    )
+    common_fixed_exit_price = _coerce_bool(
+        params.get("common_fixed_exit_price", params.get("fixed_exit_price", True))
+    )
+    common_fast_take_min = _coerce_float(params.get("common_fast_take_min", 0.0))
+    common_fast_take_window_ms = _coerce_float(
+        params.get("common_fast_take_window_ms", 0.0)
+    )
+    common_fast_take_pips = _coerce_float(params.get("common_fast_take_pips", 0.0))
+    common_stop_enabled = _coerce_bool(params.get("common_stop_enabled", True))
+    common_take_enabled = _coerce_bool(params.get("common_take_enabled", True))
+    common_time_enabled = _coerce_bool(params.get("common_time_enabled", True))
+    common_fast_take_enabled = _coerce_bool(
+        params.get("common_fast_take_enabled", True)
+    )
+    common_stop_override = _coerce_bool(params.get("common_stop_override", True))
+    common_take_override = _coerce_bool(params.get("common_take_override", True))
+    common_time_override = _coerce_bool(params.get("common_time_override", True))
+    common_fixed_override = _coerce_bool(params.get("common_fixed_override", True))
+    common_namping_override = _coerce_bool(params.get("common_namping_override", True))
+    common_fast_take_override = _coerce_bool(
+        params.get("common_fast_take_override", True)
+    )
+
+    def build_namping(prefix):
+        return {
+            "first_enabled": _coerce_bool(
+                params.get(f"{prefix}namping_first_enabled", True)
+            ),
+            "steps": [
+                {
+                    "enabled": _coerce_bool(
+                        params.get(f"{prefix}namping_step1_enabled", True)
+                    ),
+                    "pips": _coerce_float(
+                        params.get(f"{prefix}namping_step1_pips", 5.0)
+                    ),
+                    "lot": _coerce_float(
+                        params.get(f"{prefix}namping_step1_lot", 2.0)
+                    ),
+                },
+                {
+                    "enabled": _coerce_bool(
+                        params.get(f"{prefix}namping_step2_enabled", True)
+                    ),
+                    "pips": _coerce_float(
+                        params.get(f"{prefix}namping_step2_pips", 5.0)
+                    ),
+                    "lot": _coerce_float(
+                        params.get(f"{prefix}namping_step2_lot", 4.0)
+                    ),
+                },
+                {
+                    "enabled": _coerce_bool(
+                        params.get(f"{prefix}namping_step3_enabled", False)
+                    ),
+                    "pips": _coerce_float(
+                        params.get(f"{prefix}namping_step3_pips", 5.0)
+                    ),
+                    "lot": _coerce_float(
+                        params.get(f"{prefix}namping_step3_lot", 8.0)
+                    ),
+                },
+                {
+                    "enabled": _coerce_bool(
+                        params.get(f"{prefix}namping_step4_enabled", False)
+                    ),
+                    "pips": _coerce_float(
+                        params.get(f"{prefix}namping_step4_pips", 5.0)
+                    ),
+                    "lot": _coerce_float(
+                        params.get(f"{prefix}namping_step4_lot", 16.0)
+                    ),
+                },
+                {
+                    "enabled": _coerce_bool(
+                        params.get(f"{prefix}namping_step5_enabled", False)
+                    ),
+                    "pips": _coerce_float(
+                        params.get(f"{prefix}namping_step5_pips", 5.0)
+                    ),
+                    "lot": _coerce_float(
+                        params.get(f"{prefix}namping_step5_lot", 32.0)
+                    ),
+                },
+            ],
+        }
+
+    common_namping = build_namping("common_")
+    reverse_namping = build_namping("reverse_")
+    momentum_namping = build_namping("momentum_")
+    sr_namping = build_namping("sr_")
+    spike_namping = build_namping("spike_")
+
+    namping_map = {
+        "reverse": reverse_namping,
+        "momentum": momentum_namping,
+        "sr": sr_namping,
+        "spike": spike_namping,
+    }
+
+    def resolve_exit(kind):
+        stop_enabled = (
+            common_stop_enabled
+            if common_stop_override
+            else _coerce_bool(params.get(f"{kind}_stop_enabled", True))
+        )
+        take_enabled = (
+            common_take_enabled
+            if common_take_override
+            else _coerce_bool(params.get(f"{kind}_take_enabled", True))
+        )
+        time_enabled = (
+            common_time_enabled
+            if common_time_override
+            else _coerce_bool(params.get(f"{kind}_time_enabled", True))
+        )
+        fast_enabled = (
+            common_fast_take_enabled
+            if common_fast_take_override
+            else _coerce_bool(params.get(f"{kind}_fast_take_enabled", True))
+        )
+        stop_pips = (
+            common_stop_pips
+            if common_stop_override
+            else _coerce_float(
+                params.get(f"{kind}_stop_pips", common_stop_pips)
+            )
+        )
+        take_pips = (
+            common_take_pips
+            if common_take_override
+            else _coerce_float(
+                params.get(f"{kind}_take_pips", common_take_pips)
+            )
+        )
+        time_close_seconds = (
+            common_time_close_seconds
+            if common_time_override
+            else _coerce_float(
+                params.get(f"{kind}_time_close_seconds", common_time_close_seconds)
+            )
+        )
+        fixed_exit_price = (
+            common_fixed_exit_price
+            if common_fixed_override
+            else _coerce_bool(
+                params.get(f"{kind}_fixed_exit_price", common_fixed_exit_price)
+            )
+        )
+        fast_take_min = (
+            common_fast_take_min
+            if common_fast_take_override
+            else _coerce_float(
+                params.get(f"{kind}_fast_take_min", common_fast_take_min)
+            )
+        )
+        fast_take_window_ms = (
+            common_fast_take_window_ms
+            if common_fast_take_override
+            else _coerce_float(
+                params.get(f"{kind}_fast_take_window_ms", common_fast_take_window_ms)
+            )
+        )
+        fast_take_pips = (
+            common_fast_take_pips
+            if common_fast_take_override
+            else _coerce_float(
+                params.get(f"{kind}_fast_take_pips", common_fast_take_pips)
+            )
+        )
+        namping = common_namping if common_namping_override else namping_map[kind]
+        stop_value = stop_pips if stop_enabled else 0.0
+        take_value = take_pips if take_enabled else 0.0
+        time_value = time_close_seconds if time_enabled else 0.0
+        fast_min_value = fast_take_min if fast_enabled else 0.0
+        fast_window_value = fast_take_window_ms if fast_enabled else 0.0
+        fast_pips_value = fast_take_pips if fast_enabled else 0.0
+        if stop_value == 0.0 and take_value == 0.0:
+            fixed_exit_price = True
+        return {
+            "stop_pips": stop_value,
+            "take_pips": take_value,
+            "time_close_seconds": time_value,
+            "fixed_exit_price": fixed_exit_price,
+            "fast_take_min": fast_min_value,
+            "fast_take_window_ms": fast_window_value,
+            "fast_take_pips": fast_pips_value,
+            "namping_first_enabled": namping["first_enabled"],
+            "namping_steps": namping["steps"],
+        }
+
+    if entry_reverse_enabled:
+        effective["reverse_exit"] = resolve_exit("reverse")
+    if entry_momentum_enabled:
+        effective["momentum_exit"] = resolve_exit("momentum")
+    if entry_sr_enabled:
+        effective["sr_exit"] = resolve_exit("sr")
+    if entry_spike_enabled:
+        effective["spike_exit"] = resolve_exit("spike")
+
+    return effective
+
+
+def settings_id_from_params(params) -> str:
+    normalized = normalize_json_value(build_settings_id_params(params))
+    text = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
+
 def freeze_value(value):
     if isinstance(value, dict):
         return tuple(sorted((k, freeze_value(v)) for k, v in value.items()))
@@ -8511,15 +8965,7 @@ class Step1App:
             return None
 
     def _normalize_json_value(self, value):
-        if isinstance(value, dict):
-            return {k: self._normalize_json_value(v) for k, v in sorted(value.items())}
-        if isinstance(value, set):
-            return [
-                self._normalize_json_value(v) for v in sorted(value, key=lambda x: str(x))
-            ]
-        if isinstance(value, (list, tuple)):
-            return [self._normalize_json_value(v) for v in value]
-        return value
+        return normalize_json_value(value)
 
     def _results_root(self) -> Path:
         return project_root() / RESULTS_DIR_NAME
@@ -8539,9 +8985,7 @@ class Step1App:
         return "+".join(labels)
 
     def _settings_id(self, params) -> str:
-        normalized = self._normalize_json_value(params or {})
-        text = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
+        return settings_id_from_params(params)
 
     def _set_last_save_paths(
         self,
@@ -8601,6 +9045,9 @@ class Step1App:
             "設定ID": settings_id,
             "保存日時": self._format_csv_time(run_at),
             "パラメータ": self._normalize_json_value(run_params),
+            "判定用パラメータ": self._normalize_json_value(
+                build_settings_id_params(run_params)
+            ),
             "画面設定": self._normalize_json_value(ui_state),
         }
         try:

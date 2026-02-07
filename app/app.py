@@ -8922,8 +8922,8 @@ class Step1App:
             self.bookmarked_settings.remove(key)
         else:
             self.bookmarked_settings.add(key)
-        self._update_saved_bookmark_marker()
-        self._update_chart_saved_bookmark_marker()
+        self._refresh_saved_runs()
+        self._refresh_chart_saved_runs()
         self._save_persistent_state()
 
     def _toggle_chart_saved_bookmark(self):
@@ -8941,8 +8941,8 @@ class Step1App:
             self.bookmarked_settings.remove(key)
         else:
             self.bookmarked_settings.add(key)
-        self._update_saved_bookmark_marker()
-        self._update_chart_saved_bookmark_marker()
+        self._refresh_saved_runs()
+        self._refresh_chart_saved_runs()
         self._save_persistent_state()
 
     def _sync_chart_saved_selection(self, trade_path: Path):
@@ -9122,6 +9122,7 @@ class Step1App:
     def _refresh_saved_runs(self):
         self.saved_runs, values = self._collect_saved_runs()
         current = self.saved_run_var.get()
+        prev_index = self.saved_runs_combo.current() if self.saved_runs else None
         self.saved_runs_combo["values"] = values
         if values:
             self.saved_runs_combo.config(state="readonly")
@@ -9133,6 +9134,9 @@ class Step1App:
                 idx = values.index(current)
                 self.saved_runs_combo.set(current)
                 self.saved_run_index = idx
+            elif prev_index is not None and 0 <= prev_index < len(values):
+                self.saved_runs_combo.current(prev_index)
+                self.saved_run_index = prev_index
             else:
                 self.saved_runs_combo.current(0)
                 self.saved_run_index = 0
@@ -9187,21 +9191,25 @@ class Step1App:
                 settings_path = None
                 if settings_id and strategy:
                     settings_path = base_dir / PAIR / strategy / f"設定_{settings_id}" / "設定.json"
-                runs.append(
-                    {
-                        "display": display,
-                        "trade_path": trade_path,
-                        "settings_path": settings_path,
-                        "strategy": strategy,
-                        "settings_id": settings_id,
-                    }
-                )
+                run = {
+                    "display": display,
+                    "trade_path": trade_path,
+                    "settings_path": settings_path,
+                    "strategy": strategy,
+                    "settings_id": settings_id,
+                }
+                bookmark_key = self._bookmark_key_from_run(run)
+                if bookmark_key and bookmark_key in self.bookmarked_settings:
+                    display = f"★ {display}"
+                    run["display"] = display
+                runs.append(run)
                 values.append(display)
         return runs, values
 
     def _refresh_chart_saved_runs(self):
         self.chart_saved_runs, values = self._collect_saved_runs()
         current = self.chart_saved_run_var.get()
+        prev_index = self.chart_saved_runs_combo.current() if self.chart_saved_runs else None
         self.chart_saved_runs_combo["values"] = values
         if values:
             self.chart_saved_runs_combo.config(state="readonly")
@@ -9209,6 +9217,9 @@ class Step1App:
                 idx = values.index(current)
                 self.chart_saved_runs_combo.set(current)
                 self.chart_saved_run_index = idx
+            elif prev_index is not None and 0 <= prev_index < len(values):
+                self.chart_saved_runs_combo.current(prev_index)
+                self.chart_saved_run_index = prev_index
             else:
                 self.chart_saved_runs_combo.current(0)
                 self.chart_saved_run_index = 0

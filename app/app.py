@@ -1961,6 +1961,25 @@ def summarize_trades(trades):
     total_pips = sum(t["pips"] for t in trades)
     avg_pips = total_pips / total if total else 0.0
     win_rate = wins / total * 100 if total else 0.0
+    max_win_streak = 0
+    max_loss_streak = 0
+    win_streak = 0
+    loss_streak = 0
+    for trade in trades:
+        pips = trade.get("pips", 0.0)
+        if pips > 0:
+            win_streak += 1
+            loss_streak = 0
+            if win_streak > max_win_streak:
+                max_win_streak = win_streak
+        elif pips < 0:
+            loss_streak += 1
+            win_streak = 0
+            if loss_streak > max_loss_streak:
+                max_loss_streak = loss_streak
+        else:
+            win_streak = 0
+            loss_streak = 0
     return {
         "total": total,
         "wins": wins,
@@ -1969,6 +1988,8 @@ def summarize_trades(trades):
         "total_pips": total_pips,
         "avg_pips": avg_pips,
         "win_rate": win_rate,
+        "max_win_streak": max_win_streak,
+        "max_loss_streak": max_loss_streak,
     }
 
 
@@ -7873,9 +7894,11 @@ class Step1App:
             max_dd = compute_max_drawdown(combined)
             draw_text = f" 引き分け{draws}件" if draws else ""
             win_rate = wins / total * 100 if total else 0.0
+            batch_stats = self._compute_trade_stats(trade_records)
             self.pnl_info_var.set(
                 f"一括損益: 取引{total}件 勝ち{wins}件 負け{losses}件"
                 f"{draw_text} 勝率{win_rate:.1f}%"
+                f" 最大連勝{batch_stats['max_win_streak']} 最大連敗{batch_stats['max_loss_streak']}"
                 f" 合計損益{total_pips:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
             )
             self.pnl_data = combined
@@ -7886,12 +7909,11 @@ class Step1App:
             self._draw_pnl_chart()
             if trade_records:
                 self.pnl_trade_records = trade_records
-                stats = self._compute_trade_stats(trade_records)
-                if stats["long_count"] or stats["short_count"]:
+                if batch_stats["long_count"] or batch_stats["short_count"]:
                     self.pnl_info_var.set(
                         self.pnl_info_var.get()
-                        + f"\n内訳: ロング 取引{stats['long_count']}件 合計損益{stats['long_pips']:.1f}ピップス"
-                        + f" / ショート 取引{stats['short_count']}件 合計損益{stats['short_pips']:.1f}ピップス"
+                        + f"\n内訳: ロング 取引{batch_stats['long_count']}件 合計損益{batch_stats['long_pips']:.1f}ピップス"
+                        + f" / ショート 取引{batch_stats['short_count']}件 合計損益{batch_stats['short_pips']:.1f}ピップス"
                     )
         else:
             self.pnl_data = None
@@ -8470,6 +8492,8 @@ class Step1App:
         total_pips = summary.get("total_pips", 0.0)
         avg_pips = summary.get("avg_pips", 0.0)
         win_rate = summary.get("win_rate", 0.0)
+        max_win_streak = int(summary.get("max_win_streak", 0) or 0)
+        max_loss_streak = int(summary.get("max_loss_streak", 0) or 0)
         max_dd = summary.get("max_dd", 0.0)
         entry_mode = payload.get("entry_mode")
         sr_target = payload.get("sr_target")
@@ -8500,6 +8524,7 @@ class Step1App:
             self.pnl_info_var.set(
                 f"合計損益: {total_pips:.1f}ピップス 取引: {total}件"
                 f"（勝ち{wins} / 負け{losses}{draw_text_short} / 勝率{win_rate:.1f}%）"
+                f" 最大連勝{max_win_streak} 最大連敗{max_loss_streak}"
                 f" 最大DD{max_dd:.1f}ピップス"
             )
 
@@ -10212,6 +10237,7 @@ class Step1App:
         self.pnl_info_var.set(
             f"損益: {source_label} 取引{stats['total']}件 勝ち{stats['wins']}件"
             f" 負け{stats['losses']}件{draw_text} 勝率{stats['win_rate']:.1f}%"
+            f" 最大連勝{stats['max_win_streak']} 最大連敗{stats['max_loss_streak']}"
             f" 合計損益{stats['total_pips']:.1f}ピップス"
             f" 最大DD{max_dd:.1f}ピップス"
         )
@@ -11420,12 +11446,16 @@ class Step1App:
             "losses": 0,
             "draws": 0,
             "win_rate": 0.0,
+            "max_win_streak": 0,
+            "max_loss_streak": 0,
             "total_pips": 0.0,
             "long_count": 0,
             "short_count": 0,
             "long_pips": 0.0,
             "short_pips": 0.0,
         }
+        win_streak = 0
+        loss_streak = 0
         for record in records or []:
             stats["total"] += 1
             pips = record.get("pips")
@@ -11439,10 +11469,20 @@ class Step1App:
             stats["total_pips"] += pips
             if pips > 0:
                 stats["wins"] += 1
+                win_streak += 1
+                loss_streak = 0
+                if win_streak > stats["max_win_streak"]:
+                    stats["max_win_streak"] = win_streak
             elif pips < 0:
                 stats["losses"] += 1
+                loss_streak += 1
+                win_streak = 0
+                if loss_streak > stats["max_loss_streak"]:
+                    stats["max_loss_streak"] = loss_streak
             else:
                 stats["draws"] += 1
+                win_streak = 0
+                loss_streak = 0
             side = record.get("side")
             if side == "long":
                 stats["long_count"] += 1
@@ -11528,6 +11568,7 @@ class Step1App:
                 f"{label_prefix}: 期間{label_text} 取引{stats['total']}件"
                 f" 勝ち{stats['wins']}件 負け{stats['losses']}件{draw_text}"
                 f" 勝率{stats['win_rate']:.1f}%"
+                f" 最大連勝{stats['max_win_streak']} 最大連敗{stats['max_loss_streak']}"
                 f" 合計損益{stats['total_pips']:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
             )
             if stats["long_count"] or stats["short_count"]:

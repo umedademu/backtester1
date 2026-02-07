@@ -81,7 +81,7 @@
   "spread": "1.0",
   "stop_pips": "5",
   "take_pips": "15",
-  "time_close_seconds": "900",
+  "time_close_seconds": "300",
   "fixed_exit_price": true,
   "fast_take_min": "5",
   "fast_take_window_ms": "2000",

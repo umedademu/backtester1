@@ -8042,10 +8042,21 @@ class Step1App:
         else:
             self.pending_overwrite_months = None
 
+        skip_chart = bool(self.batch_active)
+        if skip_chart:
+            self.chart_data = None
+            try:
+                self.chart_canvas.delete("all")
+            except Exception:
+                pass
+            self.chart_info_var.set("チャート: 一括中は表示しません")
         self.chart_cancel_event.clear()
         self.chart_button.config(state="disabled")
         self.chart_cancel_button.config(state="normal")
-        self.status_var.set("表示準備中...")
+        if skip_chart:
+            self.status_var.set("計算準備中...")
+        else:
+            self.status_var.set("表示準備中...")
         self.backtest_info_var.set("バックテスト: 計算中...")
         self.pnl_info_var.set("損益: 計算中...")
         self._start_backtest_timer()
@@ -8054,13 +8065,22 @@ class Step1App:
         self._draw_pnl_chart()
         self.chart_worker = threading.Thread(
             target=self._chart_worker,
-            args=(self.view_start_date, self.view_end_date, params, sr_params, range_params),
+            args=(
+                self.view_start_date,
+                self.view_end_date,
+                params,
+                sr_params,
+                range_params,
+                skip_chart,
+            ),
             daemon=True,
         )
         self.chart_worker.start()
         return True
 
-    def _chart_worker(self, start: date, end: date, params, sr_params, range_params):
+    def _chart_worker(
+        self, start: date, end: date, params, sr_params, range_params, skip_chart: bool
+    ):
         cache, cache_hit = self._load_analysis_cache(start, end)
         points_sorted = cache.get("points_sorted") or []
         missing = cache.get("missing") or ()
@@ -8072,27 +8092,28 @@ class Step1App:
             self.queue.put(("chart_done", None))
             return
 
-        chart_signature = (
-            len(points_sorted),
-            freeze_value(sr_params or {}),
-            freeze_value(range_params or {}),
-        )
-        should_refresh_chart = (
-            self.chart_data is None
-            or cache.get("chart_signature") != chart_signature
-            or not cache_hit
-        )
-        if should_refresh_chart:
-            payload = {
-                "start": start,
-                "end": end,
-                "points": points_sorted,
-                "missing_count": len(missing),
-                "sr_params": dict(sr_params or {}),
-                "range_params": dict(range_params or {}),
-            }
-            self.queue.put(("chart_data", payload))
-            cache["chart_signature"] = chart_signature
+        if not skip_chart:
+            chart_signature = (
+                len(points_sorted),
+                freeze_value(sr_params or {}),
+                freeze_value(range_params or {}),
+            )
+            should_refresh_chart = (
+                self.chart_data is None
+                or cache.get("chart_signature") != chart_signature
+                or not cache_hit
+            )
+            if should_refresh_chart:
+                payload = {
+                    "start": start,
+                    "end": end,
+                    "points": points_sorted,
+                    "missing_count": len(missing),
+                    "sr_params": dict(sr_params or {}),
+                    "range_params": dict(range_params or {}),
+                }
+                self.queue.put(("chart_data", payload))
+                cache["chart_signature"] = chart_signature
 
         if self.chart_cancel_event.is_set():
             self.queue.put(("chart_cancelled", None))
@@ -8115,7 +8136,10 @@ class Step1App:
             return
         except Exception as e:
             self.queue.put(("backtest_error", str(e)))
-        self.queue.put(("status", "表示完了"))
+        if skip_chart:
+            self.queue.put(("status", "計算完了"))
+        else:
+            self.queue.put(("status", "表示完了"))
         self.queue.put(("chart_done", None))
 
     def _download_worker(self, start: date, end: date, exclude_weekends: bool):
@@ -9316,6 +9340,8 @@ class Step1App:
         )
         self._refresh_saved_runs()
         self._refresh_chart_saved_runs()
+        self._sync_saved_run_selection(trade_path)
+        self._sync_chart_saved_selection(trade_path)
 
     def _bookmark_key_from_run(self, run):
         if not run:
@@ -9425,6 +9451,27 @@ class Step1App:
                     self.chart_saved_run_index = idx
                     self._update_chart_saved_months()
                     self._update_chart_saved_bookmark_marker()
+                    return
+
+    def _sync_saved_run_selection(self, trade_path: Path):
+        if not trade_path or not self.saved_runs:
+            return
+        target = Path(trade_path)
+        for idx, run in enumerate(self.saved_runs):
+            candidate = run.get("trade_path")
+            if not candidate:
+                continue
+            try:
+                if target.resolve().samefile(Path(candidate).resolve()):
+                    self.saved_runs_combo.current(idx)
+                    self.saved_run_index = idx
+                    self._update_saved_bookmark_marker()
+                    return
+            except Exception:
+                if str(Path(candidate)).lower() == str(target).lower():
+                    self.saved_runs_combo.current(idx)
+                    self.saved_run_index = idx
+                    self._update_saved_bookmark_marker()
                     return
 
     def _on_saved_run_select(self, _event=None):

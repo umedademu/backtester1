@@ -10994,12 +10994,16 @@ class Step1App:
             if hit["x0"] <= event.x <= hit["x1"] and hit["top"] <= event.y <= hit["bottom"]:
                 self._apply_pnl_filter("year", hit["label"])
                 return
+        if self.pnl_filter:
+            self._apply_pnl_filter(*self.pnl_filter)
 
     def _on_month_chart_click(self, event):
         for hit in self.pnl_month_hits:
             if hit["x0"] <= event.x <= hit["x1"] and hit["top"] <= event.y <= hit["bottom"]:
                 self._apply_pnl_filter("month", hit["label"])
                 return
+        if self.pnl_filter:
+            self._apply_pnl_filter(*self.pnl_filter)
 
     def _draw_batch_year_chart(self):
         if not hasattr(self, "pnl_year_canvas"):

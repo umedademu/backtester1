@@ -7899,8 +7899,9 @@ class Step1App:
             "view_start_time": view_start_time,
             "view_end_time": view_end_time,
             "trades": payload.get("trades") or [],
-            "ma_series": [],
-            "ma_enabled": False,
+            "ma_series": payload.get("ma_series") or [],
+            "ma_enabled": payload.get("ma_enabled", False),
+            "ma_use_saved": payload.get("ma_use_saved", False),
             "sr_params": sr_params,
             "range_params": range_params,
             "sr_segments": [],
@@ -9307,6 +9308,31 @@ class Step1App:
         months_sorted = sorted(months)
         return trades, months_sorted
 
+    def _load_saved_ma_settings(self, settings_path: Path):
+        if not settings_path or not Path(settings_path).exists():
+            return None
+        try:
+            with Path(settings_path).open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            return None
+        params = payload.get("パラメータ")
+        if not isinstance(params, dict):
+            return None
+        ma_enabled = bool(params.get("ma_enabled", False))
+        ma_unit = params.get("ma_unit") or "min"
+        if ma_unit not in ("sec", "min"):
+            ma_unit = "min"
+        try:
+            ma_period = int(params.get("ma_period", 0))
+        except Exception:
+            ma_period = 0
+        if ma_period <= 0:
+            ma_enabled = False
+        if ma_period < 1:
+            ma_period = 1
+        return {"enabled": ma_enabled, "unit": ma_unit, "period": ma_period}
+
     def _load_chart_saved(self):
         if self.chart_worker and self.chart_worker.is_alive():
             messagebox.showinfo("お知らせ", "表示処理中です。")
@@ -9328,6 +9354,10 @@ class Step1App:
         if not trade_path or not Path(trade_path).exists():
             messagebox.showerror("エラー", "保存先が見つかりません。")
             return
+        settings_path = target.get("settings_path")
+        ma_settings = None
+        if settings_path:
+            ma_settings = self._load_saved_ma_settings(Path(settings_path))
 
         trades = [
             t
@@ -9344,7 +9374,7 @@ class Step1App:
             self.chart_cancel_button.config(state="normal")
         self.chart_worker = threading.Thread(
             target=self._chart_saved_worker,
-            args=(self.view_start_date, self.view_end_date, trades),
+            args=(self.view_start_date, self.view_end_date, trades, ma_settings),
             daemon=True,
         )
         self.chart_worker.start()
@@ -9352,7 +9382,7 @@ class Step1App:
             self._apply_pnl_csv(Path(trade_path), source_label="保存結果")
             self._apply_pnl_filter("month", month_text)
 
-    def _chart_saved_worker(self, start: date, end: date, trades):
+    def _chart_saved_worker(self, start: date, end: date, trades, ma_settings):
         cache, cache_hit = self._load_analysis_cache(start, end)
         points_sorted = cache.get("points_sorted") or []
         missing = cache.get("missing") or ()
@@ -9362,6 +9392,32 @@ class Step1App:
             self.queue.put(("chart_error", "表示できるデータがありません。"))
             self.queue.put(("chart_done", None))
             return
+        ma_series = []
+        ma_enabled = False
+        ma_use_saved = False
+        if ma_settings:
+            ma_use_saved = True
+            ma_enabled = bool(ma_settings.get("enabled", False))
+            ma_unit = ma_settings.get("unit", "min")
+            ma_period = int(ma_settings.get("period", 0))
+            if ma_enabled and ma_period > 0:
+                try:
+                    if ma_unit == "sec":
+                        _times, _values, ma_series = build_second_ma(
+                            points_sorted, ma_period, should_cancel=self.chart_cancel_event
+                        )
+                    else:
+                        minute_candles = build_minute_candles(
+                            points_sorted, should_cancel=self.chart_cancel_event
+                        )
+                        _times, _values, ma_series = build_minute_ma(
+                            minute_candles, ma_period, should_cancel=self.chart_cancel_event
+                        )
+                    if ma_series and len(ma_series) > 10000:
+                        ma_series = [point for _, point in downsample_points(ma_series, 5000)]
+                except InterruptedError:
+                    self.queue.put(("chart_done", None))
+                    return
         payload = {
             "start": start,
             "end": end,
@@ -9370,6 +9426,9 @@ class Step1App:
             "sr_params": {},
             "range_params": {},
             "trades": trades,
+            "ma_series": ma_series,
+            "ma_enabled": ma_enabled,
+            "ma_use_saved": ma_use_saved,
         }
         self.queue.put(("chart_data", payload))
         self.queue.put(("status", "保存結果の表示が完了しました。"))
@@ -10174,7 +10233,10 @@ class Step1App:
                 canvas.create_line(coords, fill="#1f77b4", width=1)
 
         ma_series = data.get("ma_series") or []
-        if self.ma_filter_var.get() and ma_series:
+        ma_enabled = self.ma_filter_var.get()
+        if data.get("ma_use_saved"):
+            ma_enabled = data.get("ma_enabled", False)
+        if ma_enabled and ma_series:
             ma_coords = []
             if mode == "time":
                 if span_seconds > 0:

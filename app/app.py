@@ -9404,14 +9404,18 @@ class Step1App:
                 try:
                     if ma_unit == "sec":
                         _times, _values, ma_series = build_second_ma(
-                            points_sorted, ma_period, should_cancel=self.chart_cancel_event
+                            points_sorted,
+                            ma_period,
+                            should_cancel=self.chart_cancel_event.is_set,
                         )
                     else:
                         minute_candles = build_minute_candles(
-                            points_sorted, should_cancel=self.chart_cancel_event
+                            points_sorted, should_cancel=self.chart_cancel_event.is_set
                         )
                         _times, _values, ma_series = build_minute_ma(
-                            minute_candles, ma_period, should_cancel=self.chart_cancel_event
+                            minute_candles,
+                            ma_period,
+                            should_cancel=self.chart_cancel_event.is_set,
                         )
                     if ma_series and len(ma_series) > 10000:
                         ma_series = [point for _, point in downsample_points(ma_series, 5000)]

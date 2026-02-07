@@ -1,8 +1,8 @@
 {
   "start_date": "2010-01-01",
   "end_date": "2016-12-31",
-  "view_start_date": "2026-02-06",
-  "view_end_date": "2026-02-06",
+  "view_start_date": "2025-12-01",
+  "view_end_date": "2025-12-31",
   "view_range_months": "1",
   "download_start_month": "2026-02",
   "download_end_month": "2026-02",
@@ -19,6 +19,10 @@
   "hide_chart": false,
   "pnl_log_enabled": true,
   "pnl_log_path": "C:\\Users\\USER\\Desktop\\backtester1\\results",
+  "dup_period_mode": "skip",
+  "bookmarked_settings": [
+    "USDJPY|\u79d2\u9006\u5f35\u308a|bc56d58d"
+  ],
   "ma_filter": true,
   "ma_period": "60",
   "ma_unit": "sec",
@@ -134,8 +138,8 @@
   "spike_take_enabled": true,
   "spike_time_enabled": false,
   "spike_fast_take_enabled": false,
-  "allow_same_direction": false,
-  "allow_opposite_direction": false,
+  "allow_same_direction": true,
+  "allow_opposite_direction": true,
   "namping_first_enabled": true,
   "namping_step1_enabled": false,
   "namping_step2_enabled": false,

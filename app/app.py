@@ -7872,9 +7872,11 @@ class Step1App:
         if combined:
             max_dd = compute_max_drawdown(combined)
             draw_text = f" 引き分け{draws}件" if draws else ""
+            win_rate = wins / total * 100 if total else 0.0
             self.pnl_info_var.set(
                 f"一括損益: 取引{total}件 勝ち{wins}件 負け{losses}件"
-                f"{draw_text} 合計損益{total_pips:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
+                f"{draw_text} 勝率{win_rate:.1f}%"
+                f" 合計損益{total_pips:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
             )
             self.pnl_data = combined
             self.pnl_full_data = list(combined)
@@ -8497,7 +8499,8 @@ class Step1App:
             draw_text_short = f" / 引き分け{draws}" if draws else ""
             self.pnl_info_var.set(
                 f"合計損益: {total_pips:.1f}ピップス 取引: {total}件"
-                f"（勝ち{wins} / 負け{losses}{draw_text_short}） 最大DD{max_dd:.1f}ピップス"
+                f"（勝ち{wins} / 負け{losses}{draw_text_short} / 勝率{win_rate:.1f}%）"
+                f" 最大DD{max_dd:.1f}ピップス"
             )
 
         if entry_sr_enabled and sr_target == "both":
@@ -10208,7 +10211,8 @@ class Step1App:
         self.pnl_info_label = "損益"
         self.pnl_info_var.set(
             f"損益: {source_label} 取引{stats['total']}件 勝ち{stats['wins']}件"
-            f" 負け{stats['losses']}件{draw_text} 合計損益{stats['total_pips']:.1f}ピップス"
+            f" 負け{stats['losses']}件{draw_text} 勝率{stats['win_rate']:.1f}%"
+            f" 合計損益{stats['total_pips']:.1f}ピップス"
             f" 最大DD{max_dd:.1f}ピップス"
         )
         if stats["long_count"] or stats["short_count"]:
@@ -11415,6 +11419,7 @@ class Step1App:
             "wins": 0,
             "losses": 0,
             "draws": 0,
+            "win_rate": 0.0,
             "total_pips": 0.0,
             "long_count": 0,
             "short_count": 0,
@@ -11445,6 +11450,7 @@ class Step1App:
             elif side == "short":
                 stats["short_count"] += 1
                 stats["short_pips"] += pips
+        stats["win_rate"] = (stats["wins"] / stats["total"] * 100.0) if stats["total"] else 0.0
         return stats
 
     def _apply_pnl_filter(self, kind, label):
@@ -11521,6 +11527,7 @@ class Step1App:
             self.pnl_info_var.set(
                 f"{label_prefix}: 期間{label_text} 取引{stats['total']}件"
                 f" 勝ち{stats['wins']}件 負け{stats['losses']}件{draw_text}"
+                f" 勝率{stats['win_rate']:.1f}%"
                 f" 合計損益{stats['total_pips']:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
             )
             if stats["long_count"] or stats["short_count"]:

@@ -5726,6 +5726,12 @@ class Step1App:
         self.saved_runs_min_pips_entry.grid(
             row=1, column=1, padx=(4, 6), pady=(6, 0), sticky="w"
         )
+        self.saved_runs_filter_button = ttk.Button(
+            pnl_select_frame, text="絞り込み", command=self._apply_saved_runs_filter
+        )
+        self.saved_runs_filter_button.grid(
+            row=1, column=2, padx=(0, 6), pady=(6, 0), sticky="w"
+        )
 
         pnl_body = ttk.Frame(pnl_tab)
         pnl_body.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
@@ -5987,6 +5993,13 @@ class Step1App:
         except ValueError:
             messagebox.showerror("エラー", "最小損益(pp)の入力が正しくありません。")
             return None
+
+    def _apply_saved_runs_filter(self):
+        min_total_pips = self._get_saved_runs_min_pips()
+        if min_total_pips is None:
+            return
+        runs, values = self._collect_saved_runs(min_total_pips=min_total_pips)
+        self._set_saved_runs_list(runs, values)
 
     def _get_backtest_params(self):
         entry_spike_enabled = self.entry_spike_var.get()
@@ -9647,13 +9660,10 @@ class Step1App:
         ]
         return " | ".join([p for p in pieces if p])
 
-    def _refresh_saved_runs(self):
-        min_total_pips = self._get_saved_runs_min_pips()
-        if min_total_pips is None:
-            return
-        self.saved_runs, values = self._collect_saved_runs(min_total_pips=min_total_pips)
+    def _set_saved_runs_list(self, runs, values):
         current = self.saved_run_var.get()
         prev_index = self.saved_runs_combo.current() if self.saved_runs else None
+        self.saved_runs = runs
         self.saved_runs_combo["values"] = values
         if values:
             self.saved_runs_combo.config(state="readonly")
@@ -9682,6 +9692,10 @@ class Step1App:
             self.saved_run_index = None
             self._update_saved_bookmark_marker()
         self._save_persistent_state()
+
+    def _refresh_saved_runs(self):
+        runs, values = self._collect_saved_runs()
+        self._set_saved_runs_list(runs, values)
 
     def _collect_saved_runs(self, min_total_pips=None):
         index_path = self._results_root() / "index.csv"

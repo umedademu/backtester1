@@ -1,8 +1,8 @@
 {
   "通貨": "USDJPY",
   "戦略": "秒逆張り",
-  "設定ID": "bc3df437",
-  "保存日時": "2026-02-08 03:08:26.131435",
+  "設定ID": "e1200a55",
+  "保存日時": "2026-02-08 03:14:07.473740",
   "パラメータ": {
     "allow_opposite_direction": false,
     "allow_same_direction": false,
@@ -36,7 +36,7 @@
     "common_take_enabled": true,
     "common_take_override": true,
     "common_take_pips": 15.0,
-    "common_time_close_seconds": 15.0,
+    "common_time_close_seconds": 60.0,
     "common_time_enabled": true,
     "common_time_override": true,
     "entry_mode": "reverse",
@@ -200,7 +200,7 @@
     "sr_time_enabled": true,
     "stop_pips": 5.0,
     "take_pips": 15.0,
-    "time_close_seconds": 15.0,
+    "time_close_seconds": 60.0,
     "window_ms": 500.0
   },
   "判定用パラメータ": {
@@ -258,7 +258,7 @@
       ],
       "stop_pips": 5.0,
       "take_pips": 15.0,
-      "time_close_seconds": 15.0
+      "time_close_seconds": 60.0
     },
     "reverse_hold_seconds": 1.0,
     "reverse_max_pullback_pips": 10.0,
@@ -419,6 +419,7 @@
     "reverse_time_close_seconds": "0",
     "reverse_time_enabled": true,
     "reverse_window_seconds": "2",
+    "saved_runs_min_pips": "-999",
     "signal_chain_count": "2",
     "signal_chain_count_momentum": true,
     "signal_chain_count_reverse": false,
@@ -519,7 +520,7 @@
     "sr_zigzag_pips": "10",
     "stop_pips": "5",
     "take_pips": "15",
-    "time_close_seconds": "15",
+    "time_close_seconds": "60",
     "view_range_months": "1",
     "x_axis_mode": "time",
     "zigzag_show": false

@@ -1,8 +1,8 @@
 {
   "start_date": "2010-01-01",
   "end_date": "2016-12-31",
-  "view_start_date": "2025-12-01",
-  "view_end_date": "2025-12-31",
+  "view_start_date": "2025-08-01",
+  "view_end_date": "2025-08-31",
   "view_range_months": "1",
   "download_start_month": "2026-02",
   "download_end_month": "2026-02",

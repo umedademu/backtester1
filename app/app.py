@@ -2194,8 +2194,6 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 ma_entry = build_minute_ma(minute_candles, ma_period, should_cancel=should_cancel)
             ma_cache[ma_key] = ma_entry
         candle_times, ma_values, ma_series = ma_entry
-        if ma_series and len(ma_series) > 10000:
-            ma_series = [point for _, point in downsample_points(ma_series, 5000)]
 
     def resolve_ma_value(entry_time):
         if not ma_enabled:
@@ -9417,8 +9415,6 @@ class Step1App:
                             ma_period,
                             should_cancel=self.chart_cancel_event.is_set,
                         )
-                    if ma_series and len(ma_series) > 10000:
-                        ma_series = [point for _, point in downsample_points(ma_series, 5000)]
                 except InterruptedError:
                     self.queue.put(("chart_done", None))
                     return
@@ -10170,6 +10166,7 @@ class Step1App:
 
         span_seconds = (view_end_time - view_start_time).total_seconds()
         n = len(view_points)
+        max_display_points = max(1200, int(plot_width * 1.0))
 
         def price_to_y(price):
             return (
@@ -10223,7 +10220,7 @@ class Step1App:
         else:
             if n < 2:
                 return
-            sampled = downsample_points(view_points, 5000)
+            sampled = downsample_points(view_points, max_display_points)
             coords = []
             for idx, (ts, price) in sampled:
                 if mode == "time" and span_seconds > 0:
@@ -10244,9 +10241,10 @@ class Step1App:
             ma_coords = []
             if mode == "time":
                 if span_seconds > 0:
-                    for ts, ma_value in ma_series:
-                        if ts < view_start_time or ts > view_end_time:
-                            continue
+                    view_ma = [p for p in ma_series if view_start_time <= p[0] <= view_end_time]
+                    if len(view_ma) > max_display_points:
+                        view_ma = [point for _, point in downsample_points(view_ma, max_display_points)]
+                    for ts, ma_value in view_ma:
                         x = (
                             left
                             + (ts - view_start_time).total_seconds()
@@ -10256,12 +10254,17 @@ class Step1App:
                         y = price_to_y(ma_value)
                         ma_coords.extend([x, y])
             else:
+                view_ma = []
                 for ts, ma_value in ma_series:
                     idx = bisect_left(times, ts)
                     if idx < view_start_idx or idx > view_end_idx:
                         continue
                     if n <= 1:
                         continue
+                    view_ma.append((idx, ts, ma_value))
+                if len(view_ma) > max_display_points:
+                    view_ma = [point for _, point in downsample_points(view_ma, max_display_points)]
+                for idx, _ts, ma_value in view_ma:
                     x = left + (idx - view_start_idx) / (n - 1) * plot_width
                     y = price_to_y(ma_value)
                     ma_coords.extend([x, y])

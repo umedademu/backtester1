@@ -1,8 +1,8 @@
 {
   "start_date": "2015-01-01",
   "end_date": "2016-12-31",
-  "view_start_date": "2025-01-01",
-  "view_end_date": "2025-01-31",
+  "view_start_date": "2018-02-01",
+  "view_end_date": "2018-02-28",
   "view_range_months": "1",
   "download_start_month": "2026-02",
   "download_end_month": "2026-02",
@@ -27,7 +27,7 @@
     "USDJPY|\u79d2\u9006\u5f35\u308a|bc56d58d",
     "USDJPY|\u79d2\u9006\u5f35\u308a|dd3b442d"
   ],
-  "ma_filter": false,
+  "ma_filter": true,
   "ma_period": "200",
   "ma_unit": "min",
   "ma_deviation": "0.05",
@@ -83,7 +83,7 @@
   "near_entry_offset_pips": "3",
   "near_speed_filter_enabled": true,
   "near_speed_seconds": "10",
-  "near_speed_pips": "15",
+  "near_speed_pips": "10",
   "spread": "1.0",
   "stop_pips": "10",
   "take_pips": "10",

@@ -8945,6 +8945,29 @@ class Step1App:
             pass
 
     def _on_app_close(self):
+        running_simulation = (
+            bool(self.batch_active)
+            or bool(self.backtest_timer_running)
+            or (
+                bool(self.chart_worker and self.chart_worker.is_alive())
+                and "計算中" in (self.backtest_info_var.get() or "")
+            )
+        )
+        if running_simulation:
+            ok = messagebox.askyesno(
+                "確認",
+                "シミュレート実行中です。終了すると処理は中止されます。\n本当に閉じますか？",
+            )
+            if not ok:
+                return
+            self.chart_cancel_event.set()
+            if self.batch_active:
+                self.batch_active = False
+                self.batch_months = []
+                self.batch_index = 0
+                if hasattr(self, "batch_run_button"):
+                    self.batch_run_button.config(state="normal")
+                self._stop_batch_timer()
         self._save_persistent_state()
         self.root.destroy()
 

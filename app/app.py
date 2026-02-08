@@ -12817,6 +12817,33 @@ class Step1App:
             return parts[0], parts[1]
         return None
 
+    def _selected_year_for_month_chart(self):
+        if not self.pnl_filter:
+            return None
+        kind, label = self.pnl_filter
+        if kind == "year":
+            parts = [int(p) for p in re.findall(r"\d+", str(label))]
+            if parts:
+                return parts[0]
+            return None
+        if kind == "month":
+            parsed = self._parse_month_label(label)
+            if parsed:
+                return parsed[0]
+        return None
+
+    def _build_year_month_bar_data(self, year):
+        month_totals = {}
+        for label, value in self.batch_monthly_data or []:
+            parsed = self._parse_month_label(label)
+            if not parsed:
+                continue
+            y, m = parsed
+            if y != year:
+                continue
+            month_totals[m] = float(value)
+        return [(f"{year}-{month:02d}", month_totals.get(month, 0.0)) for month in range(1, 13)]
+
     def _is_time_close_reason(self, reason):
         text = str(reason or "").strip()
         if not text:
@@ -12901,6 +12928,7 @@ class Step1App:
             if self.pnl_info_base:
                 self.pnl_info_var.set(self.pnl_info_base)
             self._draw_pnl_chart()
+            self._draw_batch_month_chart()
             return
 
         filtered = []
@@ -12986,6 +13014,7 @@ class Step1App:
                 f"{label_prefix}: 期間{label_text} 合計損益{total_pips:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
             )
         self._draw_pnl_chart()
+        self._draw_batch_month_chart()
 
     def _on_year_chart_click(self, event):
         for hit in self.pnl_year_hits:
@@ -13013,7 +13042,13 @@ class Step1App:
         if not hasattr(self, "pnl_month_canvas"):
             return
         data = self.batch_monthly_data or []
-        self._draw_bar_chart(self.pnl_month_canvas, data, "一括未実行", self.pnl_month_hits)
+        year = self._selected_year_for_month_chart()
+        if year is not None:
+            data = self._build_year_month_bar_data(year)
+            empty_message = f"{year}年データなし"
+        else:
+            empty_message = "一括未実行"
+        self._draw_bar_chart(self.pnl_month_canvas, data, empty_message, self.pnl_month_hits)
 
 
 def main():

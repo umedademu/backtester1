@@ -293,16 +293,18 @@ def build_settings_id_params(params):
         effective["sr_ratio_join_mode"] = params.get("sr_ratio_join_mode", "and")
         effective["sr_target"] = params.get("sr_target", "both")
 
-    if entry_near_enabled:
-        effective["line_interval"] = max(
-            1, _coerce_int(params.get("line_interval", 1), 1)
-        )
-        effective["sr_params"] = params.get("sr_params") or {}
-        effective["range_params"] = params.get("range_params") or {}
-        effective["sr_target"] = params.get("sr_target", "both")
-        effective["near_entry_offset_pips"] = _coerce_float(
-            params.get("near_entry_offset_pips", 3.0)
-        )
+        if entry_near_enabled:
+            effective["line_interval"] = max(
+                1, _coerce_int(params.get("line_interval", 1), 1)
+            )
+            effective["sr_params"] = params.get("sr_params") or {}
+            effective["range_params"] = params.get("range_params") or {}
+            effective["near_target"] = params.get(
+                "near_target", params.get("sr_target", "both")
+            )
+            effective["near_entry_offset_pips"] = _coerce_float(
+                params.get("near_entry_offset_pips", 3.0)
+            )
         near_speed_filter_enabled = _coerce_bool(
             params.get("near_speed_filter_enabled", True)
         )
@@ -2711,6 +2713,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     near_speed_filter_enabled = bool(params.get("near_speed_filter_enabled", True))
     near_speed_seconds = float(params.get("near_speed_seconds", 2.0))
     near_speed_move = float(params.get("near_speed_pips", 10.0)) * PIP_SIZE
+    near_target = params.get("near_target", params.get("sr_target", "both"))
 
     def build_namping(prefix):
         return {
@@ -3232,13 +3235,12 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             i_gate = signal["entry_idx"] + 1
 
     if signal_chain_enabled and entry_near_enabled:
-        sr_target = params.get("sr_target", "both")
         line_interval = max(1, int(params.get("line_interval", 1)))
         sr_params = params.get("sr_params") or {}
         range_params = params.get("range_params") or {}
         line_key = (
             line_interval,
-            sr_target,
+            near_target,
             freeze_value(sr_params),
             freeze_value(range_params),
         )
@@ -3256,7 +3258,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 line_candles,
                 sr_params,
                 range_params,
-                sr_target,
+                near_target,
                 should_cancel=should_cancel,
             )
             line_start_times = [line["start_time"] for line in lines]
@@ -3641,13 +3643,12 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             i = entry_idx_actual + 1 if allow_overlap else exit_idx + 1
 
     if entry_near_enabled:
-        sr_target = params.get("sr_target", "both")
         line_interval = max(1, int(params.get("line_interval", 1)))
         sr_params = params.get("sr_params") or {}
         range_params = params.get("range_params") or {}
         line_key = (
             line_interval,
-            sr_target,
+            near_target,
             freeze_value(sr_params),
             freeze_value(range_params),
         )
@@ -3665,7 +3666,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 line_candles,
                 sr_params,
                 range_params,
-                sr_target,
+                near_target,
                 should_cancel=should_cancel,
             )
             line_start_times = [line["start_time"] for line in lines]
@@ -4445,6 +4446,7 @@ class Step1App:
         self.x_axis_mode_var = tk.StringVar(value="time")
         self.chart_type_var = tk.StringVar(value="tick")
         self.candle_interval_var = tk.IntVar(value=1)
+        self.line_interval_var = tk.IntVar(value=1)
         self.entry_spike_var = tk.BooleanVar(value=False)
         self.entry_sr_var = tk.BooleanVar(value=True)
         self.entry_near_var = tk.BooleanVar(value=False)
@@ -4687,6 +4689,7 @@ class Step1App:
         self.sr_reentry_speed_ratio_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_favored_tick_min_enabled_var = tk.BooleanVar(value=True)
         self.sr_reentry_target_var = tk.StringVar(value="両方")
+        self.near_target_var = tk.StringVar(value="水平線")
         self.signal_chain_enabled_var = tk.BooleanVar(value=True)
         self.signal_chain_pos_pips_var = tk.StringVar(value="10")
         self.signal_chain_neg_pips_var = tk.StringVar(value="5")
@@ -4955,6 +4958,29 @@ class Step1App:
             group.append((enabled_var, pips_entry, lot_entry))
         self.namping_widget_groups[key] = group
 
+    def _build_line_interval_radios(self, frame, row_start=0):
+        ttk.Label(frame, text="判定足").grid(row=row_start, column=0, sticky="w", pady=(6, 0))
+        options = [
+            ("1分", 1),
+            ("3分", 3),
+            ("5分", 5),
+            ("15分", 15),
+            ("30分", 30),
+            ("1時間", 60),
+            ("2時間", 120),
+            ("4時間", 240),
+            ("日足", 1440),
+        ]
+        for idx, (label, value) in enumerate(options):
+            row = row_start + (idx // 5)
+            col = 1 + (idx % 5)
+            ttk.Radiobutton(
+                frame,
+                text=label,
+                variable=self.line_interval_var,
+                value=value,
+            ).grid(row=row, column=col, padx=(4, 0), sticky="w", pady=(6, 0))
+
     def _build_ui(self):
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
@@ -5177,7 +5203,7 @@ class Step1App:
         )
         self.range_band_check.grid(row=1, column=7, padx=(8, 0), sticky="w")
 
-        ttk.Label(chart_controls, text="足").grid(row=2, column=1, padx=(12, 4), sticky="w")
+        ttk.Label(chart_controls, text="表示足").grid(row=2, column=1, padx=(12, 4), sticky="w")
         self.candle_1_radio = ttk.Radiobutton(
             chart_controls,
             text="1分",
@@ -6045,6 +6071,7 @@ class Step1App:
         ttk.Entry(sr_settings, textvariable=self.range_band_bars_var, width=8).grid(
             row=2, column=1, padx=(4, 0), pady=(6, 0), sticky="w"
         )
+        self._build_line_interval_radios(sr_settings, row_start=3)
 
         sr_reentry_settings = ttk.LabelFrame(sr_tab, text="水平線戻り条件")
         sr_reentry_settings.grid(row=4, column=0, sticky="ew")
@@ -6256,6 +6283,44 @@ class Step1App:
         self.near_speed_pips_entry.grid(
             row=1, column=4, padx=(4, 0), pady=(6, 0), sticky="w"
         )
+        near_line_settings = ttk.LabelFrame(near_tab, text="水平線条件")
+        near_line_settings.grid(row=4, column=0, sticky="ew", pady=(6, 0))
+        ttk.Label(near_line_settings, text="ジグザグ幅（ピップス）").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Entry(
+            near_line_settings, textvariable=self.sr_zigzag_pips_var, width=8
+        ).grid(row=0, column=1, padx=(4, 12), sticky="w")
+        ttk.Label(near_line_settings, text="ブレイク幅（ピップス）").grid(
+            row=0, column=2, sticky="w"
+        )
+        ttk.Entry(
+            near_line_settings, textvariable=self.sr_break_pips_var, width=8
+        ).grid(row=0, column=3, padx=(4, 0), sticky="w")
+        ttk.Label(near_line_settings, text="対象線").grid(
+            row=0, column=4, sticky="w"
+        )
+        self.near_target_combo = ttk.Combobox(
+            near_line_settings,
+            textvariable=self.near_target_var,
+            values=["水平線", "補助線", "両方"],
+            width=10,
+            state="readonly",
+        )
+        self.near_target_combo.grid(row=0, column=5, padx=(4, 0), sticky="w")
+        ttk.Label(near_line_settings, text="最小本数").grid(
+            row=1, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            near_line_settings, textvariable=self.sr_min_bars_var, width=8
+        ).grid(row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w")
+        ttk.Label(near_line_settings, text="レンジ本数").grid(
+            row=2, column=0, sticky="w", pady=(6, 0)
+        )
+        ttk.Entry(
+            near_line_settings, textvariable=self.range_band_bars_var, width=8
+        ).grid(row=2, column=1, padx=(4, 0), pady=(6, 0), sticky="w")
+        self._build_line_interval_radios(near_line_settings, row_start=3)
 
         self.entry_spike_check = ttk.Checkbutton(
             spike_tab,
@@ -6912,6 +6977,7 @@ class Step1App:
             near_take_enabled = self.near_take_enabled_var.get()
             near_time_enabled = self.near_time_enabled_var.get()
             near_fast_take_enabled = self.near_fast_take_enabled_var.get()
+            near_target_label = self.near_target_var.get()
             spike_stop_pips = self._parse_number(self.spike_stop_pips_var.get())
             spike_take_pips = self._parse_number(self.spike_take_pips_var.get())
             spike_time_close_seconds = self._parse_number(
@@ -7036,6 +7102,13 @@ class Step1App:
             if near_speed_filter_enabled and near_speed_pips <= 0:
                 messagebox.showerror("エラー", "水平線手前の必要接近幅は0より大きくしてください。")
                 return None
+
+        near_target_map = {
+            "水平線": "sr",
+            "補助線": "range",
+            "両方": "both",
+        }
+        near_target_kind = near_target_map.get(near_target_label, "both")
         if spread_pips < 0:
             messagebox.showerror("エラー", "スプレッドは0以上にしてください。")
             return None
@@ -7409,6 +7482,7 @@ class Step1App:
             "near_speed_filter_enabled": near_speed_filter_enabled,
             "near_speed_seconds": near_speed_seconds,
             "near_speed_pips": near_speed_pips,
+            "near_target": near_target_kind,
             "near_stop_pips": near_stop_pips,
             "near_take_pips": near_take_pips,
             "near_time_close_seconds": near_time_close_seconds,
@@ -7806,6 +7880,10 @@ class Step1App:
         set_var(self.x_axis_mode_var, data.get("x_axis_mode"))
         set_var(self.chart_type_var, data.get("chart_type"))
         set_var(self.candle_interval_var, data.get("candle_interval"))
+        line_interval = data.get("line_interval")
+        if line_interval is None:
+            line_interval = data.get("candle_interval")
+        set_var(self.line_interval_var, line_interval)
         entry_spike = data.get("entry_spike_enabled")
         entry_sr = data.get("entry_sr_enabled")
         entry_near = data.get("entry_near_enabled")
@@ -8441,6 +8519,14 @@ class Step1App:
             self.sr_reentry_favored_tick_min_var,
             data.get("sr_reentry_favored_tick_min"),
         )
+        near_target = data.get("near_target")
+        if near_target in ("sr", "range", "both"):
+            near_target = {
+                "sr": "水平線",
+                "range": "補助線",
+                "both": "両方",
+            }.get(near_target, "両方")
+        set_var(self.near_target_var, near_target)
         set_bool(
             self.sr_reentry_midpoint_enabled_var,
             data.get("sr_reentry_midpoint_enabled"),
@@ -8553,6 +8639,7 @@ class Step1App:
             "x_axis_mode": self.x_axis_mode_var.get(),
             "chart_type": self.chart_type_var.get(),
             "candle_interval": int(self.candle_interval_var.get()),
+            "line_interval": int(self.line_interval_var.get()),
             "entry_spike_enabled": self.entry_spike_var.get(),
             "entry_sr_enabled": self.entry_sr_var.get(),
             "entry_near_enabled": self.entry_near_var.get(),
@@ -8806,6 +8893,7 @@ class Step1App:
             "sr_reentry_speed_ratio": self.sr_reentry_speed_ratio_var.get(),
             "sr_reentry_ratio_join": self.sr_reentry_ratio_join_var.get(),
             "sr_reentry_favored_tick_min": self.sr_reentry_favored_tick_min_var.get(),
+            "near_target": self.near_target_var.get(),
             "sr_reentry_midpoint_enabled": self.sr_reentry_midpoint_enabled_var.get(),
             "sr_reentry_dominance_enabled": self.sr_reentry_dominance_enabled_var.get(),
             "sr_reentry_move_ratio_enabled": self.sr_reentry_move_ratio_enabled_var.get(),
@@ -9099,7 +9187,7 @@ class Step1App:
             if not momentum_params:
                 return False
         try:
-            line_interval = int(self.candle_interval_var.get())
+            line_interval = int(self.line_interval_var.get())
         except Exception:
             line_interval = 1
         enabled_count = sum(

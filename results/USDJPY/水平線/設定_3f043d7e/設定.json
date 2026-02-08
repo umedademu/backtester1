@@ -648,6 +648,7 @@
     "near_namping_step5_lot": "32",
     "signal_chain_ignore_near": false,
     "signal_chain_count_near": true,
-    "signal_chain_trigger_near": true
+    "signal_chain_trigger_near": true,
+    "line_interval": 1
   }
 }

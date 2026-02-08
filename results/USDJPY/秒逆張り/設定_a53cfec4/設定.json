@@ -2,7 +2,7 @@
   "通貨": "USDJPY",
   "戦略": "秒逆張り",
   "設定ID": "a53cfec4",
-  "保存日時": "2026-02-08 06:28:08.020715",
+  "保存日時": "2026-02-08 06:29:08.455555",
   "パラメータ": {
     "allow_opposite_direction": false,
     "allow_same_direction": false,
@@ -201,7 +201,13 @@
     "stop_pips": 5.0,
     "take_pips": 15.0,
     "time_close_seconds": 0.0,
-    "window_ms": 500.0
+    "window_ms": 500.0,
+    "time_close_anchor": "last",
+    "common_time_close_anchor": "last",
+    "reverse_time_close_anchor": "last",
+    "momentum_time_close_anchor": "last",
+    "sr_time_close_anchor": "last",
+    "spike_time_close_anchor": "last"
   },
   "判定用パラメータ": {
     "allow_opposite_direction": false,
@@ -523,6 +529,11 @@
     "time_close_seconds": "0",
     "view_range_months": "1",
     "x_axis_mode": "time",
-    "zigzag_show": false
+    "zigzag_show": false,
+    "time_close_anchor": "last",
+    "reverse_time_close_anchor": "last",
+    "momentum_time_close_anchor": "last",
+    "sr_time_close_anchor": "last",
+    "spike_time_close_anchor": "last"
   }
 }

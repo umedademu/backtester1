@@ -60,6 +60,16 @@ def _coerce_int(value, default=0):
         return default
 
 
+def _coerce_time_close_anchor(value, default="last"):
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("first", "initial", "start", "初回"):
+            return "first"
+        if text in ("last", "latest", "final", "最終"):
+            return "last"
+    return default
+
+
 def normalize_json_value(value):
     if isinstance(value, dict):
         return {k: normalize_json_value(v) for k, v in sorted(value.items())}
@@ -280,6 +290,12 @@ def build_settings_id_params(params):
             "common_time_close_seconds", params.get("time_close_seconds", 0.0)
         )
     )
+    common_time_close_anchor = _coerce_time_close_anchor(
+        params.get(
+            "common_time_close_anchor", params.get("time_close_anchor", "last")
+        ),
+        "last",
+    )
     common_fixed_exit_price = _coerce_bool(
         params.get("common_fixed_exit_price", params.get("fixed_exit_price", True))
     )
@@ -422,6 +438,14 @@ def build_settings_id_params(params):
                 params.get(f"{kind}_time_close_seconds", common_time_close_seconds)
             )
         )
+        time_close_anchor = (
+            common_time_close_anchor
+            if common_time_override
+            else _coerce_time_close_anchor(
+                params.get(f"{kind}_time_close_anchor", common_time_close_anchor),
+                common_time_close_anchor,
+            )
+        )
         fixed_exit_price = (
             common_fixed_exit_price
             if common_fixed_override
@@ -459,7 +483,7 @@ def build_settings_id_params(params):
         fast_pips_value = fast_take_pips if fast_enabled else 0.0
         if stop_value == 0.0 and take_value == 0.0:
             fixed_exit_price = True
-        return {
+        result = {
             "stop_pips": stop_value,
             "take_pips": take_value,
             "time_close_seconds": time_value,
@@ -470,6 +494,9 @@ def build_settings_id_params(params):
             "namping_first_enabled": namping["first_enabled"],
             "namping_steps": namping["steps"],
         }
+        if time_value > 0.0 and time_close_anchor != "last":
+            result["time_close_anchor"] = time_close_anchor
+        return result
 
     if entry_reverse_enabled:
         effective["reverse_exit"] = resolve_exit("reverse")
@@ -2098,6 +2125,7 @@ def simulate_namping_trade(
     fast_take_min_pips=0.0,
     fast_take_window_ms=0.0,
     fast_take_pips=0.0,
+    time_close_anchor="last",
 ):
     if not points:
         return None
@@ -2131,6 +2159,7 @@ def simulate_namping_trade(
     if not first_entry_enabled and not enabled_steps:
         return None
 
+    time_anchor_mode = _coerce_time_close_anchor(time_close_anchor, "last")
     stop_ready = False
 
     entries = []
@@ -2193,7 +2222,8 @@ def simulate_namping_trade(
                 add_entry(j, current_entry_price, step["lot"], step["label"])
                 step["done"] = True
                 if time_close_seconds and time_close_seconds > 0:
-                    forced_close_time = ts + timedelta(seconds=time_close_seconds)
+                    if forced_close_time is None or time_anchor_mode == "last":
+                        forced_close_time = ts + timedelta(seconds=time_close_seconds)
         if enabled_steps and all(step["done"] for step in enabled_steps):
             stop_ready = True
 
@@ -2412,6 +2442,10 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     common_time_close_seconds = float(
         params.get("common_time_close_seconds", params.get("time_close_seconds", 0.0))
     )
+    common_time_close_anchor = _coerce_time_close_anchor(
+        params.get("common_time_close_anchor", params.get("time_close_anchor", "last")),
+        "last",
+    )
     common_fixed_exit_price = bool(
         params.get("common_fixed_exit_price", params.get("fixed_exit_price", True))
     )
@@ -2606,6 +2640,14 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 params.get(f"{kind}_time_close_seconds", common_time_close_seconds)
             )
         )
+        time_close_anchor = (
+            common_time_close_anchor
+            if common_time_override
+            else _coerce_time_close_anchor(
+                params.get(f"{kind}_time_close_anchor", common_time_close_anchor),
+                common_time_close_anchor,
+            )
+        )
         fixed_exit_price = (
             common_fixed_exit_price
             if common_fixed_override
@@ -2635,6 +2677,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             "stop": stop_pips * PIP_SIZE if stop_enabled else 0.0,
             "take": take_pips * PIP_SIZE if take_enabled else 0.0,
             "time_close_seconds": time_close_seconds if time_enabled else 0.0,
+            "time_close_anchor": time_close_anchor,
             "fixed_exit_price": fixed_exit_price,
             "fast_take_min": fast_take_min if fast_enabled else 0.0,
             "fast_take_window_ms": fast_take_window_ms if fast_enabled else 0.0,
@@ -3245,6 +3288,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 fast_take_min_pips=trade_params["fast_take_min"],
                 fast_take_window_ms=trade_params["fast_take_window_ms"],
                 fast_take_pips=trade_params["fast_take_pips"],
+                time_close_anchor=trade_params["time_close_anchor"],
             )
             if not trade_result:
                 i = entry_idx + 1
@@ -3405,6 +3449,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 fast_take_min_pips=trade_params["fast_take_min"],
                 fast_take_window_ms=trade_params["fast_take_window_ms"],
                 fast_take_pips=trade_params["fast_take_pips"],
+                time_close_anchor=trade_params["time_close_anchor"],
             )
             if not trade_result:
                 i = entry_idx + 1
@@ -3523,6 +3568,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 fast_take_min_pips=trade_params["fast_take_min"],
                 fast_take_window_ms=trade_params["fast_take_window_ms"],
                 fast_take_pips=trade_params["fast_take_pips"],
+                time_close_anchor=trade_params["time_close_anchor"],
             )
             if not trade_result:
                 i = entry_idx + 1
@@ -3648,6 +3694,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 fast_take_min_pips=trade_params["fast_take_min"],
                 fast_take_window_ms=trade_params["fast_take_window_ms"],
                 fast_take_pips=trade_params["fast_take_pips"],
+                time_close_anchor=trade_params["time_close_anchor"],
             )
             if not trade_result:
                 i = entry_idx + 1
@@ -3938,6 +3985,7 @@ class Step1App:
         self.stop_pips_var = tk.StringVar(value="10.0")
         self.take_pips_var = tk.StringVar(value="10.0")
         self.time_close_seconds_var = tk.StringVar(value="0")
+        self.time_close_anchor_var = tk.StringVar(value="last")
         self.fixed_exit_price_var = tk.BooleanVar(value=True)
         self.fast_take_min_var = tk.StringVar(value="5")
         self.fast_take_window_ms_var = tk.StringVar(value="2000")
@@ -3955,6 +4003,7 @@ class Step1App:
         self.reverse_stop_pips_var = tk.StringVar(value="10.0")
         self.reverse_take_pips_var = tk.StringVar(value="10.0")
         self.reverse_time_close_seconds_var = tk.StringVar(value="0")
+        self.reverse_time_close_anchor_var = tk.StringVar(value="last")
         self.reverse_fixed_exit_price_var = tk.BooleanVar(value=True)
         self.reverse_fast_take_min_var = tk.StringVar(value="5")
         self.reverse_fast_take_window_ms_var = tk.StringVar(value="2000")
@@ -3966,6 +4015,7 @@ class Step1App:
         self.momentum_stop_pips_var = tk.StringVar(value="10.0")
         self.momentum_take_pips_var = tk.StringVar(value="10.0")
         self.momentum_time_close_seconds_var = tk.StringVar(value="0")
+        self.momentum_time_close_anchor_var = tk.StringVar(value="last")
         self.momentum_fixed_exit_price_var = tk.BooleanVar(value=True)
         self.momentum_fast_take_min_var = tk.StringVar(value="5")
         self.momentum_fast_take_window_ms_var = tk.StringVar(value="2000")
@@ -3977,6 +4027,7 @@ class Step1App:
         self.sr_stop_pips_var = tk.StringVar(value="10.0")
         self.sr_take_pips_var = tk.StringVar(value="10.0")
         self.sr_time_close_seconds_var = tk.StringVar(value="0")
+        self.sr_time_close_anchor_var = tk.StringVar(value="last")
         self.sr_fixed_exit_price_var = tk.BooleanVar(value=True)
         self.sr_fast_take_min_var = tk.StringVar(value="5")
         self.sr_fast_take_window_ms_var = tk.StringVar(value="2000")
@@ -3988,6 +4039,7 @@ class Step1App:
         self.spike_stop_pips_var = tk.StringVar(value="10.0")
         self.spike_take_pips_var = tk.StringVar(value="10.0")
         self.spike_time_close_seconds_var = tk.StringVar(value="0")
+        self.spike_time_close_anchor_var = tk.StringVar(value="last")
         self.spike_fixed_exit_price_var = tk.BooleanVar(value=True)
         self.spike_fast_take_min_var = tk.StringVar(value="5")
         self.spike_fast_take_window_ms_var = tk.StringVar(value="2000")
@@ -4737,57 +4789,73 @@ class Step1App:
             variable=self.common_time_override_var,
             command=self._on_common_override_toggle,
         ).grid(row=3, column=3, padx=(6, 0), pady=(6, 0), sticky="w")
+        self.common_time_anchor_label = ttk.Label(common_close, text="時間計測起点")
+        self.common_time_anchor_label.grid(row=4, column=1, sticky="w", pady=(6, 0))
+        self.common_time_anchor_first = ttk.Radiobutton(
+            common_close,
+            text="初回",
+            variable=self.time_close_anchor_var,
+            value="first",
+        )
+        self.common_time_anchor_first.grid(row=4, column=2, sticky="w", pady=(6, 0))
+        self.common_time_anchor_last = ttk.Radiobutton(
+            common_close,
+            text="最終",
+            variable=self.time_close_anchor_var,
+            value="last",
+        )
+        self.common_time_anchor_last.grid(row=4, column=3, sticky="w", pady=(6, 0))
         self.common_fast_take_check = ttk.Checkbutton(
             common_close,
             text="",
             variable=self.common_fast_take_enabled_var,
             command=lambda: self._on_close_toggle("common", "fast"),
         )
-        self.common_fast_take_check.grid(row=4, column=0, sticky="w", pady=(6, 0))
+        self.common_fast_take_check.grid(row=5, column=0, sticky="w", pady=(6, 0))
         ttk.Label(common_close, text="急伸利確 最低幅（pp）").grid(
-            row=4, column=1, sticky="w", pady=(6, 0)
+            row=5, column=1, sticky="w", pady=(6, 0)
         )
         self.common_fast_take_min_entry = ttk.Entry(
             common_close, textvariable=self.fast_take_min_var, width=8
         )
         self.common_fast_take_min_entry.grid(
-            row=4, column=2, padx=(2, 12), pady=(6, 0), sticky="w"
+            row=5, column=2, padx=(2, 12), pady=(6, 0), sticky="w"
         )
         ttk.Label(common_close, text="ミリ秒").grid(
-            row=4, column=3, sticky="w", pady=(6, 0)
+            row=5, column=3, sticky="w", pady=(6, 0)
         )
         self.common_fast_take_window_entry = ttk.Entry(
             common_close, textvariable=self.fast_take_window_ms_var, width=8
         )
         self.common_fast_take_window_entry.grid(
-            row=4, column=4, padx=(2, 12), pady=(6, 0), sticky="w"
+            row=5, column=4, padx=(2, 12), pady=(6, 0), sticky="w"
         )
         ttk.Label(common_close, text="ピプス（pp）").grid(
-            row=4, column=5, sticky="w", pady=(6, 0)
+            row=5, column=5, sticky="w", pady=(6, 0)
         )
         self.common_fast_take_pips_entry = ttk.Entry(
             common_close, textvariable=self.fast_take_pips_var, width=8
         )
         self.common_fast_take_pips_entry.grid(
-            row=4, column=6, padx=(2, 12), pady=(6, 0), sticky="w"
+            row=5, column=6, padx=(2, 12), pady=(6, 0), sticky="w"
         )
         ttk.Checkbutton(
             common_close,
             text="共通優先",
             variable=self.common_fast_take_override_var,
             command=self._on_common_override_toggle,
-        ).grid(row=4, column=7, padx=(6, 0), pady=(6, 0), sticky="w")
+        ).grid(row=5, column=7, padx=(6, 0), pady=(6, 0), sticky="w")
         self.fixed_exit_price_check = ttk.Checkbutton(
             common_close,
             text="損切/利確を固定決済",
             variable=self.fixed_exit_price_var,
         )
         self.fixed_exit_price_check.grid(
-            row=5, column=1, padx=(0, 8), pady=(6, 0), sticky="w"
+            row=6, column=1, padx=(0, 8), pady=(6, 0), sticky="w"
         )
         ttk.Checkbutton(
             common_close, text="共通優先", variable=self.common_fixed_override_var
-        ).grid(row=5, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
+        ).grid(row=6, column=2, padx=(6, 0), pady=(6, 0), sticky="w")
 
         common_namping = ttk.LabelFrame(common_panel, text="ナンピン条件（共通）")
         common_namping.grid(row=1, column=0, sticky="ew", pady=(0, 6))
@@ -5091,6 +5159,7 @@ class Step1App:
             stop_var,
             take_var,
             time_var,
+            time_anchor_var,
             fixed_var,
             fast_min_var,
             fast_window_var,
@@ -5134,34 +5203,44 @@ class Step1App:
             time_label.grid(row=2, column=1, sticky="w", pady=(6, 0))
             time_entry = ttk.Entry(frame, textvariable=time_var, width=8)
             time_entry.grid(row=2, column=2, padx=(4, 12), pady=(6, 0), sticky="w")
+            time_anchor_label = ttk.Label(frame, text="時間計測起点")
+            time_anchor_label.grid(row=3, column=1, sticky="w", pady=(6, 0))
+            time_anchor_first = ttk.Radiobutton(
+                frame, text="初回", variable=time_anchor_var, value="first"
+            )
+            time_anchor_first.grid(row=3, column=2, sticky="w", pady=(6, 0))
+            time_anchor_last = ttk.Radiobutton(
+                frame, text="最終", variable=time_anchor_var, value="last"
+            )
+            time_anchor_last.grid(row=3, column=3, sticky="w", pady=(6, 0))
             fast_check = ttk.Checkbutton(
                 frame,
                 text="",
                 variable=fast_enabled_var,
                 command=lambda: self._on_close_toggle(key, "fast"),
             )
-            fast_check.grid(row=3, column=0, sticky="w", pady=(6, 0))
+            fast_check.grid(row=4, column=0, sticky="w", pady=(6, 0))
             fast_label = ttk.Label(frame, text="急伸利確 最低幅（pp）")
-            fast_label.grid(row=3, column=1, sticky="w", pady=(6, 0))
+            fast_label.grid(row=4, column=1, sticky="w", pady=(6, 0))
             fast_min_entry = ttk.Entry(frame, textvariable=fast_min_var, width=8)
             fast_min_entry.grid(
-                row=3, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
+                row=4, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
             )
             fast_window_label = ttk.Label(frame, text="ミリ秒")
-            fast_window_label.grid(row=3, column=3, sticky="w", pady=(6, 0))
+            fast_window_label.grid(row=4, column=3, sticky="w", pady=(6, 0))
             fast_window_entry = ttk.Entry(frame, textvariable=fast_window_var, width=8)
             fast_window_entry.grid(
-                row=3, column=4, padx=(4, 12), pady=(6, 0), sticky="w"
+                row=4, column=4, padx=(4, 12), pady=(6, 0), sticky="w"
             )
             fast_pips_label = ttk.Label(frame, text="ピプス（pp）")
-            fast_pips_label.grid(row=3, column=5, sticky="w", pady=(6, 0))
+            fast_pips_label.grid(row=4, column=5, sticky="w", pady=(6, 0))
             fast_pips_entry = ttk.Entry(frame, textvariable=fast_pips_var, width=8)
             fast_pips_entry.grid(
-                row=3, column=6, padx=(4, 12), pady=(6, 0), sticky="w"
+                row=4, column=6, padx=(4, 12), pady=(6, 0), sticky="w"
             )
             ttk.Checkbutton(
                 frame, text="損切/利確を固定決済", variable=fixed_var
-            ).grid(row=4, column=1, columnspan=2, pady=(6, 0), sticky="w")
+            ).grid(row=5, column=1, columnspan=2, pady=(6, 0), sticky="w")
             self._register_close_condition(
                 key, "stop", stop_enabled_var, stop_check, [stop_label, stop_entry]
             )
@@ -5169,7 +5248,17 @@ class Step1App:
                 key, "take", take_enabled_var, take_check, [take_label, take_entry]
             )
             self._register_close_condition(
-                key, "time", time_enabled_var, time_check, [time_label, time_entry]
+                key,
+                "time",
+                time_enabled_var,
+                time_check,
+                [
+                    time_label,
+                    time_entry,
+                    time_anchor_label,
+                    time_anchor_first,
+                    time_anchor_last,
+                ],
             )
             self._register_close_condition(
                 key,
@@ -5200,6 +5289,7 @@ class Step1App:
             self.reverse_stop_pips_var,
             self.reverse_take_pips_var,
             self.reverse_time_close_seconds_var,
+            self.reverse_time_close_anchor_var,
             self.reverse_fixed_exit_price_var,
             self.reverse_fast_take_min_var,
             self.reverse_fast_take_window_ms_var,
@@ -5266,6 +5356,7 @@ class Step1App:
             self.momentum_stop_pips_var,
             self.momentum_take_pips_var,
             self.momentum_time_close_seconds_var,
+            self.momentum_time_close_anchor_var,
             self.momentum_fixed_exit_price_var,
             self.momentum_fast_take_min_var,
             self.momentum_fast_take_window_ms_var,
@@ -5331,6 +5422,7 @@ class Step1App:
             self.sr_stop_pips_var,
             self.sr_take_pips_var,
             self.sr_time_close_seconds_var,
+            self.sr_time_close_anchor_var,
             self.sr_fixed_exit_price_var,
             self.sr_fast_take_min_var,
             self.sr_fast_take_window_ms_var,
@@ -5532,6 +5624,7 @@ class Step1App:
             self.spike_stop_pips_var,
             self.spike_take_pips_var,
             self.spike_time_close_seconds_var,
+            self.spike_time_close_anchor_var,
             self.spike_fixed_exit_price_var,
             self.spike_fast_take_min_var,
             self.spike_fast_take_window_ms_var,
@@ -5628,7 +5721,12 @@ class Step1App:
             "time",
             self.common_time_enabled_var,
             self.common_time_check,
-            [self.common_time_entry],
+            [
+                self.common_time_entry,
+                self.common_time_anchor_label,
+                self.common_time_anchor_first,
+                self.common_time_anchor_last,
+            ],
         )
         self._register_close_condition(
             "common",
@@ -6053,6 +6151,10 @@ class Step1App:
             common_time_close_seconds = self._parse_number(
                 self.time_close_seconds_var.get()
             )
+            common_time_close_anchor = _coerce_time_close_anchor(
+                self.time_close_anchor_var.get(),
+                "last",
+            )
             common_fixed_exit_price = self.fixed_exit_price_var.get()
             common_fast_take_min = self._parse_number(self.fast_take_min_var.get())
             common_fast_take_window_ms = self._parse_number(
@@ -6074,6 +6176,10 @@ class Step1App:
             reverse_time_close_seconds = self._parse_number(
                 self.reverse_time_close_seconds_var.get()
             )
+            reverse_time_close_anchor = _coerce_time_close_anchor(
+                self.reverse_time_close_anchor_var.get(),
+                common_time_close_anchor,
+            )
             reverse_fixed_exit_price = self.reverse_fixed_exit_price_var.get()
             reverse_fast_take_min = self._parse_number(
                 self.reverse_fast_take_min_var.get()
@@ -6093,6 +6199,10 @@ class Step1App:
             momentum_time_close_seconds = self._parse_number(
                 self.momentum_time_close_seconds_var.get()
             )
+            momentum_time_close_anchor = _coerce_time_close_anchor(
+                self.momentum_time_close_anchor_var.get(),
+                common_time_close_anchor,
+            )
             momentum_fixed_exit_price = self.momentum_fixed_exit_price_var.get()
             momentum_fast_take_min = self._parse_number(
                 self.momentum_fast_take_min_var.get()
@@ -6110,6 +6220,10 @@ class Step1App:
             sr_stop_pips = self._parse_number(self.sr_stop_pips_var.get())
             sr_take_pips = self._parse_number(self.sr_take_pips_var.get())
             sr_time_close_seconds = self._parse_number(self.sr_time_close_seconds_var.get())
+            sr_time_close_anchor = _coerce_time_close_anchor(
+                self.sr_time_close_anchor_var.get(),
+                common_time_close_anchor,
+            )
             sr_fixed_exit_price = self.sr_fixed_exit_price_var.get()
             sr_fast_take_min = self._parse_number(self.sr_fast_take_min_var.get())
             sr_fast_take_window_ms = self._parse_number(
@@ -6124,6 +6238,10 @@ class Step1App:
             spike_take_pips = self._parse_number(self.spike_take_pips_var.get())
             spike_time_close_seconds = self._parse_number(
                 self.spike_time_close_seconds_var.get()
+            )
+            spike_time_close_anchor = _coerce_time_close_anchor(
+                self.spike_time_close_anchor_var.get(),
+                common_time_close_anchor,
             )
             spike_fixed_exit_price = self.spike_fixed_exit_price_var.get()
             spike_fast_take_min = self._parse_number(self.spike_fast_take_min_var.get())
@@ -6500,10 +6618,12 @@ class Step1App:
             "stop_pips": common_stop_pips,
             "take_pips": common_take_pips,
             "time_close_seconds": common_time_close_seconds,
+            "time_close_anchor": common_time_close_anchor,
             "fixed_exit_price": common_fixed_exit_price,
             "common_stop_pips": common_stop_pips,
             "common_take_pips": common_take_pips,
             "common_time_close_seconds": common_time_close_seconds,
+            "common_time_close_anchor": common_time_close_anchor,
             "common_fixed_exit_price": common_fixed_exit_price,
             "common_fast_take_min": common_fast_take_min,
             "common_fast_take_window_ms": common_fast_take_window_ms,
@@ -6521,6 +6641,7 @@ class Step1App:
             "reverse_stop_pips": reverse_stop_pips,
             "reverse_take_pips": reverse_take_pips,
             "reverse_time_close_seconds": reverse_time_close_seconds,
+            "reverse_time_close_anchor": reverse_time_close_anchor,
             "reverse_fixed_exit_price": reverse_fixed_exit_price,
             "reverse_fast_take_min": reverse_fast_take_min,
             "reverse_fast_take_window_ms": reverse_fast_take_window_ms,
@@ -6532,6 +6653,7 @@ class Step1App:
             "momentum_stop_pips": momentum_stop_pips,
             "momentum_take_pips": momentum_take_pips,
             "momentum_time_close_seconds": momentum_time_close_seconds,
+            "momentum_time_close_anchor": momentum_time_close_anchor,
             "momentum_fixed_exit_price": momentum_fixed_exit_price,
             "momentum_fast_take_min": momentum_fast_take_min,
             "momentum_fast_take_window_ms": momentum_fast_take_window_ms,
@@ -6543,6 +6665,7 @@ class Step1App:
             "sr_stop_pips": sr_stop_pips,
             "sr_take_pips": sr_take_pips,
             "sr_time_close_seconds": sr_time_close_seconds,
+            "sr_time_close_anchor": sr_time_close_anchor,
             "sr_fixed_exit_price": sr_fixed_exit_price,
             "sr_fast_take_min": sr_fast_take_min,
             "sr_fast_take_window_ms": sr_fast_take_window_ms,
@@ -6554,6 +6677,7 @@ class Step1App:
             "spike_stop_pips": spike_stop_pips,
             "spike_take_pips": spike_take_pips,
             "spike_time_close_seconds": spike_time_close_seconds,
+            "spike_time_close_anchor": spike_time_close_anchor,
             "spike_fixed_exit_price": spike_fixed_exit_price,
             "spike_fast_take_min": spike_fast_take_min,
             "spike_fast_take_window_ms": spike_fast_take_window_ms,
@@ -7052,6 +7176,11 @@ class Step1App:
                 except Exception:
                     time_close_seconds = None
         set_var(self.time_close_seconds_var, time_close_seconds)
+        default_time_anchor = _coerce_time_close_anchor(
+            data.get("time_close_anchor", data.get("common_time_close_anchor", "last")),
+            "last",
+        )
+        set_var(self.time_close_anchor_var, default_time_anchor)
         set_bool(self.fixed_exit_price_var, data.get("fixed_exit_price"))
         set_bool(self.common_stop_enabled_var, data.get("common_stop_enabled"))
         set_bool(self.common_take_enabled_var, data.get("common_take_enabled"))
@@ -7068,6 +7197,13 @@ class Step1App:
         set_var(
             self.reverse_time_close_seconds_var,
             data.get("reverse_time_close_seconds"),
+        )
+        set_var(
+            self.reverse_time_close_anchor_var,
+            _coerce_time_close_anchor(
+                data.get("reverse_time_close_anchor"),
+                default_time_anchor,
+            ),
         )
         set_bool(self.reverse_fixed_exit_price_var, data.get("reverse_fixed_exit_price"))
         set_var(self.reverse_fast_take_min_var, data.get("reverse_fast_take_min"))
@@ -7086,6 +7222,13 @@ class Step1App:
             self.momentum_time_close_seconds_var,
             data.get("momentum_time_close_seconds"),
         )
+        set_var(
+            self.momentum_time_close_anchor_var,
+            _coerce_time_close_anchor(
+                data.get("momentum_time_close_anchor"),
+                default_time_anchor,
+            ),
+        )
         set_bool(
             self.momentum_fixed_exit_price_var, data.get("momentum_fixed_exit_price")
         )
@@ -7102,6 +7245,13 @@ class Step1App:
         set_var(self.sr_stop_pips_var, data.get("sr_stop_pips"))
         set_var(self.sr_take_pips_var, data.get("sr_take_pips"))
         set_var(self.sr_time_close_seconds_var, data.get("sr_time_close_seconds"))
+        set_var(
+            self.sr_time_close_anchor_var,
+            _coerce_time_close_anchor(
+                data.get("sr_time_close_anchor"),
+                default_time_anchor,
+            ),
+        )
         set_bool(self.sr_fixed_exit_price_var, data.get("sr_fixed_exit_price"))
         set_var(self.sr_fast_take_min_var, data.get("sr_fast_take_min"))
         set_var(self.sr_fast_take_window_ms_var, data.get("sr_fast_take_window_ms"))
@@ -7115,6 +7265,13 @@ class Step1App:
         set_var(
             self.spike_time_close_seconds_var,
             data.get("spike_time_close_seconds"),
+        )
+        set_var(
+            self.spike_time_close_anchor_var,
+            _coerce_time_close_anchor(
+                data.get("spike_time_close_anchor"),
+                default_time_anchor,
+            ),
         )
         set_bool(self.spike_fixed_exit_price_var, data.get("spike_fixed_exit_price"))
         set_var(self.spike_fast_take_min_var, data.get("spike_fast_take_min"))
@@ -7572,6 +7729,7 @@ class Step1App:
             "stop_pips": self.stop_pips_var.get(),
             "take_pips": self.take_pips_var.get(),
             "time_close_seconds": self.time_close_seconds_var.get(),
+            "time_close_anchor": self.time_close_anchor_var.get(),
             "fixed_exit_price": self.fixed_exit_price_var.get(),
             "fast_take_min": self.fast_take_min_var.get(),
             "fast_take_window_ms": self.fast_take_window_ms_var.get(),
@@ -7589,6 +7747,7 @@ class Step1App:
             "reverse_stop_pips": self.reverse_stop_pips_var.get(),
             "reverse_take_pips": self.reverse_take_pips_var.get(),
             "reverse_time_close_seconds": self.reverse_time_close_seconds_var.get(),
+            "reverse_time_close_anchor": self.reverse_time_close_anchor_var.get(),
             "reverse_fixed_exit_price": self.reverse_fixed_exit_price_var.get(),
             "reverse_fast_take_min": self.reverse_fast_take_min_var.get(),
             "reverse_fast_take_window_ms": self.reverse_fast_take_window_ms_var.get(),
@@ -7600,6 +7759,7 @@ class Step1App:
             "momentum_stop_pips": self.momentum_stop_pips_var.get(),
             "momentum_take_pips": self.momentum_take_pips_var.get(),
             "momentum_time_close_seconds": self.momentum_time_close_seconds_var.get(),
+            "momentum_time_close_anchor": self.momentum_time_close_anchor_var.get(),
             "momentum_fixed_exit_price": self.momentum_fixed_exit_price_var.get(),
             "momentum_fast_take_min": self.momentum_fast_take_min_var.get(),
             "momentum_fast_take_window_ms": self.momentum_fast_take_window_ms_var.get(),
@@ -7611,6 +7771,7 @@ class Step1App:
             "sr_stop_pips": self.sr_stop_pips_var.get(),
             "sr_take_pips": self.sr_take_pips_var.get(),
             "sr_time_close_seconds": self.sr_time_close_seconds_var.get(),
+            "sr_time_close_anchor": self.sr_time_close_anchor_var.get(),
             "sr_fixed_exit_price": self.sr_fixed_exit_price_var.get(),
             "sr_fast_take_min": self.sr_fast_take_min_var.get(),
             "sr_fast_take_window_ms": self.sr_fast_take_window_ms_var.get(),
@@ -7622,6 +7783,7 @@ class Step1App:
             "spike_stop_pips": self.spike_stop_pips_var.get(),
             "spike_take_pips": self.spike_take_pips_var.get(),
             "spike_time_close_seconds": self.spike_time_close_seconds_var.get(),
+            "spike_time_close_anchor": self.spike_time_close_anchor_var.get(),
             "spike_fixed_exit_price": self.spike_fixed_exit_price_var.get(),
             "spike_fast_take_min": self.spike_fast_take_min_var.get(),
             "spike_fast_take_window_ms": self.spike_fast_take_window_ms_var.get(),

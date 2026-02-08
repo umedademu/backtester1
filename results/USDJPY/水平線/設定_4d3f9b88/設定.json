@@ -222,7 +222,13 @@
     "stop_pips": 10.0,
     "take_pips": 15.0,
     "time_close_seconds": 14400.0,
-    "window_ms": 500.0
+    "window_ms": 500.0,
+    "time_close_anchor": "last",
+    "common_time_close_anchor": "last",
+    "reverse_time_close_anchor": "last",
+    "momentum_time_close_anchor": "last",
+    "sr_time_close_anchor": "last",
+    "spike_time_close_anchor": "last"
   },
   "判定用パラメータ": {
     "allow_opposite_direction": true,
@@ -563,6 +569,11 @@
     "time_close_seconds": "14400",
     "view_range_months": "1",
     "x_axis_mode": "time",
-    "zigzag_show": false
+    "zigzag_show": false,
+    "time_close_anchor": "last",
+    "reverse_time_close_anchor": "last",
+    "momentum_time_close_anchor": "last",
+    "sr_time_close_anchor": "last",
+    "spike_time_close_anchor": "last"
   }
 }

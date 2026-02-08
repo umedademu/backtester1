@@ -9628,6 +9628,10 @@ class Step1App:
             "ma_use_saved": payload.get("ma_use_saved", False),
             "sr_params": sr_params,
             "range_params": range_params,
+            "overlay_sr_enabled": payload.get("overlay_sr_enabled"),
+            "overlay_zigzag_show": payload.get("overlay_zigzag_show"),
+            "overlay_sr_line_show": payload.get("overlay_sr_line_show"),
+            "overlay_range_band_show": payload.get("overlay_range_band_show"),
             "sr_segments": [],
             "zigzag_points": [],
             "range_segments": [],
@@ -11125,30 +11129,101 @@ class Step1App:
         months_sorted = sorted(months)
         return trades, months_sorted
 
-    def _load_saved_ma_settings(self, settings_path: Path):
+    def _load_saved_chart_settings(self, settings_path: Path):
+        defaults = {
+            "ma_use_saved": False,
+            "ma_enabled": False,
+            "ma_unit": "min",
+            "ma_period": 1,
+            "sr_params": {},
+            "range_params": {},
+            "overlay_enabled": False,
+            "zigzag_show": False,
+            "sr_line_show": True,
+            "range_band_show": False,
+        }
         if not settings_path or not Path(settings_path).exists():
-            return None
+            return defaults
         try:
             with Path(settings_path).open("r", encoding="utf-8") as f:
                 payload = json.load(f)
         except Exception:
-            return None
+            return defaults
+
         params = payload.get("パラメータ")
         if not isinstance(params, dict):
-            return None
-        ma_enabled = bool(params.get("ma_enabled", False))
+            return defaults
+        ui_state = payload.get("画面設定")
+        if not isinstance(ui_state, dict):
+            ui_state = {}
+
+        saved = dict(defaults)
+        saved["ma_use_saved"] = True
+
+        ma_enabled = _coerce_bool(params.get("ma_enabled", False))
         ma_unit = params.get("ma_unit") or "min"
         if ma_unit not in ("sec", "min"):
             ma_unit = "min"
-        try:
-            ma_period = int(params.get("ma_period", 0))
-        except Exception:
-            ma_period = 0
+        ma_period = _coerce_int(params.get("ma_period", 0), 0)
         if ma_period <= 0:
             ma_enabled = False
         if ma_period < 1:
             ma_period = 1
-        return {"enabled": ma_enabled, "unit": ma_unit, "period": ma_period}
+        saved["ma_enabled"] = ma_enabled
+        saved["ma_unit"] = ma_unit
+        saved["ma_period"] = ma_period
+
+        sr_params = params.get("sr_params")
+        if not isinstance(sr_params, dict):
+            sr_params = {}
+        sr_params = dict(sr_params)
+        if "zigzag_pips" not in sr_params and params.get("sr_zigzag_pips") is not None:
+            sr_params["zigzag_pips"] = _coerce_float(
+                params.get("sr_zigzag_pips"), 5.0
+            )
+        if "break_pips" not in sr_params and params.get("sr_break_pips") is not None:
+            sr_params["break_pips"] = _coerce_float(params.get("sr_break_pips"), 1.0)
+        if "min_bars" not in sr_params and params.get("sr_min_bars") is not None:
+            sr_params["min_bars"] = _coerce_int(params.get("sr_min_bars"), 5)
+        if "min_bars" in sr_params:
+            sr_params["min_bars"] = max(1, _coerce_int(sr_params.get("min_bars"), 5))
+
+        range_params = params.get("range_params")
+        if not isinstance(range_params, dict):
+            range_params = {}
+        range_params = dict(range_params)
+        if (
+            "lookback_bars" not in range_params
+            and params.get("range_band_bars") is not None
+        ):
+            range_params["lookback_bars"] = _coerce_int(
+                params.get("range_band_bars"), 30
+            )
+        if "lookback_bars" in range_params:
+            range_params["lookback_bars"] = max(
+                1, _coerce_int(range_params.get("lookback_bars"), 30)
+            )
+
+        entry_sr_enabled = _coerce_bool(params.get("entry_sr_enabled"), False)
+        entry_near_enabled = _coerce_bool(params.get("entry_near_enabled"), False)
+        saved["sr_params"] = sr_params
+        saved["range_params"] = range_params
+        saved["overlay_enabled"] = (
+            entry_sr_enabled
+            or entry_near_enabled
+            or bool(sr_params)
+            or bool(range_params)
+        )
+        saved["zigzag_show"] = _coerce_bool(
+            ui_state.get("zigzag_show"), defaults["zigzag_show"]
+        )
+        saved["sr_line_show"] = _coerce_bool(
+            ui_state.get("sr_line_show"), defaults["sr_line_show"]
+        )
+        saved["range_band_show"] = _coerce_bool(
+            ui_state.get("range_band_show"), defaults["range_band_show"]
+        )
+        return saved
 
     def _load_chart_saved(self):
         if self.chart_worker and self.chart_worker.is_alive():
@@ -11172,9 +11247,9 @@ class Step1App:
             messagebox.showerror("エラー", "保存先が見つかりません。")
             return
         settings_path = target.get("settings_path")
-        ma_settings = None
+        saved_chart_settings = None
         if settings_path:
-            ma_settings = self._load_saved_ma_settings(Path(settings_path))
+            saved_chart_settings = self._load_saved_chart_settings(Path(settings_path))
 
         trades = [
             t
@@ -11191,7 +11266,12 @@ class Step1App:
             self.chart_cancel_button.config(state="normal")
         self.chart_worker = threading.Thread(
             target=self._chart_saved_worker,
-            args=(self.view_start_date, self.view_end_date, trades, ma_settings),
+            args=(
+                self.view_start_date,
+                self.view_end_date,
+                trades,
+                saved_chart_settings,
+            ),
             daemon=True,
         )
         self.chart_worker.start()
@@ -11199,7 +11279,7 @@ class Step1App:
             self._apply_pnl_csv(Path(trade_path), source_label="保存結果")
             self._apply_pnl_filter("month", month_text)
 
-    def _chart_saved_worker(self, start: date, end: date, trades, ma_settings):
+    def _chart_saved_worker(self, start: date, end: date, trades, saved_chart_settings):
         cache, cache_hit = self._load_analysis_cache(start, end)
         points_sorted = cache.get("points_sorted") or []
         missing = cache.get("missing") or ()
@@ -11212,42 +11292,74 @@ class Step1App:
         ma_series = []
         ma_enabled = False
         ma_use_saved = False
-        if ma_settings:
-            ma_use_saved = True
-            ma_enabled = bool(ma_settings.get("enabled", False))
-            ma_unit = ma_settings.get("unit", "min")
-            ma_period = int(ma_settings.get("period", 0))
-            if ma_enabled and ma_period > 0:
-                try:
-                    if ma_unit == "sec":
-                        _times, _values, ma_series = build_second_ma(
-                            points_sorted,
-                            ma_period,
-                            should_cancel=self.chart_cancel_event.is_set,
-                        )
-                    else:
-                        minute_candles = build_minute_candles(
-                            points_sorted, should_cancel=self.chart_cancel_event.is_set
-                        )
-                        _times, _values, ma_series = build_minute_ma(
-                            minute_candles,
-                            ma_period,
-                            should_cancel=self.chart_cancel_event.is_set,
-                        )
-                except InterruptedError:
-                    self.queue.put(("chart_done", None))
-                    return
+        ma_unit = "min"
+        ma_period = 0
+        sr_params = {}
+        range_params = {}
+        overlay_sr_enabled = None
+        overlay_zigzag_show = None
+        overlay_sr_line_show = None
+        overlay_range_band_show = None
+        if isinstance(saved_chart_settings, dict):
+            ma_use_saved = _coerce_bool(saved_chart_settings.get("ma_use_saved"), False)
+            ma_enabled = _coerce_bool(saved_chart_settings.get("ma_enabled"), False)
+            ma_unit = saved_chart_settings.get("ma_unit", "min")
+            if ma_unit not in ("sec", "min"):
+                ma_unit = "min"
+            ma_period = _coerce_int(saved_chart_settings.get("ma_period"), 0)
+            sr_params_raw = saved_chart_settings.get("sr_params")
+            if isinstance(sr_params_raw, dict):
+                sr_params = dict(sr_params_raw)
+            range_params_raw = saved_chart_settings.get("range_params")
+            if isinstance(range_params_raw, dict):
+                range_params = dict(range_params_raw)
+            overlay_sr_enabled = _coerce_bool(
+                saved_chart_settings.get("overlay_enabled"), False
+            )
+            overlay_zigzag_show = _coerce_bool(
+                saved_chart_settings.get("zigzag_show"), False
+            )
+            overlay_sr_line_show = _coerce_bool(
+                saved_chart_settings.get("sr_line_show"), True
+            )
+            overlay_range_band_show = _coerce_bool(
+                saved_chart_settings.get("range_band_show"), False
+            )
+        if ma_enabled and ma_period > 0:
+            try:
+                if ma_unit == "sec":
+                    _times, _values, ma_series = build_second_ma(
+                        points_sorted,
+                        ma_period,
+                        should_cancel=self.chart_cancel_event.is_set,
+                    )
+                else:
+                    minute_candles = build_minute_candles(
+                        points_sorted, should_cancel=self.chart_cancel_event.is_set
+                    )
+                    _times, _values, ma_series = build_minute_ma(
+                        minute_candles,
+                        ma_period,
+                        should_cancel=self.chart_cancel_event.is_set,
+                    )
+            except InterruptedError:
+                self.queue.put(("chart_done", None))
+                return
         payload = {
             "start": start,
             "end": end,
             "points": points_sorted,
             "missing_count": len(missing),
-            "sr_params": {},
-            "range_params": {},
+            "sr_params": sr_params,
+            "range_params": range_params,
             "trades": trades,
             "ma_series": ma_series,
             "ma_enabled": ma_enabled,
             "ma_use_saved": ma_use_saved,
+            "overlay_sr_enabled": overlay_sr_enabled,
+            "overlay_zigzag_show": overlay_zigzag_show,
+            "overlay_sr_line_show": overlay_sr_line_show,
+            "overlay_range_band_show": overlay_range_band_show,
             "focus_trade_index": 0 if trades else None,
         }
         self.queue.put(("chart_data", payload))
@@ -11882,10 +11994,32 @@ class Step1App:
             return
 
         candles = None
-        sr_entry_enabled = self.entry_sr_var.get()
-        show_zigzag = sr_entry_enabled and self.zigzag_show_var.get()
-        show_sr_line = sr_entry_enabled and self.sr_line_show_var.get()
-        show_range_band = sr_entry_enabled and self.range_band_show_var.get()
+        saved_sr_enabled = data.get("overlay_sr_enabled")
+        if saved_sr_enabled is None:
+            sr_entry_enabled = self.entry_sr_var.get()
+        else:
+            sr_entry_enabled = bool(saved_sr_enabled)
+        saved_zigzag_show = data.get("overlay_zigzag_show")
+        saved_sr_line_show = data.get("overlay_sr_line_show")
+        saved_range_band_show = data.get("overlay_range_band_show")
+        zigzag_show = (
+            self.zigzag_show_var.get()
+            if saved_zigzag_show is None
+            else bool(saved_zigzag_show)
+        )
+        sr_line_show = (
+            self.sr_line_show_var.get()
+            if saved_sr_line_show is None
+            else bool(saved_sr_line_show)
+        )
+        range_band_show = (
+            self.range_band_show_var.get()
+            if saved_range_band_show is None
+            else bool(saved_range_band_show)
+        )
+        show_zigzag = sr_entry_enabled and zigzag_show
+        show_sr_line = sr_entry_enabled and sr_line_show
+        show_range_band = sr_entry_enabled and range_band_show
         need_overlay_data = (
             chart_type == "candle" or show_zigzag or show_sr_line or show_range_band
         )

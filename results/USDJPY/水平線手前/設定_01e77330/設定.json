@@ -2,7 +2,7 @@
   "通貨": "USDJPY",
   "戦略": "水平線手前",
   "設定ID": "01e77330",
-  "保存日時": "2026-02-09 00:09:15.653650",
+  "保存日時": "2026-02-09 02:54:48.024805",
   "パラメータ": {
     "allow_opposite_direction": true,
     "allow_same_direction": true,
@@ -358,7 +358,7 @@
       false
     ],
     "batch_end_month": "2025-12",
-    "batch_start_month": "2025-01",
+    "batch_start_month": "2016-01",
     "candle_interval": 1,
     "chart_type": "tick",
     "common_fast_take_enabled": false,

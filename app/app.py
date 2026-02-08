@@ -257,12 +257,14 @@ def build_settings_id_params(params):
             params.get("momentum_max_pips", 0.0)
         )
 
-    if entry_sr_enabled:
+    if entry_sr_enabled or entry_near_enabled:
         effective["line_interval"] = max(
             1, _coerce_int(params.get("line_interval", 1), 1)
         )
         effective["sr_params"] = params.get("sr_params") or {}
         effective["range_params"] = params.get("range_params") or {}
+
+    if entry_sr_enabled:
         effective["sr_break_pips"] = _coerce_float(params.get("sr_break_pips", 5.0))
         effective["sr_tick_limit"] = _coerce_int(params.get("sr_tick_limit", 10), 10)
         effective["sr_tick_min"] = _coerce_float(params.get("sr_tick_min", 0.0))
@@ -293,18 +295,13 @@ def build_settings_id_params(params):
         effective["sr_ratio_join_mode"] = params.get("sr_ratio_join_mode", "and")
         effective["sr_target"] = params.get("sr_target", "both")
 
-        if entry_near_enabled:
-            effective["line_interval"] = max(
-                1, _coerce_int(params.get("line_interval", 1), 1)
-            )
-            effective["sr_params"] = params.get("sr_params") or {}
-            effective["range_params"] = params.get("range_params") or {}
-            effective["near_target"] = params.get(
-                "near_target", params.get("sr_target", "both")
-            )
-            effective["near_entry_offset_pips"] = _coerce_float(
-                params.get("near_entry_offset_pips", 3.0)
-            )
+    if entry_near_enabled:
+        effective["near_target"] = params.get(
+            "near_target", params.get("sr_target", "both")
+        )
+        effective["near_entry_offset_pips"] = _coerce_float(
+            params.get("near_entry_offset_pips", 3.0)
+        )
         near_speed_filter_enabled = _coerce_bool(
             params.get("near_speed_filter_enabled", True)
         )
@@ -9038,7 +9035,10 @@ class Step1App:
                 except Exception:
                     pips = 0.0
                 side = trade.get("side")
-                trade_records.append({"ts": ts, "pips": pips, "side": side})
+                reason = trade.get("reason") or trade.get("exit_reason")
+                trade_records.append(
+                    {"ts": ts, "pips": pips, "side": side, "reason": reason}
+                )
 
         self.batch_total_equity = combined
         self.batch_yearly_data = sorted(year_totals.items(), key=lambda x: x[0])
@@ -9054,6 +9054,12 @@ class Step1App:
                 f"{draw_text} 勝率{win_rate:.1f}%"
                 f" 最大連勝{batch_stats['max_win_streak']} 最大連敗{batch_stats['max_loss_streak']}"
                 f" 合計損益{total_pips:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
+            )
+            self.pnl_info_var.set(
+                self.pnl_info_var.get()
+                + f"\n時間クローズ: {batch_stats['time_close_count']}件"
+                + f"（{batch_stats['time_close_rate']:.1f}%）"
+                + f" 合計損益{batch_stats['time_close_pips']:.1f}ピップス"
             )
             self.pnl_data = combined
             self.pnl_full_data = list(combined)
@@ -9646,6 +9652,7 @@ class Step1App:
 
     def _render_backtest(self, payload):
         summary = payload.get("summary", {})
+        trades = payload.get("trades", [])
         total = summary.get("total", 0)
         wins = summary.get("wins", 0)
         losses = summary.get("losses", 0)
@@ -9693,7 +9700,6 @@ class Step1App:
             )
 
         if entry_sr_enabled and sr_target == "both":
-            trades = payload.get("trades", [])
             sr_trades = [t for t in trades if t.get("line_source") == "sr"]
             range_trades = [t for t in trades if t.get("line_source") == "range"]
             sr_pips = sum(t.get("pips", 0.0) for t in sr_trades)
@@ -9713,7 +9719,6 @@ class Step1App:
             and move_ratio_enabled
             and speed_ratio_enabled
         ):
-            trades = payload.get("trades", [])
             move_trades = [t for t in trades if t.get("move_ratio_ok")]
             speed_trades = [t for t in trades if t.get("speed_ratio_ok")]
             move_pips = sum(t.get("pips", 0.0) for t in move_trades)
@@ -9724,7 +9729,6 @@ class Step1App:
             )
             self.pnl_info_var.set(self.pnl_info_var.get() + ratio_breakdown)
 
-        trades = payload.get("trades", [])
         if trades:
             long_trades = [t for t in trades if t.get("side") == "long"]
             short_trades = [t for t in trades if t.get("side") == "short"]
@@ -9735,6 +9739,26 @@ class Step1App:
                 f" / ショート 取引{len(short_trades)}件 合計損益{short_pips:.1f}ピップス"
             )
             self.pnl_info_var.set(self.pnl_info_var.get() + side_breakdown)
+            time_close_trades = [
+                t
+                for t in trades
+                if self._is_time_close_reason(t.get("reason") or t.get("exit_reason"))
+            ]
+            time_close_pips = 0.0
+            for trade in time_close_trades:
+                try:
+                    time_close_pips += float(trade.get("pips", 0.0))
+                except Exception:
+                    pass
+            time_close_rate = (
+                len(time_close_trades) / total * 100.0 if total else 0.0
+            )
+            self.pnl_info_var.set(
+                self.pnl_info_var.get()
+                + f"\n時間クローズ: {len(time_close_trades)}件"
+                + f"（{time_close_rate:.1f}%）"
+                + f" 合計損益{time_close_pips:.1f}ピップス"
+            )
 
         self.pnl_trade_records = []
         for trade in trades:
@@ -9747,7 +9771,10 @@ class Step1App:
             except Exception:
                 pips = 0.0
             side = trade.get("side")
-            self.pnl_trade_records.append({"ts": ts, "pips": pips, "side": side})
+            reason = trade.get("reason") or trade.get("exit_reason")
+            self.pnl_trade_records.append(
+                {"ts": ts, "pips": pips, "side": side, "reason": reason}
+            )
 
         self.pnl_data = payload.get("equity_curve") or []
         self.pnl_full_data = list(self.pnl_data) if self.pnl_data else None
@@ -10417,7 +10444,7 @@ class Step1App:
                     "損益": f"{pips:.2f}",
                     "累計損益": "",
                     "in理由": trade.get("entry_reason", ""),
-                    "out理由": trade.get("exit_reason", ""),
+                    "out理由": trade.get("reason", trade.get("exit_reason", "")),
                     "ライン種別": line_label,
                     "ナンピン回数": str(namping_count),
                     "平均in価格": f"{safe_float(trade.get('avg_entry_price', 0.0)):.5f}",
@@ -11367,8 +11394,15 @@ class Step1App:
                     side = "long"
                 elif "売" in side_raw or "short" in side_text or "sell" in side_text:
                     side = "short"
+            reason = pick(row, ["out理由", "exit_reason", "決済理由", "reason"])
             parsed_records.append(
-                {"ts": ts, "pips": pips_value, "side": side, "order": record_order}
+                {
+                    "ts": ts,
+                    "pips": pips_value,
+                    "side": side,
+                    "reason": reason,
+                    "order": record_order,
+                }
             )
             record_order += 1
 
@@ -11387,8 +11421,11 @@ class Step1App:
             ts = record["ts"]
             pips_value = record["pips"]
             side = record["side"]
+            reason = record.get("reason")
             cumulative += pips_value
-            trade_records.append({"ts": ts, "pips": pips_value, "side": side})
+            trade_records.append(
+                {"ts": ts, "pips": pips_value, "side": side, "reason": reason}
+            )
             year_totals[ts.year] = year_totals.get(ts.year, 0.0) + pips_value
             month_key = f"{ts.year}-{ts.month:02d}"
             month_totals[month_key] = month_totals.get(month_key, 0.0) + pips_value
@@ -11418,6 +11455,12 @@ class Step1App:
             f" 最大連勝{stats['max_win_streak']} 最大連敗{stats['max_loss_streak']}"
             f" 合計損益{stats['total_pips']:.1f}ピップス"
             f" 最大DD{max_dd:.1f}ピップス"
+        )
+        self.pnl_info_var.set(
+            self.pnl_info_var.get()
+            + f"\n時間クローズ: {stats['time_close_count']}件"
+            + f"（{stats['time_close_rate']:.1f}%）"
+            + f" 合計損益{stats['time_close_pips']:.1f}ピップス"
         )
         if stats["long_count"] or stats["short_count"]:
             self.pnl_info_var.set(
@@ -12617,6 +12660,15 @@ class Step1App:
             return parts[0], parts[1]
         return None
 
+    def _is_time_close_reason(self, reason):
+        text = str(reason or "").strip()
+        if not text:
+            return False
+        lower_text = text.lower()
+        if "時間" in text:
+            return True
+        return lower_text in {"time", "timeout", "time_close", "timeclose"}
+
     def _compute_trade_stats(self, records):
         stats = {
             "total": 0,
@@ -12631,6 +12683,9 @@ class Step1App:
             "short_count": 0,
             "long_pips": 0.0,
             "short_pips": 0.0,
+            "time_close_count": 0,
+            "time_close_rate": 0.0,
+            "time_close_pips": 0.0,
         }
         win_streak = 0
         loss_streak = 0
@@ -12668,7 +12723,15 @@ class Step1App:
             elif side == "short":
                 stats["short_count"] += 1
                 stats["short_pips"] += pips
+            if self._is_time_close_reason(record.get("reason")):
+                stats["time_close_count"] += 1
+                stats["time_close_pips"] += pips
         stats["win_rate"] = (stats["wins"] / stats["total"] * 100.0) if stats["total"] else 0.0
+        stats["time_close_rate"] = (
+            stats["time_close_count"] / stats["total"] * 100.0
+            if stats["total"]
+            else 0.0
+        )
         return stats
 
     def _apply_pnl_filter(self, kind, label):
@@ -12748,6 +12811,12 @@ class Step1App:
                 f" 勝率{stats['win_rate']:.1f}%"
                 f" 最大連勝{stats['max_win_streak']} 最大連敗{stats['max_loss_streak']}"
                 f" 合計損益{stats['total_pips']:.1f}ピップス 最大DD{max_dd:.1f}ピップス"
+            )
+            self.pnl_info_var.set(
+                self.pnl_info_var.get()
+                + f"\n時間クローズ: {stats['time_close_count']}件"
+                + f"（{stats['time_close_rate']:.1f}%）"
+                + f" 合計損益{stats['time_close_pips']:.1f}ピップス"
             )
             if stats["long_count"] or stats["short_count"]:
                 self.pnl_info_var.set(

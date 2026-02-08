@@ -89,6 +89,9 @@ def build_settings_id_params(params):
     entry_sr_enabled = bool(
         params.get("entry_sr_enabled", entry_mode in ("sr_reentry", "both", "multi"))
     )
+    entry_near_enabled = bool(
+        params.get("entry_near_enabled", entry_mode in ("near", "multi"))
+    )
     entry_momentum_enabled = bool(
         params.get("entry_momentum_enabled", entry_mode in ("momentum", "multi"))
     )
@@ -99,6 +102,7 @@ def build_settings_id_params(params):
     effective = {
         "entry_spike_enabled": entry_spike_enabled,
         "entry_sr_enabled": entry_sr_enabled,
+        "entry_near_enabled": entry_near_enabled,
         "entry_momentum_enabled": entry_momentum_enabled,
         "entry_reverse_enabled": entry_reverse_enabled,
         "spread_pips": _coerce_float(params.get("spread_pips", 0.0)),
@@ -177,6 +181,16 @@ def build_settings_id_params(params):
             )
             effective["signal_chain_trigger_sr"] = _coerce_bool(
                 params.get("signal_chain_trigger_sr", True)
+            )
+        if entry_near_enabled:
+            effective["signal_chain_ignore_near"] = _coerce_bool(
+                params.get("signal_chain_ignore_near", False)
+            )
+            effective["signal_chain_count_near"] = _coerce_bool(
+                params.get("signal_chain_count_near", True)
+            )
+            effective["signal_chain_trigger_near"] = _coerce_bool(
+                params.get("signal_chain_trigger_near", True)
             )
         if entry_spike_enabled:
             effective["signal_chain_ignore_spike"] = _coerce_bool(
@@ -278,6 +292,28 @@ def build_settings_id_params(params):
         )
         effective["sr_ratio_join_mode"] = params.get("sr_ratio_join_mode", "and")
         effective["sr_target"] = params.get("sr_target", "both")
+
+    if entry_near_enabled:
+        effective["line_interval"] = max(
+            1, _coerce_int(params.get("line_interval", 1), 1)
+        )
+        effective["sr_params"] = params.get("sr_params") or {}
+        effective["range_params"] = params.get("range_params") or {}
+        effective["sr_target"] = params.get("sr_target", "both")
+        effective["near_entry_offset_pips"] = _coerce_float(
+            params.get("near_entry_offset_pips", 3.0)
+        )
+        near_speed_filter_enabled = _coerce_bool(
+            params.get("near_speed_filter_enabled", True)
+        )
+        effective["near_speed_filter_enabled"] = near_speed_filter_enabled
+        if near_speed_filter_enabled:
+            effective["near_speed_seconds"] = _coerce_float(
+                params.get("near_speed_seconds", 2.0)
+            )
+            effective["near_speed_pips"] = _coerce_float(
+                params.get("near_speed_pips", 10.0)
+            )
 
     common_stop_pips = _coerce_float(
         params.get("common_stop_pips", params.get("stop_pips", 0.0))
@@ -387,12 +423,14 @@ def build_settings_id_params(params):
     reverse_namping = build_namping("reverse_")
     momentum_namping = build_namping("momentum_")
     sr_namping = build_namping("sr_")
+    near_namping = build_namping("near_")
     spike_namping = build_namping("spike_")
 
     namping_map = {
         "reverse": reverse_namping,
         "momentum": momentum_namping,
         "sr": sr_namping,
+        "near": near_namping,
         "spike": spike_namping,
     }
 
@@ -504,6 +542,8 @@ def build_settings_id_params(params):
         effective["momentum_exit"] = resolve_exit("momentum")
     if entry_sr_enabled:
         effective["sr_exit"] = resolve_exit("sr")
+    if entry_near_enabled:
+        effective["near_exit"] = resolve_exit("near")
     if entry_spike_enabled:
         effective["spike_exit"] = resolve_exit("spike")
 
@@ -1980,6 +2020,131 @@ def find_sr_reentry_signal(
     return None
 
 
+def find_sr_near_signal(
+    points,
+    times,
+    start_idx,
+    lines,
+    near_entry_offset,
+    near_speed_filter_enabled=True,
+    near_speed_seconds=2.0,
+    near_speed_move=0.0,
+    line_bins=None,
+    bin_size=None,
+    line_defs=None,
+    disabled_lines=None,
+    end_limits=None,
+    should_cancel=None,
+):
+    if not points or not lines:
+        return None
+
+    if disabled_lines is None:
+        disabled_lines = set()
+    if line_defs is None:
+        line_defs = []
+        for line_idx, line in enumerate(lines):
+            price = line.get("price")
+            kind = line.get("kind")
+            if price is None:
+                continue
+            if kind == "support":
+                side = "long"
+                threshold = price + near_entry_offset
+            elif kind == "resistance":
+                side = "short"
+                threshold = price - near_entry_offset
+            else:
+                continue
+            line_defs.append(
+                {
+                    "line_index": line_idx,
+                    "side": side,
+                    "threshold": threshold,
+                }
+            )
+    if not line_defs:
+        return None
+
+    if bin_size is None or line_bins is None:
+        bin_size = max(abs(near_entry_offset), PIP_SIZE)
+        line_bins = {}
+        for ref_idx, item in enumerate(line_defs):
+            bin_idx = int(item["threshold"] / bin_size)
+            line_bins.setdefault(bin_idx, []).append(ref_idx)
+
+    speed_window = None
+    if near_speed_filter_enabled and near_speed_seconds > 0 and near_speed_move > 0:
+        speed_window = timedelta(seconds=near_speed_seconds)
+
+    n = len(points)
+    prev_bid = points[start_idx - 1][1] if start_idx > 0 else points[start_idx][1]
+    for j in range(start_idx, n):
+        if is_cancel_requested(should_cancel):
+            raise InterruptedError("cancelled")
+        ts, bid = points[j]
+        low = min(prev_bid, bid)
+        high = max(prev_bid, bid)
+        if low != high:
+            low_bin = int(low / bin_size) - 1
+            high_bin = int(high / bin_size) + 1
+            candidates = set()
+            for bin_idx in range(low_bin, high_bin + 1):
+                for ref_idx in line_bins.get(bin_idx, ()):
+                    candidates.add(ref_idx)
+            if candidates:
+                ordered = sorted(
+                    candidates,
+                    key=lambda idx: abs(line_defs[idx]["threshold"] - bid),
+                )
+                for ref_idx in ordered:
+                    item = line_defs[ref_idx]
+                    line_idx = item["line_index"]
+                    if line_idx in disabled_lines:
+                        continue
+                    if line_idx < 0 or line_idx >= len(lines):
+                        continue
+                    if end_limits is not None and ts > end_limits[line_idx]:
+                        disabled_lines.add(line_idx)
+                        continue
+                    line = lines[line_idx]
+                    start_time = line.get("start_time")
+                    if start_time is not None and ts < start_time:
+                        continue
+                    threshold = item["threshold"]
+                    if threshold < low or threshold > high:
+                        continue
+                    side = item["side"]
+                    if side == "long":
+                        if not (prev_bid > threshold and bid <= threshold):
+                            continue
+                    else:
+                        if not (prev_bid < threshold and bid >= threshold):
+                            continue
+                    if speed_window is not None:
+                        lookback_time = ts - speed_window
+                        look_idx = bisect_left(times, lookback_time, 0, j + 1)
+                        if look_idx >= j:
+                            continue
+                        base_bid = points[look_idx][1]
+                        move = base_bid - bid if side == "long" else bid - base_bid
+                        if move < near_speed_move:
+                            continue
+                    return {
+                        "entry_idx": j,
+                        "side": side,
+                        "entry_reason": "水平線手前",
+                        "line_index": line_idx,
+                        "line_price": line.get("price"),
+                        "line_kind": line.get("kind"),
+                        "line_source": line.get("source"),
+                        "entry_level": threshold,
+                    }
+        prev_bid = bid
+
+    return None
+
+
 def summarize_trades(trades):
     total = len(trades)
     wins = sum(1 for t in trades if t["pips"] > 0)
@@ -2505,6 +2670,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         params.get("signal_chain_ignore_momentum", False)
     )
     signal_chain_ignore_sr = bool(params.get("signal_chain_ignore_sr", False))
+    signal_chain_ignore_near = bool(params.get("signal_chain_ignore_near", False))
     signal_chain_ignore_spike = bool(params.get("signal_chain_ignore_spike", False))
     signal_chain_enabled = bool(params.get("signal_chain_enabled", True))
     signal_chain_count_reverse = bool(
@@ -2514,6 +2680,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         params.get("signal_chain_count_momentum", True)
     )
     signal_chain_count_sr = bool(params.get("signal_chain_count_sr", True))
+    signal_chain_count_near = bool(params.get("signal_chain_count_near", True))
     signal_chain_count_spike = bool(params.get("signal_chain_count_spike", True))
     signal_chain_trigger_reverse = bool(
         params.get("signal_chain_trigger_reverse", True)
@@ -2522,6 +2689,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         params.get("signal_chain_trigger_momentum", True)
     )
     signal_chain_trigger_sr = bool(params.get("signal_chain_trigger_sr", True))
+    signal_chain_trigger_near = bool(params.get("signal_chain_trigger_near", True))
     signal_chain_trigger_spike = bool(params.get("signal_chain_trigger_spike", True))
     entry_mode = params.get("entry_mode", "spike")
     entry_spike_enabled = bool(
@@ -2530,12 +2698,19 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     entry_sr_enabled = bool(
         params.get("entry_sr_enabled", entry_mode in ("sr_reentry", "both", "multi"))
     )
+    entry_near_enabled = bool(
+        params.get("entry_near_enabled", entry_mode in ("near", "multi"))
+    )
     entry_momentum_enabled = bool(
         params.get("entry_momentum_enabled", entry_mode in ("momentum", "multi"))
     )
     entry_reverse_enabled = bool(
         params.get("entry_reverse_enabled", entry_mode in ("reverse", "multi"))
     )
+    near_entry_offset = float(params.get("near_entry_offset_pips", 3.0)) * PIP_SIZE
+    near_speed_filter_enabled = bool(params.get("near_speed_filter_enabled", True))
+    near_speed_seconds = float(params.get("near_speed_seconds", 2.0))
+    near_speed_move = float(params.get("near_speed_pips", 10.0)) * PIP_SIZE
 
     def build_namping(prefix):
         return {
@@ -2593,12 +2768,14 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     reverse_namping = build_namping("reverse_")
     momentum_namping = build_namping("momentum_")
     sr_namping = build_namping("sr_")
+    near_namping = build_namping("near_")
     spike_namping = build_namping("spike_")
 
     namping_map = {
         "reverse": reverse_namping,
         "momentum": momentum_namping,
         "sr": sr_namping,
+        "near": near_namping,
         "spike": spike_namping,
     }
 
@@ -2690,6 +2867,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         "reverse": resolve_trade_params("reverse"),
         "momentum": resolve_trade_params("momentum"),
         "sr": resolve_trade_params("sr"),
+        "near": resolve_trade_params("near"),
         "spike": resolve_trade_params("spike"),
     }
 
@@ -2747,6 +2925,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
 
     trades = []
     active_positions_sr = []
+    active_positions_near = []
     active_positions_spike = []
     active_positions_momentum = []
     active_positions_reverse = []
@@ -2808,18 +2987,21 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             "reverse": signal_chain_count_reverse,
             "momentum": signal_chain_count_momentum,
             "sr": signal_chain_count_sr,
+            "near": signal_chain_count_near,
             "spike": signal_chain_count_spike,
         }
         trigger_sources = {
             "reverse": signal_chain_trigger_reverse,
             "momentum": signal_chain_trigger_momentum,
             "sr": signal_chain_trigger_sr,
+            "near": signal_chain_trigger_near,
             "spike": signal_chain_trigger_spike,
         }
         ignore_sources = {
             "reverse": signal_chain_ignore_reverse,
             "momentum": signal_chain_ignore_momentum,
             "sr": signal_chain_ignore_sr,
+            "near": signal_chain_ignore_near,
             "spike": signal_chain_ignore_spike,
         }
 
@@ -3046,6 +3228,114 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 break
             gate_signal = dict(signal)
             gate_signal["source"] = "sr"
+            gate_signals.append(gate_signal)
+            i_gate = signal["entry_idx"] + 1
+
+    if signal_chain_enabled and entry_near_enabled:
+        sr_target = params.get("sr_target", "both")
+        line_interval = max(1, int(params.get("line_interval", 1)))
+        sr_params = params.get("sr_params") or {}
+        range_params = params.get("range_params") or {}
+        line_key = (
+            line_interval,
+            sr_target,
+            freeze_value(sr_params),
+            freeze_value(range_params),
+        )
+        line_cache = runtime_cache.setdefault("line_cache", {})
+        line_entry = line_cache.get(line_key)
+        if line_entry is None:
+            candle_cache = runtime_cache.setdefault("candle_cache", {})
+            line_candles = candle_cache.get(line_interval)
+            if line_candles is None:
+                line_candles = build_timeframe_candles(
+                    points_sorted, line_interval, should_cancel=should_cancel
+                )
+                candle_cache[line_interval] = line_candles
+            lines = build_reentry_lines(
+                line_candles,
+                sr_params,
+                range_params,
+                sr_target,
+                should_cancel=should_cancel,
+            )
+            line_start_times = [line["start_time"] for line in lines]
+            end_limits_base = [
+                line["end_time"] + timedelta(minutes=line_interval) for line in lines
+            ]
+            line_entry = {
+                "lines": lines,
+                "line_start_times": line_start_times,
+                "end_limits_base": end_limits_base,
+                "start_limits_cache": {},
+                "near_cache": {},
+            }
+            line_cache[line_key] = line_entry
+
+        lines = line_entry["lines"]
+        end_limits = line_entry["end_limits_base"]
+        near_cache = line_entry.setdefault("near_cache", {})
+        near_key = round(near_entry_offset, 10)
+        near_entry = near_cache.get(near_key)
+        if near_entry is None:
+            line_defs = []
+            for line_idx, line in enumerate(lines):
+                price = line.get("price")
+                kind = line.get("kind")
+                if price is None:
+                    continue
+                if kind == "support":
+                    side = "long"
+                    threshold = price + near_entry_offset
+                elif kind == "resistance":
+                    side = "short"
+                    threshold = price - near_entry_offset
+                else:
+                    continue
+                line_defs.append(
+                    {
+                        "line_index": line_idx,
+                        "side": side,
+                        "threshold": threshold,
+                    }
+                )
+            bin_width = max(abs(near_entry_offset), PIP_SIZE)
+            near_bins = {}
+            for ref_idx, item in enumerate(line_defs):
+                bin_idx = int(item["threshold"] / bin_width)
+                near_bins.setdefault(bin_idx, []).append(ref_idx)
+            near_entry = {
+                "line_defs": line_defs,
+                "bin_size": bin_width,
+                "line_bins": near_bins,
+            }
+            near_cache[near_key] = near_entry
+
+        disabled_lines_gate = set()
+        i_gate = 0
+        while i_gate < n - 1:
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
+            signal = find_sr_near_signal(
+                points_sorted,
+                times,
+                i_gate,
+                lines,
+                near_entry_offset,
+                near_speed_filter_enabled,
+                near_speed_seconds,
+                near_speed_move,
+                near_entry["line_bins"],
+                near_entry["bin_size"],
+                near_entry["line_defs"],
+                disabled_lines_gate,
+                end_limits,
+                should_cancel,
+            )
+            if not signal:
+                break
+            gate_signal = dict(signal)
+            gate_signal["source"] = "near"
             gate_signals.append(gate_signal)
             i_gate = signal["entry_idx"] + 1
 
@@ -3349,6 +3639,213 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             )
             register_position(side, exit_idx, active_positions_sr)
             i = entry_idx_actual + 1 if allow_overlap else exit_idx + 1
+
+    if entry_near_enabled:
+        sr_target = params.get("sr_target", "both")
+        line_interval = max(1, int(params.get("line_interval", 1)))
+        sr_params = params.get("sr_params") or {}
+        range_params = params.get("range_params") or {}
+        line_key = (
+            line_interval,
+            sr_target,
+            freeze_value(sr_params),
+            freeze_value(range_params),
+        )
+        line_cache = runtime_cache.setdefault("line_cache", {})
+        line_entry = line_cache.get(line_key)
+        if line_entry is None:
+            candle_cache = runtime_cache.setdefault("candle_cache", {})
+            line_candles = candle_cache.get(line_interval)
+            if line_candles is None:
+                line_candles = build_timeframe_candles(
+                    points_sorted, line_interval, should_cancel=should_cancel
+                )
+                candle_cache[line_interval] = line_candles
+            lines = build_reentry_lines(
+                line_candles,
+                sr_params,
+                range_params,
+                sr_target,
+                should_cancel=should_cancel,
+            )
+            line_start_times = [line["start_time"] for line in lines]
+            end_limits_base = [
+                line["end_time"] + timedelta(minutes=line_interval) for line in lines
+            ]
+            line_entry = {
+                "lines": lines,
+                "line_start_times": line_start_times,
+                "end_limits_base": end_limits_base,
+                "start_limits_cache": {},
+                "near_cache": {},
+            }
+            line_cache[line_key] = line_entry
+
+        lines = line_entry["lines"]
+        end_limits = line_entry["end_limits_base"]
+        near_cache = line_entry.setdefault("near_cache", {})
+        near_key = round(near_entry_offset, 10)
+        near_entry = near_cache.get(near_key)
+        if near_entry is None:
+            line_defs = []
+            for line_idx, line in enumerate(lines):
+                price = line.get("price")
+                kind = line.get("kind")
+                if price is None:
+                    continue
+                if kind == "support":
+                    side = "long"
+                    threshold = price + near_entry_offset
+                elif kind == "resistance":
+                    side = "short"
+                    threshold = price - near_entry_offset
+                else:
+                    continue
+                line_defs.append(
+                    {
+                        "line_index": line_idx,
+                        "side": side,
+                        "threshold": threshold,
+                    }
+                )
+            bin_width = max(abs(near_entry_offset), PIP_SIZE)
+            near_bins = {}
+            for ref_idx, item in enumerate(line_defs):
+                bin_idx = int(item["threshold"] / bin_width)
+                near_bins.setdefault(bin_idx, []).append(ref_idx)
+            near_entry = {
+                "line_defs": line_defs,
+                "bin_size": bin_width,
+                "line_bins": near_bins,
+            }
+            near_cache[near_key] = near_entry
+
+        disabled_lines = set()
+        i = 0
+        while i < n - 1:
+            if is_cancel_requested(should_cancel):
+                raise InterruptedError("cancelled")
+            signal = find_sr_near_signal(
+                points_sorted,
+                times,
+                i,
+                lines,
+                near_entry_offset,
+                near_speed_filter_enabled,
+                near_speed_seconds,
+                near_speed_move,
+                near_entry["line_bins"],
+                near_entry["bin_size"],
+                near_entry["line_defs"],
+                disabled_lines,
+                end_limits,
+                should_cancel,
+            )
+            if not signal:
+                break
+
+            entry_idx = signal["entry_idx"]
+            signal["source"] = "near"
+            gate_key = signal_key(signal)
+            if signal_chain_enabled and gate_signals and gate_key not in allowed_signals:
+                i = entry_idx + 1
+                continue
+            chain_signals = chain_map.get(gate_key, []) if signal_chain_enabled else []
+            side = signal["side"]
+            entry_time, entry_bid = points_sorted[entry_idx]
+            entry_price = entry_bid + spread if side == "long" else entry_bid
+
+            if exclude_enabled and entry_time.hour in exclude_hours:
+                i = entry_idx + 1
+                continue
+
+            if ma_enabled:
+                ma_value = resolve_ma_value(entry_time)
+                if ma_value is None:
+                    i = entry_idx + 1
+                    continue
+                if side == "long":
+                    deviation = (ma_value - entry_price) / ma_value
+                else:
+                    deviation = (entry_price - ma_value) / ma_value
+                if deviation < ma_deviation:
+                    i = entry_idx + 1
+                    continue
+
+            trade_params = trade_params_by_kind["near"]
+            trade_result = simulate_namping_trade(
+                points_sorted,
+                entry_idx,
+                side,
+                entry_price,
+                spread,
+                trade_params["stop"],
+                trade_params["take"],
+                trade_params["fixed_exit_price"],
+                trade_params["time_close_seconds"],
+                None,
+                trade_params["namping_first_enabled"],
+                trade_params["namping_steps"],
+                should_cancel,
+                fast_take_min_pips=trade_params["fast_take_min"],
+                fast_take_window_ms=trade_params["fast_take_window_ms"],
+                fast_take_pips=trade_params["fast_take_pips"],
+                time_close_anchor=trade_params["time_close_anchor"],
+            )
+            if not trade_result:
+                i = entry_idx + 1
+                continue
+
+            entry_idx_actual = trade_result["entry_idx"]
+            if entry_idx_actual is None:
+                i = entry_idx + 1
+                continue
+            if not can_open_position(entry_idx_actual, side, active_positions_near):
+                i = entry_idx + 1
+                continue
+
+            entry_time = points_sorted[entry_idx_actual][0]
+            entry_price_actual = trade_result["entry_price"]
+            avg_entry_price = trade_result["avg_entry_price"]
+            total_lot = trade_result["lot_total"]
+            exit_idx = trade_result["exit_idx"]
+            exit_price = trade_result["exit_price"]
+            exit_reason = trade_result["exit_reason"]
+
+            if side == "long":
+                pips_per_lot = (exit_price - avg_entry_price) / PIP_SIZE
+            else:
+                pips_per_lot = (avg_entry_price - exit_price) / PIP_SIZE
+            pips = pips_per_lot * total_lot
+
+            trades.append(
+                {
+                    "side": side,
+                    "entry_reason": signal.get("entry_reason", "水平線手前"),
+                    "entry_idx": entry_idx_actual,
+                    "entry_time": entry_time,
+                    "entry_price": entry_price_actual,
+                    "avg_entry_price": avg_entry_price,
+                    "lot_total": total_lot,
+                    "pips_per_lot": pips_per_lot,
+                    "namping_entries": trade_result.get("entries") or [],
+                    "signal_chain": chain_signals,
+                    "exit_idx": exit_idx,
+                    "exit_time": points_sorted[exit_idx][0],
+                    "exit_price": exit_price,
+                    "pips": pips,
+                    "reason": exit_reason,
+                    "line_price": signal.get("line_price"),
+                    "line_kind": signal.get("line_kind"),
+                    "line_source": signal.get("line_source"),
+                }
+            )
+            line_index = signal.get("line_index")
+            if isinstance(line_index, int):
+                disabled_lines.add(line_index)
+            register_position(side, exit_idx, active_positions_near)
+            i = entry_idx_actual + 1 if allow_overlap else exit_idx + 1
+
     if entry_spike_enabled:
         i = 0
         while i < n - 1:
@@ -3770,6 +4267,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         for flag in (
             entry_spike_enabled,
             entry_sr_enabled,
+            entry_near_enabled,
             entry_momentum_enabled,
             entry_reverse_enabled,
         )
@@ -3787,6 +4285,8 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             entry_mode = "multi"
     elif entry_sr_enabled:
         entry_mode = "sr_reentry"
+    elif entry_near_enabled:
+        entry_mode = "near"
     elif entry_momentum_enabled:
         entry_mode = "momentum"
     elif entry_reverse_enabled:
@@ -3809,6 +4309,7 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
         "sr_target": params.get("sr_target"),
         "entry_spike_enabled": entry_spike_enabled,
         "entry_sr_enabled": entry_sr_enabled,
+        "entry_near_enabled": entry_near_enabled,
         "entry_momentum_enabled": entry_momentum_enabled,
         "entry_reverse_enabled": entry_reverse_enabled,
         "sr_ratio_join_mode": params.get("sr_ratio_join_mode"),
@@ -3946,6 +4447,7 @@ class Step1App:
         self.candle_interval_var = tk.IntVar(value=1)
         self.entry_spike_var = tk.BooleanVar(value=False)
         self.entry_sr_var = tk.BooleanVar(value=True)
+        self.entry_near_var = tk.BooleanVar(value=False)
         self.entry_momentum_var = tk.BooleanVar(value=False)
         self.entry_reverse_var = tk.BooleanVar(value=False)
         self.hide_chart_var = tk.BooleanVar(value=False)
@@ -3981,6 +4483,10 @@ class Step1App:
         self.momentum_tick_min_var = tk.StringVar(value="100")
         self.momentum_hold_seconds_var = tk.StringVar(value="2")
         self.momentum_max_pips_var = tk.StringVar(value="0")
+        self.near_entry_offset_var = tk.StringVar(value="3")
+        self.near_speed_filter_enabled_var = tk.BooleanVar(value=True)
+        self.near_speed_seconds_var = tk.StringVar(value="2")
+        self.near_speed_pips_var = tk.StringVar(value="10")
         self.spread_var = tk.StringVar(value="1.0")
         self.stop_pips_var = tk.StringVar(value="10.0")
         self.take_pips_var = tk.StringVar(value="10.0")
@@ -4036,6 +4542,18 @@ class Step1App:
         self.sr_take_enabled_var = tk.BooleanVar(value=True)
         self.sr_time_enabled_var = tk.BooleanVar(value=True)
         self.sr_fast_take_enabled_var = tk.BooleanVar(value=True)
+        self.near_stop_pips_var = tk.StringVar(value="10.0")
+        self.near_take_pips_var = tk.StringVar(value="10.0")
+        self.near_time_close_seconds_var = tk.StringVar(value="0")
+        self.near_time_close_anchor_var = tk.StringVar(value="last")
+        self.near_fixed_exit_price_var = tk.BooleanVar(value=True)
+        self.near_fast_take_min_var = tk.StringVar(value="5")
+        self.near_fast_take_window_ms_var = tk.StringVar(value="2000")
+        self.near_fast_take_pips_var = tk.StringVar(value="5")
+        self.near_stop_enabled_var = tk.BooleanVar(value=True)
+        self.near_take_enabled_var = tk.BooleanVar(value=True)
+        self.near_time_enabled_var = tk.BooleanVar(value=True)
+        self.near_fast_take_enabled_var = tk.BooleanVar(value=True)
         self.spike_stop_pips_var = tk.StringVar(value="10.0")
         self.spike_take_pips_var = tk.StringVar(value="10.0")
         self.spike_time_close_seconds_var = tk.StringVar(value="0")
@@ -4114,6 +4632,22 @@ class Step1App:
         self.sr_namping_step5_enabled_var = tk.BooleanVar(value=False)
         self.sr_namping_step5_pips_var = tk.StringVar(value="5")
         self.sr_namping_step5_lot_var = tk.StringVar(value="32")
+        self.near_namping_first_entry_var = tk.BooleanVar(value=True)
+        self.near_namping_step1_enabled_var = tk.BooleanVar(value=True)
+        self.near_namping_step1_pips_var = tk.StringVar(value="5")
+        self.near_namping_step1_lot_var = tk.StringVar(value="2")
+        self.near_namping_step2_enabled_var = tk.BooleanVar(value=True)
+        self.near_namping_step2_pips_var = tk.StringVar(value="5")
+        self.near_namping_step2_lot_var = tk.StringVar(value="4")
+        self.near_namping_step3_enabled_var = tk.BooleanVar(value=False)
+        self.near_namping_step3_pips_var = tk.StringVar(value="5")
+        self.near_namping_step3_lot_var = tk.StringVar(value="8")
+        self.near_namping_step4_enabled_var = tk.BooleanVar(value=False)
+        self.near_namping_step4_pips_var = tk.StringVar(value="5")
+        self.near_namping_step4_lot_var = tk.StringVar(value="16")
+        self.near_namping_step5_enabled_var = tk.BooleanVar(value=False)
+        self.near_namping_step5_pips_var = tk.StringVar(value="5")
+        self.near_namping_step5_lot_var = tk.StringVar(value="32")
         self.spike_namping_first_entry_var = tk.BooleanVar(value=True)
         self.spike_namping_step1_enabled_var = tk.BooleanVar(value=True)
         self.spike_namping_step1_pips_var = tk.StringVar(value="5")
@@ -4161,14 +4695,17 @@ class Step1App:
         self.signal_chain_count_reverse_var = tk.BooleanVar(value=True)
         self.signal_chain_count_momentum_var = tk.BooleanVar(value=True)
         self.signal_chain_count_sr_var = tk.BooleanVar(value=True)
+        self.signal_chain_count_near_var = tk.BooleanVar(value=True)
         self.signal_chain_count_spike_var = tk.BooleanVar(value=True)
         self.signal_chain_ignore_reverse_var = tk.BooleanVar(value=False)
         self.signal_chain_ignore_momentum_var = tk.BooleanVar(value=False)
         self.signal_chain_ignore_sr_var = tk.BooleanVar(value=False)
+        self.signal_chain_ignore_near_var = tk.BooleanVar(value=False)
         self.signal_chain_ignore_spike_var = tk.BooleanVar(value=False)
         self.signal_chain_trigger_reverse_var = tk.BooleanVar(value=True)
         self.signal_chain_trigger_momentum_var = tk.BooleanVar(value=True)
         self.signal_chain_trigger_sr_var = tk.BooleanVar(value=True)
+        self.signal_chain_trigger_near_var = tk.BooleanVar(value=True)
         self.signal_chain_trigger_spike_var = tk.BooleanVar(value=True)
         self.backtest_info_var = tk.StringVar(value="バックテスト: 未実行")
         self.backtest_elapsed_var = tk.StringVar(value="計算時間: -")
@@ -4327,6 +4864,30 @@ class Step1App:
                     self.sr_namping_step3_lot_var,
                     self.sr_namping_step4_lot_var,
                     self.sr_namping_step5_lot_var,
+                ],
+            },
+            "near": {
+                "first_var": self.near_namping_first_entry_var,
+                "step_enabled_vars": [
+                    self.near_namping_step1_enabled_var,
+                    self.near_namping_step2_enabled_var,
+                    self.near_namping_step3_enabled_var,
+                    self.near_namping_step4_enabled_var,
+                    self.near_namping_step5_enabled_var,
+                ],
+                "step_pips_vars": [
+                    self.near_namping_step1_pips_var,
+                    self.near_namping_step2_pips_var,
+                    self.near_namping_step3_pips_var,
+                    self.near_namping_step4_pips_var,
+                    self.near_namping_step5_pips_var,
+                ],
+                "step_lot_vars": [
+                    self.near_namping_step1_lot_var,
+                    self.near_namping_step2_lot_var,
+                    self.near_namping_step3_lot_var,
+                    self.near_namping_step4_lot_var,
+                    self.near_namping_step5_lot_var,
                 ],
             },
             "spike": {
@@ -4712,13 +5273,15 @@ class Step1App:
         reverse_tab = ttk.Frame(param_notebook, padding=12)
         momentum_tab = ttk.Frame(param_notebook, padding=12)
         sr_tab = ttk.Frame(param_notebook, padding=12)
+        near_tab = ttk.Frame(param_notebook, padding=12)
         spike_tab = ttk.Frame(param_notebook, padding=12)
         param_notebook.add(reverse_tab, text="秒逆張り")
         param_notebook.add(momentum_tab, text="勢い追随")
         param_notebook.add(sr_tab, text="水平線戻り")
+        param_notebook.add(near_tab, text="水平線手前")
         param_notebook.add(spike_tab, text="スパイク")
 
-        for tab in (reverse_tab, momentum_tab, sr_tab, spike_tab):
+        for tab in (reverse_tab, momentum_tab, sr_tab, near_tab, spike_tab):
             tab.columnconfigure(0, weight=1)
 
         common_close = ttk.LabelFrame(common_panel, text="決済条件（共通）")
@@ -4997,13 +5560,21 @@ class Step1App:
         self.signal_chain_ignore_sr_check.grid(
             row=3, column=3, sticky="w", pady=(6, 0)
         )
+        self.signal_chain_ignore_near_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="水平線手前",
+            variable=self.signal_chain_ignore_near_var,
+        )
+        self.signal_chain_ignore_near_check.grid(
+            row=3, column=4, sticky="w", pady=(6, 0)
+        )
         self.signal_chain_ignore_spike_check = ttk.Checkbutton(
             signal_chain_settings,
             text="スパイク",
             variable=self.signal_chain_ignore_spike_var,
         )
         self.signal_chain_ignore_spike_check.grid(
-            row=3, column=4, sticky="w", pady=(6, 0)
+            row=3, column=5, sticky="w", pady=(6, 0)
         )
         ttk.Label(signal_chain_settings, text="カウント対象").grid(
             row=4, column=0, sticky="w", pady=(6, 0)
@@ -5032,13 +5603,21 @@ class Step1App:
         self.signal_chain_count_sr_check.grid(
             row=4, column=3, sticky="w", pady=(6, 0)
         )
+        self.signal_chain_count_near_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="水平線手前",
+            variable=self.signal_chain_count_near_var,
+        )
+        self.signal_chain_count_near_check.grid(
+            row=4, column=4, sticky="w", pady=(6, 0)
+        )
         self.signal_chain_count_spike_check = ttk.Checkbutton(
             signal_chain_settings,
             text="スパイク",
             variable=self.signal_chain_count_spike_var,
         )
         self.signal_chain_count_spike_check.grid(
-            row=4, column=4, sticky="w", pady=(6, 0)
+            row=4, column=5, sticky="w", pady=(6, 0)
         )
         ttk.Label(signal_chain_settings, text="最終きっかけ").grid(
             row=5, column=0, sticky="w", pady=(6, 0)
@@ -5067,13 +5646,21 @@ class Step1App:
         self.signal_chain_trigger_sr_check.grid(
             row=5, column=3, sticky="w", pady=(6, 0)
         )
+        self.signal_chain_trigger_near_check = ttk.Checkbutton(
+            signal_chain_settings,
+            text="水平線手前",
+            variable=self.signal_chain_trigger_near_var,
+        )
+        self.signal_chain_trigger_near_check.grid(
+            row=5, column=4, sticky="w", pady=(6, 0)
+        )
         self.signal_chain_trigger_spike_check = ttk.Checkbutton(
             signal_chain_settings,
             text="スパイク",
             variable=self.signal_chain_trigger_spike_var,
         )
         self.signal_chain_trigger_spike_check.grid(
-            row=5, column=4, sticky="w", pady=(6, 0)
+            row=5, column=5, sticky="w", pady=(6, 0)
         )
 
         save_info_frame = ttk.LabelFrame(common_panel, text="保存結果（最新）")
@@ -5611,6 +6198,65 @@ class Step1App:
             row=3, column=5, padx=(4, 0), pady=(6, 0), sticky="w"
         )
 
+        self.entry_near_check = ttk.Checkbutton(
+            near_tab,
+            text="水平線手前",
+            variable=self.entry_near_var,
+            command=lambda: self._on_entry_tab_toggle("near"),
+        )
+        self.entry_near_check.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        near_close = build_close_frame(
+            near_tab,
+            "near",
+            self.near_stop_pips_var,
+            self.near_take_pips_var,
+            self.near_time_close_seconds_var,
+            self.near_time_close_anchor_var,
+            self.near_fixed_exit_price_var,
+            self.near_fast_take_min_var,
+            self.near_fast_take_window_ms_var,
+            self.near_fast_take_pips_var,
+            self.near_stop_enabled_var,
+            self.near_take_enabled_var,
+            self.near_time_enabled_var,
+            self.near_fast_take_enabled_var,
+        )
+        near_close.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        near_namping = ttk.LabelFrame(near_tab, text="ナンピン条件")
+        near_namping.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        self._build_namping_rows(near_namping, "near", row_start=0)
+        near_settings = ttk.LabelFrame(near_tab, text="水平線手前条件")
+        near_settings.grid(row=3, column=0, sticky="ew")
+        ttk.Label(near_settings, text="手前幅（pp）").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Entry(
+            near_settings, textvariable=self.near_entry_offset_var, width=8
+        ).grid(row=0, column=1, padx=(4, 12), sticky="w")
+        self.near_speed_filter_check = ttk.Checkbutton(
+            near_settings,
+            text="速度フィルター",
+            variable=self.near_speed_filter_enabled_var,
+            command=self._on_near_speed_filter_toggle,
+        )
+        self.near_speed_filter_check.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.near_speed_seconds_label = ttk.Label(near_settings, text="判定秒数")
+        self.near_speed_seconds_label.grid(row=1, column=1, sticky="w", pady=(6, 0))
+        self.near_speed_seconds_entry = ttk.Entry(
+            near_settings, textvariable=self.near_speed_seconds_var, width=8
+        )
+        self.near_speed_seconds_entry.grid(
+            row=1, column=2, padx=(4, 12), pady=(6, 0), sticky="w"
+        )
+        self.near_speed_pips_label = ttk.Label(near_settings, text="必要接近幅（pp）")
+        self.near_speed_pips_label.grid(row=1, column=3, sticky="w", pady=(6, 0))
+        self.near_speed_pips_entry = ttk.Entry(
+            near_settings, textvariable=self.near_speed_pips_var, width=8
+        )
+        self.near_speed_pips_entry.grid(
+            row=1, column=4, padx=(4, 0), pady=(6, 0), sticky="w"
+        )
+
         self.entry_spike_check = ttk.Checkbutton(
             spike_tab,
             text="スパイク",
@@ -5695,6 +6341,11 @@ class Step1App:
                 "frame": sr_tab,
                 "var": self.entry_sr_var,
                 "toggle": self.entry_sr_check,
+            },
+            "near": {
+                "frame": near_tab,
+                "var": self.entry_near_var,
+                "toggle": self.entry_near_check,
             },
             "spike": {
                 "frame": spike_tab,
@@ -5901,7 +6552,9 @@ class Step1App:
         self._on_entry_tab_toggle("reverse")
         self._on_entry_tab_toggle("momentum")
         self._on_entry_tab_toggle("sr")
+        self._on_entry_tab_toggle("near")
         self._on_entry_tab_toggle("spike")
+        self._on_near_speed_filter_toggle()
         self._on_close_toggle("common", "stop")
         self._on_close_toggle("common", "take")
         self._on_close_toggle("common", "time")
@@ -6123,11 +6776,13 @@ class Step1App:
     def _get_backtest_params(self):
         entry_spike_enabled = self.entry_spike_var.get()
         entry_sr_enabled = self.entry_sr_var.get()
+        entry_near_enabled = self.entry_near_var.get()
         entry_momentum_enabled = self.entry_momentum_var.get()
         entry_reverse_enabled = self.entry_reverse_var.get()
         any_entry_enabled = (
             entry_spike_enabled
             or entry_sr_enabled
+            or entry_near_enabled
             or entry_momentum_enabled
             or entry_reverse_enabled
         )
@@ -6234,6 +6889,29 @@ class Step1App:
             sr_take_enabled = self.sr_take_enabled_var.get()
             sr_time_enabled = self.sr_time_enabled_var.get()
             sr_fast_take_enabled = self.sr_fast_take_enabled_var.get()
+            near_entry_offset_pips = self._parse_number(self.near_entry_offset_var.get())
+            near_speed_filter_enabled = self.near_speed_filter_enabled_var.get()
+            near_speed_seconds = self._parse_number(self.near_speed_seconds_var.get())
+            near_speed_pips = self._parse_number(self.near_speed_pips_var.get())
+            near_stop_pips = self._parse_number(self.near_stop_pips_var.get())
+            near_take_pips = self._parse_number(self.near_take_pips_var.get())
+            near_time_close_seconds = self._parse_number(
+                self.near_time_close_seconds_var.get()
+            )
+            near_time_close_anchor = _coerce_time_close_anchor(
+                self.near_time_close_anchor_var.get(),
+                common_time_close_anchor,
+            )
+            near_fixed_exit_price = self.near_fixed_exit_price_var.get()
+            near_fast_take_min = self._parse_number(self.near_fast_take_min_var.get())
+            near_fast_take_window_ms = self._parse_number(
+                self.near_fast_take_window_ms_var.get()
+            )
+            near_fast_take_pips = self._parse_number(self.near_fast_take_pips_var.get())
+            near_stop_enabled = self.near_stop_enabled_var.get()
+            near_take_enabled = self.near_take_enabled_var.get()
+            near_time_enabled = self.near_time_enabled_var.get()
+            near_fast_take_enabled = self.near_fast_take_enabled_var.get()
             spike_stop_pips = self._parse_number(self.spike_stop_pips_var.get())
             spike_take_pips = self._parse_number(self.spike_take_pips_var.get())
             spike_time_close_seconds = self._parse_number(
@@ -6271,16 +6949,19 @@ class Step1App:
             signal_chain_count_reverse = self.signal_chain_count_reverse_var.get()
             signal_chain_count_momentum = self.signal_chain_count_momentum_var.get()
             signal_chain_count_sr = self.signal_chain_count_sr_var.get()
+            signal_chain_count_near = self.signal_chain_count_near_var.get()
             signal_chain_count_spike = self.signal_chain_count_spike_var.get()
             signal_chain_ignore_reverse = self.signal_chain_ignore_reverse_var.get()
             signal_chain_ignore_momentum = self.signal_chain_ignore_momentum_var.get()
             signal_chain_ignore_sr = self.signal_chain_ignore_sr_var.get()
+            signal_chain_ignore_near = self.signal_chain_ignore_near_var.get()
             signal_chain_ignore_spike = self.signal_chain_ignore_spike_var.get()
             signal_chain_trigger_reverse = self.signal_chain_trigger_reverse_var.get()
             signal_chain_trigger_momentum = (
                 self.signal_chain_trigger_momentum_var.get()
             )
             signal_chain_trigger_sr = self.signal_chain_trigger_sr_var.get()
+            signal_chain_trigger_near = self.signal_chain_trigger_near_var.get()
             signal_chain_trigger_spike = self.signal_chain_trigger_spike_var.get()
             extreme_enabled = self.extreme_filter_var.get()
             if extreme_enabled:
@@ -6314,6 +6995,7 @@ class Step1App:
             reverse_namping = read_namping("reverse")
             momentum_namping = read_namping("momentum")
             sr_namping = read_namping("sr")
+            near_namping = read_namping("near")
             spike_namping = read_namping("spike")
         except ValueError:
             messagebox.showerror("エラー", "数値の入力が正しくありません。")
@@ -6346,6 +7028,13 @@ class Step1App:
                 messagebox.showerror(
                     "エラー", "監視抜け撤退の抜け幅は0以上にしてください。"
                 )
+                return None
+        if entry_near_enabled:
+            if near_speed_filter_enabled and near_speed_seconds <= 0:
+                messagebox.showerror("エラー", "水平線手前の判定秒数は0より大きくしてください。")
+                return None
+            if near_speed_filter_enabled and near_speed_pips <= 0:
+                messagebox.showerror("エラー", "水平線手前の必要接近幅は0より大きくしてください。")
                 return None
         if spread_pips < 0:
             messagebox.showerror("エラー", "スプレッドは0以上にしてください。")
@@ -6522,6 +7211,48 @@ class Step1App:
                 if not validate_namping("水平線戻り", sr_namping):
                     return None
 
+        if entry_near_enabled:
+            if (
+                not common_stop_override
+                and near_stop_enabled
+                and near_stop_pips <= 0
+            ):
+                messagebox.showerror("エラー", "水平線手前の損切幅は0より大きくしてください。")
+                return None
+            if (
+                not common_take_override
+                and near_take_enabled
+                and near_take_pips <= 0
+            ):
+                messagebox.showerror("エラー", "水平線手前の利確幅は0より大きくしてください。")
+                return None
+            if (
+                not common_time_override
+                and near_time_enabled
+                and near_time_close_seconds < 0
+            ):
+                messagebox.showerror("エラー", "水平線手前の時間経過クローズは0以上にしてください。")
+                return None
+            if not common_fast_take_override:
+                if near_fast_take_enabled and near_fast_take_min <= 0:
+                    messagebox.showerror(
+                        "エラー", "水平線手前の急伸利確最低幅は0以上にしてください。"
+                    )
+                    return None
+                if near_fast_take_enabled and near_fast_take_window_ms <= 0:
+                    messagebox.showerror(
+                        "エラー", "水平線手前の急伸利確ミリ秒は0以上にしてください。"
+                    )
+                    return None
+                if near_fast_take_enabled and near_fast_take_pips <= 0:
+                    messagebox.showerror(
+                        "エラー", "水平線手前の急伸利確ピプスは0以上にしてください。"
+                    )
+                    return None
+            if not common_namping_override:
+                if not validate_namping("水平線手前", near_namping):
+                    return None
+
         if entry_spike_enabled:
             if (
                 not common_stop_override
@@ -6674,6 +7405,22 @@ class Step1App:
             "sr_take_enabled": sr_take_enabled,
             "sr_time_enabled": sr_time_enabled,
             "sr_fast_take_enabled": sr_fast_take_enabled,
+            "near_entry_offset_pips": near_entry_offset_pips,
+            "near_speed_filter_enabled": near_speed_filter_enabled,
+            "near_speed_seconds": near_speed_seconds,
+            "near_speed_pips": near_speed_pips,
+            "near_stop_pips": near_stop_pips,
+            "near_take_pips": near_take_pips,
+            "near_time_close_seconds": near_time_close_seconds,
+            "near_time_close_anchor": near_time_close_anchor,
+            "near_fixed_exit_price": near_fixed_exit_price,
+            "near_fast_take_min": near_fast_take_min,
+            "near_fast_take_window_ms": near_fast_take_window_ms,
+            "near_fast_take_pips": near_fast_take_pips,
+            "near_stop_enabled": near_stop_enabled,
+            "near_take_enabled": near_take_enabled,
+            "near_time_enabled": near_time_enabled,
+            "near_fast_take_enabled": near_fast_take_enabled,
             "spike_stop_pips": spike_stop_pips,
             "spike_take_pips": spike_take_pips,
             "spike_time_close_seconds": spike_time_close_seconds,
@@ -6697,15 +7444,18 @@ class Step1App:
             "signal_chain_ignore_reverse": signal_chain_ignore_reverse,
             "signal_chain_ignore_momentum": signal_chain_ignore_momentum,
             "signal_chain_ignore_sr": signal_chain_ignore_sr,
+            "signal_chain_ignore_near": signal_chain_ignore_near,
             "signal_chain_ignore_spike": signal_chain_ignore_spike,
             "signal_chain_enabled": signal_chain_enabled,
             "signal_chain_count_reverse": signal_chain_count_reverse,
             "signal_chain_count_momentum": signal_chain_count_momentum,
             "signal_chain_count_sr": signal_chain_count_sr,
+            "signal_chain_count_near": signal_chain_count_near,
             "signal_chain_count_spike": signal_chain_count_spike,
             "signal_chain_trigger_reverse": signal_chain_trigger_reverse,
             "signal_chain_trigger_momentum": signal_chain_trigger_momentum,
             "signal_chain_trigger_sr": signal_chain_trigger_sr,
+            "signal_chain_trigger_near": signal_chain_trigger_near,
             "signal_chain_trigger_spike": signal_chain_trigger_spike,
             "extreme_enabled": extreme_enabled,
             "extreme_hold_ms": extreme_hold_ms,
@@ -6720,6 +7470,7 @@ class Step1App:
         add_namping_params("reverse_", reverse_namping, params)
         add_namping_params("momentum_", momentum_namping, params)
         add_namping_params("sr_", sr_namping, params)
+        add_namping_params("near_", near_namping, params)
         add_namping_params("spike_", spike_namping, params)
 
         return params
@@ -7057,11 +7808,13 @@ class Step1App:
         set_var(self.candle_interval_var, data.get("candle_interval"))
         entry_spike = data.get("entry_spike_enabled")
         entry_sr = data.get("entry_sr_enabled")
+        entry_near = data.get("entry_near_enabled")
         entry_momentum = data.get("entry_momentum_enabled")
         entry_reverse = data.get("entry_reverse_enabled")
         if (
             entry_spike is None
             and entry_sr is None
+            and entry_near is None
             and entry_momentum is None
             and entry_reverse is None
         ):
@@ -7069,37 +7822,51 @@ class Step1App:
             if entry_mode == "spike":
                 entry_spike = True
                 entry_sr = False
+                entry_near = False
                 entry_momentum = False
                 entry_reverse = False
             elif entry_mode == "sr_reentry":
                 entry_spike = False
                 entry_sr = True
+                entry_near = False
+                entry_momentum = False
+                entry_reverse = False
+            elif entry_mode == "near":
+                entry_spike = False
+                entry_sr = False
+                entry_near = True
                 entry_momentum = False
                 entry_reverse = False
             elif entry_mode == "both":
                 entry_spike = True
                 entry_sr = True
+                entry_near = False
                 entry_momentum = False
                 entry_reverse = False
             elif entry_mode == "momentum":
                 entry_spike = False
                 entry_sr = False
+                entry_near = False
                 entry_momentum = True
                 entry_reverse = False
             elif entry_mode == "reverse":
                 entry_spike = False
                 entry_sr = False
+                entry_near = False
                 entry_momentum = False
                 entry_reverse = True
             elif entry_mode == "multi":
                 entry_spike = True
                 entry_sr = True
+                entry_near = False
                 entry_momentum = True
                 entry_reverse = False
         if entry_spike is not None:
             set_bool(self.entry_spike_var, entry_spike)
         if entry_sr is not None:
             set_bool(self.entry_sr_var, entry_sr)
+        if entry_near is not None:
+            set_bool(self.entry_near_var, entry_near)
         if entry_momentum is not None:
             set_bool(self.entry_momentum_var, entry_momentum)
         if entry_reverse is not None:
@@ -7161,6 +7928,13 @@ class Step1App:
                 except Exception:
                     max_pips = None
         set_var(self.momentum_max_pips_var, max_pips)
+        set_var(self.near_entry_offset_var, data.get("near_entry_offset_pips"))
+        set_bool(
+            self.near_speed_filter_enabled_var,
+            data.get("near_speed_filter_enabled"),
+        )
+        set_var(self.near_speed_seconds_var, data.get("near_speed_seconds"))
+        set_var(self.near_speed_pips_var, data.get("near_speed_pips"))
         set_var(self.spread_var, data.get("spread"))
         set_var(self.stop_pips_var, data.get("stop_pips"))
         set_var(self.take_pips_var, data.get("take_pips"))
@@ -7260,6 +8034,24 @@ class Step1App:
         set_bool(self.sr_take_enabled_var, data.get("sr_take_enabled"))
         set_bool(self.sr_time_enabled_var, data.get("sr_time_enabled"))
         set_bool(self.sr_fast_take_enabled_var, data.get("sr_fast_take_enabled"))
+        set_var(self.near_stop_pips_var, data.get("near_stop_pips"))
+        set_var(self.near_take_pips_var, data.get("near_take_pips"))
+        set_var(self.near_time_close_seconds_var, data.get("near_time_close_seconds"))
+        set_var(
+            self.near_time_close_anchor_var,
+            _coerce_time_close_anchor(
+                data.get("near_time_close_anchor"),
+                default_time_anchor,
+            ),
+        )
+        set_bool(self.near_fixed_exit_price_var, data.get("near_fixed_exit_price"))
+        set_var(self.near_fast_take_min_var, data.get("near_fast_take_min"))
+        set_var(self.near_fast_take_window_ms_var, data.get("near_fast_take_window_ms"))
+        set_var(self.near_fast_take_pips_var, data.get("near_fast_take_pips"))
+        set_bool(self.near_stop_enabled_var, data.get("near_stop_enabled"))
+        set_bool(self.near_take_enabled_var, data.get("near_take_enabled"))
+        set_bool(self.near_time_enabled_var, data.get("near_time_enabled"))
+        set_bool(self.near_fast_take_enabled_var, data.get("near_fast_take_enabled"))
         set_var(self.spike_stop_pips_var, data.get("spike_stop_pips"))
         set_var(self.spike_take_pips_var, data.get("spike_take_pips"))
         set_var(
@@ -7495,6 +8287,70 @@ class Step1App:
             data.get("sr_namping_step5_lot"),
         )
         set_bool(
+            self.near_namping_first_entry_var,
+            data.get("near_namping_first_enabled"),
+        )
+        set_bool(
+            self.near_namping_step1_enabled_var,
+            data.get("near_namping_step1_enabled"),
+        )
+        set_bool(
+            self.near_namping_step2_enabled_var,
+            data.get("near_namping_step2_enabled"),
+        )
+        set_bool(
+            self.near_namping_step3_enabled_var,
+            data.get("near_namping_step3_enabled"),
+        )
+        set_bool(
+            self.near_namping_step4_enabled_var,
+            data.get("near_namping_step4_enabled"),
+        )
+        set_bool(
+            self.near_namping_step5_enabled_var,
+            data.get("near_namping_step5_enabled"),
+        )
+        set_var(
+            self.near_namping_step1_pips_var,
+            data.get("near_namping_step1_pips"),
+        )
+        set_var(
+            self.near_namping_step2_pips_var,
+            data.get("near_namping_step2_pips"),
+        )
+        set_var(
+            self.near_namping_step3_pips_var,
+            data.get("near_namping_step3_pips"),
+        )
+        set_var(
+            self.near_namping_step4_pips_var,
+            data.get("near_namping_step4_pips"),
+        )
+        set_var(
+            self.near_namping_step5_pips_var,
+            data.get("near_namping_step5_pips"),
+        )
+        set_var(
+            self.near_namping_step1_lot_var,
+            data.get("near_namping_step1_lot"),
+        )
+        set_var(
+            self.near_namping_step2_lot_var,
+            data.get("near_namping_step2_lot"),
+        )
+        set_var(
+            self.near_namping_step3_lot_var,
+            data.get("near_namping_step3_lot"),
+        )
+        set_var(
+            self.near_namping_step4_lot_var,
+            data.get("near_namping_step4_lot"),
+        )
+        set_var(
+            self.near_namping_step5_lot_var,
+            data.get("near_namping_step5_lot"),
+        )
+        set_bool(
             self.spike_namping_first_entry_var,
             data.get("spike_namping_first_enabled"),
         )
@@ -7630,6 +8486,10 @@ class Step1App:
             data.get("signal_chain_count_sr"),
         )
         set_bool(
+            self.signal_chain_count_near_var,
+            data.get("signal_chain_count_near"),
+        )
+        set_bool(
             self.signal_chain_count_spike_var,
             data.get("signal_chain_count_spike"),
         )
@@ -7637,21 +8497,25 @@ class Step1App:
         ignore_reverse = data.get("signal_chain_ignore_reverse")
         ignore_momentum = data.get("signal_chain_ignore_momentum")
         ignore_sr = data.get("signal_chain_ignore_sr")
+        ignore_near = data.get("signal_chain_ignore_near")
         ignore_spike = data.get("signal_chain_ignore_spike")
         if (
             ignore_reverse is None
             and ignore_momentum is None
             and ignore_sr is None
+            and ignore_near is None
             and ignore_spike is None
             and old_ignore is not None
         ):
             ignore_reverse = old_ignore
             ignore_momentum = old_ignore
             ignore_sr = old_ignore
+            ignore_near = old_ignore
             ignore_spike = old_ignore
         set_bool(self.signal_chain_ignore_reverse_var, ignore_reverse)
         set_bool(self.signal_chain_ignore_momentum_var, ignore_momentum)
         set_bool(self.signal_chain_ignore_sr_var, ignore_sr)
+        set_bool(self.signal_chain_ignore_near_var, ignore_near)
         set_bool(self.signal_chain_ignore_spike_var, ignore_spike)
         set_bool(
             self.signal_chain_trigger_reverse_var,
@@ -7664,6 +8528,10 @@ class Step1App:
         set_bool(
             self.signal_chain_trigger_sr_var,
             data.get("signal_chain_trigger_sr"),
+        )
+        set_bool(
+            self.signal_chain_trigger_near_var,
+            data.get("signal_chain_trigger_near"),
         )
         set_bool(
             self.signal_chain_trigger_spike_var,
@@ -7687,6 +8555,7 @@ class Step1App:
             "candle_interval": int(self.candle_interval_var.get()),
             "entry_spike_enabled": self.entry_spike_var.get(),
             "entry_sr_enabled": self.entry_sr_var.get(),
+            "entry_near_enabled": self.entry_near_var.get(),
             "entry_momentum_enabled": self.entry_momentum_var.get(),
             "entry_reverse_enabled": self.entry_reverse_var.get(),
             "hide_chart": self.hide_chart_var.get(),
@@ -7725,6 +8594,10 @@ class Step1App:
             "momentum_tick_min_per_min": self.momentum_tick_min_var.get(),
             "momentum_hold_seconds": self.momentum_hold_seconds_var.get(),
             "momentum_max_pips": self.momentum_max_pips_var.get(),
+            "near_entry_offset_pips": self.near_entry_offset_var.get(),
+            "near_speed_filter_enabled": self.near_speed_filter_enabled_var.get(),
+            "near_speed_seconds": self.near_speed_seconds_var.get(),
+            "near_speed_pips": self.near_speed_pips_var.get(),
             "spread": self.spread_var.get(),
             "stop_pips": self.stop_pips_var.get(),
             "take_pips": self.take_pips_var.get(),
@@ -7780,6 +8653,18 @@ class Step1App:
             "sr_take_enabled": self.sr_take_enabled_var.get(),
             "sr_time_enabled": self.sr_time_enabled_var.get(),
             "sr_fast_take_enabled": self.sr_fast_take_enabled_var.get(),
+            "near_stop_pips": self.near_stop_pips_var.get(),
+            "near_take_pips": self.near_take_pips_var.get(),
+            "near_time_close_seconds": self.near_time_close_seconds_var.get(),
+            "near_time_close_anchor": self.near_time_close_anchor_var.get(),
+            "near_fixed_exit_price": self.near_fixed_exit_price_var.get(),
+            "near_fast_take_min": self.near_fast_take_min_var.get(),
+            "near_fast_take_window_ms": self.near_fast_take_window_ms_var.get(),
+            "near_fast_take_pips": self.near_fast_take_pips_var.get(),
+            "near_stop_enabled": self.near_stop_enabled_var.get(),
+            "near_take_enabled": self.near_take_enabled_var.get(),
+            "near_time_enabled": self.near_time_enabled_var.get(),
+            "near_fast_take_enabled": self.near_fast_take_enabled_var.get(),
             "spike_stop_pips": self.spike_stop_pips_var.get(),
             "spike_take_pips": self.spike_take_pips_var.get(),
             "spike_time_close_seconds": self.spike_time_close_seconds_var.get(),
@@ -7872,6 +8757,22 @@ class Step1App:
             "sr_namping_step3_lot": self.sr_namping_step3_lot_var.get(),
             "sr_namping_step4_lot": self.sr_namping_step4_lot_var.get(),
             "sr_namping_step5_lot": self.sr_namping_step5_lot_var.get(),
+            "near_namping_first_enabled": self.near_namping_first_entry_var.get(),
+            "near_namping_step1_enabled": self.near_namping_step1_enabled_var.get(),
+            "near_namping_step2_enabled": self.near_namping_step2_enabled_var.get(),
+            "near_namping_step3_enabled": self.near_namping_step3_enabled_var.get(),
+            "near_namping_step4_enabled": self.near_namping_step4_enabled_var.get(),
+            "near_namping_step5_enabled": self.near_namping_step5_enabled_var.get(),
+            "near_namping_step1_pips": self.near_namping_step1_pips_var.get(),
+            "near_namping_step2_pips": self.near_namping_step2_pips_var.get(),
+            "near_namping_step3_pips": self.near_namping_step3_pips_var.get(),
+            "near_namping_step4_pips": self.near_namping_step4_pips_var.get(),
+            "near_namping_step5_pips": self.near_namping_step5_pips_var.get(),
+            "near_namping_step1_lot": self.near_namping_step1_lot_var.get(),
+            "near_namping_step2_lot": self.near_namping_step2_lot_var.get(),
+            "near_namping_step3_lot": self.near_namping_step3_lot_var.get(),
+            "near_namping_step4_lot": self.near_namping_step4_lot_var.get(),
+            "near_namping_step5_lot": self.near_namping_step5_lot_var.get(),
             "spike_namping_first_enabled": self.spike_namping_first_entry_var.get(),
             "spike_namping_step1_enabled": self.spike_namping_step1_enabled_var.get(),
             "spike_namping_step2_enabled": self.spike_namping_step2_enabled_var.get(),
@@ -7920,17 +8821,20 @@ class Step1App:
             "signal_chain_ignore_reverse": self.signal_chain_ignore_reverse_var.get(),
             "signal_chain_ignore_momentum": self.signal_chain_ignore_momentum_var.get(),
             "signal_chain_ignore_sr": self.signal_chain_ignore_sr_var.get(),
+            "signal_chain_ignore_near": self.signal_chain_ignore_near_var.get(),
             "signal_chain_ignore_spike": self.signal_chain_ignore_spike_var.get(),
             "signal_chain_enabled": self.signal_chain_enabled_var.get(),
             "signal_chain_count_reverse": self.signal_chain_count_reverse_var.get(),
             "signal_chain_count_momentum": self.signal_chain_count_momentum_var.get(),
             "signal_chain_count_sr": self.signal_chain_count_sr_var.get(),
+            "signal_chain_count_near": self.signal_chain_count_near_var.get(),
             "signal_chain_count_spike": self.signal_chain_count_spike_var.get(),
             "signal_chain_trigger_reverse": self.signal_chain_trigger_reverse_var.get(),
             "signal_chain_trigger_momentum": (
                 self.signal_chain_trigger_momentum_var.get()
             ),
             "signal_chain_trigger_sr": self.signal_chain_trigger_sr_var.get(),
+            "signal_chain_trigger_near": self.signal_chain_trigger_near_var.get(),
             "signal_chain_trigger_spike": self.signal_chain_trigger_spike_var.get(),
         }
 
@@ -8165,11 +9069,12 @@ class Step1App:
             return False
         entry_spike_enabled = self.entry_spike_var.get()
         entry_sr_enabled = self.entry_sr_var.get()
+        entry_near_enabled = self.entry_near_var.get()
         entry_momentum_enabled = self.entry_momentum_var.get()
         entry_reverse_enabled = self.entry_reverse_var.get()
         sr_params = {}
         range_params = {}
-        if entry_sr_enabled:
+        if entry_sr_enabled or entry_near_enabled:
             sr_params = self._get_sr_params()
             range_params = self._get_range_params()
             if not sr_params or not range_params:
@@ -8177,6 +9082,7 @@ class Step1App:
         if (
             not entry_spike_enabled
             and not entry_sr_enabled
+            and not entry_near_enabled
             and not entry_momentum_enabled
             and not entry_reverse_enabled
         ):
@@ -8201,6 +9107,7 @@ class Step1App:
             for flag in (
                 entry_spike_enabled,
                 entry_sr_enabled,
+                entry_near_enabled,
                 entry_momentum_enabled,
                 entry_reverse_enabled,
             )
@@ -8218,6 +9125,8 @@ class Step1App:
                 entry_mode = "multi"
         elif entry_sr_enabled:
             entry_mode = "sr_reentry"
+        elif entry_near_enabled:
+            entry_mode = "near"
         elif entry_momentum_enabled:
             entry_mode = "momentum"
         elif entry_reverse_enabled:
@@ -8227,6 +9136,7 @@ class Step1App:
         params["entry_mode"] = entry_mode
         params["entry_spike_enabled"] = entry_spike_enabled
         params["entry_sr_enabled"] = entry_sr_enabled
+        params["entry_near_enabled"] = entry_near_enabled
         params["entry_momentum_enabled"] = entry_momentum_enabled
         params["entry_reverse_enabled"] = entry_reverse_enabled
         params["line_interval"] = max(1, line_interval)
@@ -8241,6 +9151,7 @@ class Step1App:
             {
                 "entry_spike_enabled": entry_spike_enabled,
                 "entry_sr_enabled": entry_sr_enabled,
+                "entry_near_enabled": entry_near_enabled,
                 "entry_momentum_enabled": entry_momentum_enabled,
                 "entry_reverse_enabled": entry_reverse_enabled,
             }
@@ -8665,6 +9576,9 @@ class Step1App:
         entry_sr_enabled = payload.get(
             "entry_sr_enabled", entry_mode in ("sr_reentry", "both", "multi")
         )
+        entry_near_enabled = payload.get(
+            "entry_near_enabled", entry_mode in ("near", "multi")
+        )
         entry_momentum_enabled = payload.get(
             "entry_momentum_enabled", entry_mode in ("momentum", "multi")
         )
@@ -9061,6 +9975,8 @@ class Step1App:
             self.signal_chain_ignore_momentum_check.config(state=state)
         if hasattr(self, "signal_chain_ignore_sr_check"):
             self.signal_chain_ignore_sr_check.config(state=state)
+        if hasattr(self, "signal_chain_ignore_near_check"):
+            self.signal_chain_ignore_near_check.config(state=state)
         if hasattr(self, "signal_chain_ignore_spike_check"):
             self.signal_chain_ignore_spike_check.config(state=state)
         if hasattr(self, "signal_chain_count_reverse_check"):
@@ -9069,6 +9985,8 @@ class Step1App:
             self.signal_chain_count_momentum_check.config(state=state)
         if hasattr(self, "signal_chain_count_sr_check"):
             self.signal_chain_count_sr_check.config(state=state)
+        if hasattr(self, "signal_chain_count_near_check"):
+            self.signal_chain_count_near_check.config(state=state)
         if hasattr(self, "signal_chain_count_spike_check"):
             self.signal_chain_count_spike_check.config(state=state)
         if hasattr(self, "signal_chain_trigger_reverse_check"):
@@ -9077,6 +9995,8 @@ class Step1App:
             self.signal_chain_trigger_momentum_check.config(state=state)
         if hasattr(self, "signal_chain_trigger_sr_check"):
             self.signal_chain_trigger_sr_check.config(state=state)
+        if hasattr(self, "signal_chain_trigger_near_check"):
+            self.signal_chain_trigger_near_check.config(state=state)
         if hasattr(self, "signal_chain_trigger_spike_check"):
             self.signal_chain_trigger_spike_check.config(state=state)
 
@@ -9113,6 +10033,8 @@ class Step1App:
             self._on_namping_toggle_group(key)
             if key == "reverse":
                 self._on_reverse_monitor_stop_toggle()
+            if key == "near":
+                self._on_near_speed_filter_toggle()
             self._apply_close_states_for_key(key)
 
     def _on_namping_toggle_group(self, key: str):
@@ -9164,7 +10086,7 @@ class Step1App:
             common_enabled = bool(
                 self.close_enabled_vars.get(("common", cond)).get()
             )
-            for key in ("reverse", "momentum", "sr", "spike"):
+            for key in ("reverse", "momentum", "sr", "near", "spike"):
                 enabled_var = self.close_enabled_vars.get((key, cond))
                 toggle = self.close_toggle_widgets.get((key, cond))
                 if enabled_var is None or toggle is None:
@@ -9187,6 +10109,17 @@ class Step1App:
             self.reverse_monitor_stop_pips_entry.config(state=state)
         if hasattr(self, "reverse_monitor_stop_label"):
             self._set_widget_enabled(self.reverse_monitor_stop_label, enabled)
+
+    def _on_near_speed_filter_toggle(self):
+        enabled = self.entry_near_var.get() and self.near_speed_filter_enabled_var.get()
+        if hasattr(self, "near_speed_seconds_entry"):
+            self._set_widget_enabled(self.near_speed_seconds_entry, enabled)
+        if hasattr(self, "near_speed_pips_entry"):
+            self._set_widget_enabled(self.near_speed_pips_entry, enabled)
+        if hasattr(self, "near_speed_seconds_label"):
+            self._set_widget_enabled(self.near_speed_seconds_label, enabled)
+        if hasattr(self, "near_speed_pips_label"):
+            self._set_widget_enabled(self.near_speed_pips_label, enabled)
 
     def _on_extreme_filter_toggle(self):
         enabled = self.extreme_filter_var.get()
@@ -9225,6 +10158,8 @@ class Step1App:
             labels.append("スパイク")
         if payload.get("entry_sr_enabled"):
             labels.append("水平線")
+        if payload.get("entry_near_enabled"):
+            labels.append("水平線手前")
         if payload.get("entry_momentum_enabled"):
             labels.append("勢い追随")
         if payload.get("entry_reverse_enabled"):

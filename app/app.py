@@ -9654,24 +9654,80 @@ class Step1App:
             return 0
         return min(total_points, 1000)
 
-    def _compute_auto_view_indices(self, times, anchor_idx=None):
+    def _default_view_candle_count(self, interval_minutes: int, total_candles: int) -> int:
+        if total_candles <= 0:
+            return 0
+        interval_minutes = max(1, int(interval_minutes))
+        if interval_minutes >= 240:
+            base = 80
+        elif interval_minutes >= 60:
+            base = 120
+        elif interval_minutes >= 15:
+            base = 160
+        elif interval_minutes >= 5:
+            base = 200
+        else:
+            base = 240
+        return min(total_candles, base)
+
+    def _compute_auto_view_indices(
+        self, times, anchor_idx=None, chart_type="tick", candle_interval=1
+    ):
         total = len(times)
         if total <= 0:
             return 0, -1
-        visible = self._default_view_point_count(total)
-        visible = max(1, min(visible, total))
-        if anchor_idx is None:
-            end_idx = total - 1
-            start_idx = max(0, end_idx - visible + 1)
-        else:
-            anchor_idx = max(0, min(anchor_idx, total - 1))
-            start_idx = anchor_idx - visible // 2
-            if start_idx < 0:
-                start_idx = 0
-            end_idx = start_idx + visible - 1
-            if end_idx >= total:
+
+        if chart_type != "candle":
+            visible = self._default_view_point_count(total)
+            visible = max(1, min(visible, total))
+            if anchor_idx is None:
                 end_idx = total - 1
                 start_idx = max(0, end_idx - visible + 1)
+            else:
+                anchor_idx = max(0, min(anchor_idx, total - 1))
+                start_idx = anchor_idx - visible // 2
+                if start_idx < 0:
+                    start_idx = 0
+                end_idx = start_idx + visible - 1
+                if end_idx >= total:
+                    end_idx = total - 1
+                    start_idx = max(0, end_idx - visible + 1)
+            return start_idx, end_idx
+
+        candle_interval = max(1, int(candle_interval))
+        total_minutes = max(
+            0.0, (times[-1] - times[0]).total_seconds() / 60.0
+        )
+        total_candles = int(total_minutes // candle_interval) + 1
+        visible_candles = self._default_view_candle_count(
+            candle_interval, max(1, total_candles)
+        )
+        span = timedelta(minutes=candle_interval * visible_candles)
+        min_time = times[0]
+        max_time = times[-1]
+
+        if anchor_idx is None:
+            end_time = max_time
+            start_time = end_time - span
+        else:
+            anchor_idx = max(0, min(anchor_idx, total - 1))
+            anchor_time = times[anchor_idx]
+            start_time = anchor_time - span / 2
+            end_time = start_time + span
+
+        if start_time < min_time:
+            start_time = min_time
+            end_time = start_time + span
+        if end_time > max_time:
+            end_time = max_time
+            start_time = end_time - span
+        if start_time < min_time:
+            start_time = min_time
+
+        start_idx = bisect_left(times, start_time)
+        end_idx = bisect_right(times, end_time) - 1
+        start_idx = max(0, min(start_idx, total - 1))
+        end_idx = max(start_idx, min(end_idx, total - 1))
         return start_idx, end_idx
 
     def _render_chart(self, payload):
@@ -9692,7 +9748,15 @@ class Step1App:
 
         points = sorted(points, key=lambda x: x[0])
         times = [ts for ts, _ in points]
-        view_start_idx, view_end_idx = self._compute_auto_view_indices(times)
+        chart_type = self.chart_type_var.get() if hasattr(self, "chart_type_var") else "tick"
+        try:
+            candle_interval = int(self.candle_interval_var.get())
+        except Exception:
+            candle_interval = 1
+        candle_interval = max(1, candle_interval)
+        view_start_idx, view_end_idx = self._compute_auto_view_indices(
+            times, chart_type=chart_type, candle_interval=candle_interval
+        )
         view_start_time = times[view_start_idx]
         view_end_time = times[view_end_idx]
         self.chart_data = {
@@ -9976,32 +10040,77 @@ class Step1App:
         trade_end = max(entry_idx, exit_idx)
         trade_span = max(1, trade_end - trade_start + 1)
 
-        current_start = self.chart_data.get("view_start", 0)
-        current_end = self.chart_data.get("view_end", len(times) - 1)
-        current_start = max(0, min(current_start, len(times) - 1))
-        current_end = max(current_start, min(current_end, len(times) - 1))
-        current_visible = max(1, current_end - current_start + 1)
+        chart_type = self.chart_type_var.get() if hasattr(self, "chart_type_var") else "tick"
+        if chart_type == "candle":
+            try:
+                candle_interval = int(self.candle_interval_var.get())
+            except Exception:
+                candle_interval = 1
+            candle_interval = max(1, candle_interval)
+            trade_start_time = times[trade_start]
+            trade_end_time = times[trade_end]
+            trade_seconds = max(
+                candle_interval * 60,
+                (trade_end_time - trade_start_time).total_seconds(),
+            )
+            unit_seconds = candle_interval * 60
+            trade_bars = max(1, int((trade_seconds + unit_seconds - 1) // unit_seconds))
+            padding_bars = max(20, int(trade_bars * 0.5))
+            desired_bars = trade_bars + padding_bars
+            min_bars = 60
+            max_bars = 400
+            if trade_bars > max_bars:
+                target_bars = trade_bars
+            else:
+                target_bars = max(min_bars, min(max_bars, desired_bars))
+            span = timedelta(minutes=target_bars * candle_interval)
 
-        padding = max(30, int(trade_span * 0.3))
-        desired_span = trade_span + padding
-        target_visible = min(current_visible, desired_span)
-        target_visible = max(target_visible, trade_span)
+            anchor_time = trade_start_time + (trade_end_time - trade_start_time) / 2
+            start_time = anchor_time - span / 2
+            end_time = start_time + span
 
-        min_visible = 300
-        max_visible = 3000
-        if trade_span > max_visible:
-            target_visible = trade_span
+            min_time = times[0]
+            max_time = times[-1]
+            if start_time < min_time:
+                start_time = min_time
+                end_time = start_time + span
+            if end_time > max_time:
+                end_time = max_time
+                start_time = end_time - span
+            if start_time < min_time:
+                start_time = min_time
+
+            start_idx = bisect_left(times, start_time)
+            end_idx = bisect_right(times, end_time) - 1
+            start_idx = max(0, min(start_idx, len(times) - 1))
+            end_idx = max(start_idx, min(end_idx, len(times) - 1))
         else:
-            target_visible = max(min_visible, min(max_visible, target_visible))
-        target_visible = min(target_visible, len(times))
+            current_start = self.chart_data.get("view_start", 0)
+            current_end = self.chart_data.get("view_end", len(times) - 1)
+            current_start = max(0, min(current_start, len(times) - 1))
+            current_end = max(current_start, min(current_end, len(times) - 1))
+            current_visible = max(1, current_end - current_start + 1)
 
-        anchor_idx = (trade_start + trade_end) // 2
-        start_idx = anchor_idx - target_visible // 2
-        if start_idx < 0:
-            start_idx = 0
-        if start_idx + target_visible > len(times):
-            start_idx = len(times) - target_visible
-        end_idx = start_idx + target_visible - 1
+            padding = max(30, int(trade_span * 0.3))
+            desired_span = trade_span + padding
+            target_visible = min(current_visible, desired_span)
+            target_visible = max(target_visible, trade_span)
+
+            min_visible = 300
+            max_visible = 3000
+            if trade_span > max_visible:
+                target_visible = trade_span
+            else:
+                target_visible = max(min_visible, min(max_visible, target_visible))
+            target_visible = min(target_visible, len(times))
+
+            anchor_idx = (trade_start + trade_end) // 2
+            start_idx = anchor_idx - target_visible // 2
+            if start_idx < 0:
+                start_idx = 0
+            if start_idx + target_visible > len(times):
+                start_idx = len(times) - target_visible
+            end_idx = start_idx + target_visible - 1
 
         self.chart_data["view_start"] = start_idx
         self.chart_data["view_end"] = end_idx

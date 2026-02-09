@@ -2,7 +2,7 @@
   "通貨": "USDJPY",
   "戦略": "水平線手前",
   "設定ID": "d61f6cba",
-  "保存日時": "2026-02-09 08:42:21.879862",
+  "保存日時": "2026-02-09 10:11:35.298903",
   "パラメータ": {
     "allow_opposite_direction": true,
     "allow_same_direction": true,
@@ -358,9 +358,9 @@
       false
     ],
     "batch_end_month": "2025-12",
-    "batch_start_month": "2016-01",
-    "candle_interval": 1,
-    "chart_type": "tick",
+    "batch_start_month": "2025-01",
+    "candle_interval": 60,
+    "chart_type": "candle",
     "common_fast_take_enabled": false,
     "common_fast_take_override": true,
     "common_fixed_override": true,
@@ -373,7 +373,7 @@
     "common_time_override": true,
     "download_end_month": "2026-02",
     "download_start_month": "2026-02",
-    "dup_period_mode": "skip",
+    "dup_period_mode": "overwrite",
     "entry_momentum_enabled": false,
     "entry_near_enabled": true,
     "entry_reverse_enabled": false,
@@ -387,7 +387,7 @@
     "fast_take_pips": "5",
     "fast_take_window_ms": "2000",
     "fixed_exit_price": true,
-    "hide_chart": true,
+    "hide_chart": false,
     "line_interval": 60,
     "ma_deviation": "0.05",
     "ma_filter": true,
@@ -573,7 +573,7 @@
     "sr_fast_take_pips": "5",
     "sr_fast_take_window_ms": "2000",
     "sr_fixed_exit_price": true,
-    "sr_line_show": false,
+    "sr_line_show": true,
     "sr_min_bars": "10",
     "sr_namping_first_enabled": true,
     "sr_namping_step1_enabled": false,
@@ -625,6 +625,6 @@
     "time_close_seconds": "30",
     "view_range_months": "1",
     "x_axis_mode": "time",
-    "zigzag_show": false
+    "zigzag_show": true
   }
 }

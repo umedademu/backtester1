@@ -939,6 +939,24 @@ def build_minute_close_info(points):
     return minute_times, minute_close_prices, minute_close_indices
 
 
+def resolve_line_available_time(candles, start_idx):
+    if not candles:
+        return None
+    if start_idx < 0:
+        start_idx = 0
+    if start_idx >= len(candles):
+        start_idx = len(candles) - 1
+    if start_idx + 1 < len(candles):
+        return candles[start_idx + 1][0]
+    if len(candles) >= 2:
+        step = candles[-1][0] - candles[-2][0]
+        if step.total_seconds() <= 0:
+            step = timedelta(minutes=1)
+    else:
+        step = timedelta(minutes=1)
+    return candles[start_idx][0] + step
+
+
 def build_range_band_segments(candles, lookback_bars=30, should_cancel=None):
     if not candles:
         return []
@@ -961,6 +979,7 @@ def build_range_band_segments(candles, lookback_bars=30, should_cancel=None):
                 "high": window_high,
                 "low": window_low,
                 "start_idx": idx,
+                "available_time": resolve_line_available_time(candles, idx),
             }
         else:
             if (
@@ -972,6 +991,7 @@ def build_range_band_segments(candles, lookback_bars=30, should_cancel=None):
                     segments.append(
                         {
                             "start_time": candles[active["start_idx"]][0],
+                            "available_time": active.get("available_time"),
                             "end_time": candles[end_idx][0],
                             "high": active["high"],
                             "low": active["low"],
@@ -981,6 +1001,7 @@ def build_range_band_segments(candles, lookback_bars=30, should_cancel=None):
                     "high": window_high,
                     "low": window_low,
                     "start_idx": idx,
+                    "available_time": resolve_line_available_time(candles, idx),
                 }
 
     if active is not None:
@@ -989,6 +1010,7 @@ def build_range_band_segments(candles, lookback_bars=30, should_cancel=None):
             segments.append(
                 {
                     "start_time": candles[active["start_idx"]][0],
+                    "available_time": active.get("available_time"),
                     "end_time": candles[end_idx][0],
                     "high": active["high"],
                     "low": active["low"],
@@ -1048,12 +1070,12 @@ def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5, should_cancel=None
                     )
                 ):
                     if candidate_high_idx > candidate_low_idx:
-                        points.append((candles[idx][0], candidate_low))
+                        points.append((candles[candidate_low_idx][0], candidate_low))
                         direction = "up"
                         extreme_price = candidate_high
                         extreme_idx = candidate_high_idx
                     else:
-                        points.append((candles[idx][0], candidate_high))
+                        points.append((candles[candidate_high_idx][0], candidate_high))
                         direction = "down"
                         extreme_price = candidate_low
                         extreme_idx = candidate_low_idx
@@ -1068,7 +1090,7 @@ def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5, should_cancel=None
                     or idx - last_confirm_idx >= min_bars
                     or has_long_wick(candles[extreme_idx], "resistance")
                 ):
-                    points.append((candles[idx][0], extreme_price))
+                    points.append((candles[extreme_idx][0], extreme_price))
                     direction = "down"
                     extreme_price = low
                     extreme_idx = idx
@@ -1083,15 +1105,19 @@ def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5, should_cancel=None
                     or idx - last_confirm_idx >= min_bars
                     or has_long_wick(candles[extreme_idx], "support")
                 ):
-                    points.append((candles[idx][0], extreme_price))
+                    points.append((candles[extreme_idx][0], extreme_price))
                     direction = "up"
                     extreme_price = high
                     extreme_idx = idx
                     last_confirm_idx = idx
 
     if extreme_idx is not None:
-        last_time = candles[-1][0]
-        if not points or points[-1][0] != last_time:
+        last_time = candles[extreme_idx][0]
+        if (
+            not points
+            or points[-1][0] != last_time
+            or abs(points[-1][1] - extreme_price) > 1e-12
+        ):
             points.append((last_time, extreme_price))
 
     return points
@@ -1123,18 +1149,22 @@ def build_zigzag_sr_segments(
             {
                 "price": level["price"],
                 "kind": level["kind"],
+                "origin_time": level.get("origin_time", level["start_time"]),
                 "start_time": level["start_time"],
+                "available_time": level.get("available_time"),
                 "end_time": candles[end_idx][0],
             }
         )
 
-    def add_level(kind, price, confirm_idx):
+    def add_level(kind, price, origin_idx, confirm_idx):
         active.append(
             {
                 "kind": kind,
                 "price": price,
-                "start_time": candles[confirm_idx][0],
+                "origin_time": candles[origin_idx][0],
+                "start_time": candles[origin_idx][0],
                 "start_index": confirm_idx,
+                "available_time": resolve_line_available_time(candles, confirm_idx),
             }
         )
 
@@ -1172,12 +1202,12 @@ def build_zigzag_sr_segments(
                     )
                 ):
                     if candidate_high_idx > candidate_low_idx:
-                        add_level("support", candidate_low, idx)
+                        add_level("support", candidate_low, candidate_low_idx, idx)
                         direction = "up"
                         extreme_price = candidate_high
                         extreme_idx = candidate_high_idx
                     else:
-                        add_level("resistance", candidate_high, idx)
+                        add_level("resistance", candidate_high, candidate_high_idx, idx)
                         direction = "down"
                         extreme_price = candidate_low
                         extreme_idx = candidate_low_idx
@@ -1192,7 +1222,7 @@ def build_zigzag_sr_segments(
                     or idx - last_confirm_idx >= min_bars
                     or has_long_wick(candles[extreme_idx], "resistance")
                 ):
-                    add_level("resistance", extreme_price, idx)
+                    add_level("resistance", extreme_price, extreme_idx, idx)
                     direction = "down"
                     extreme_price = low
                     extreme_idx = idx
@@ -1207,7 +1237,7 @@ def build_zigzag_sr_segments(
                     or idx - last_confirm_idx >= min_bars
                     or has_long_wick(candles[extreme_idx], "support")
                 ):
-                    add_level("support", extreme_price, idx)
+                    add_level("support", extreme_price, extreme_idx, idx)
                     direction = "up"
                     extreme_price = high
                     extreme_idx = idx
@@ -1221,14 +1251,22 @@ def build_zigzag_sr_segments(
                     if low < level["price"] - break_threshold:
                         add_segment(level, idx)
                         level["price"] = low
+                        level["origin_time"] = candles[idx][0]
                         level["start_time"] = candles[idx][0]
                         level["start_index"] = idx
+                        level["available_time"] = resolve_line_available_time(
+                            candles, idx
+                        )
                 else:
                     if high > level["price"] + break_threshold:
                         add_segment(level, idx)
                         level["price"] = high
+                        level["origin_time"] = candles[idx][0]
                         level["start_time"] = candles[idx][0]
                         level["start_index"] = idx
+                        level["available_time"] = resolve_line_available_time(
+                            candles, idx
+                        )
 
     last_idx = len(candles) - 1
     for level in active:
@@ -1236,7 +1274,9 @@ def build_zigzag_sr_segments(
             {
                 "price": level["price"],
                 "kind": level["kind"],
+                "origin_time": level.get("origin_time", level["start_time"]),
                 "start_time": level["start_time"],
+                "available_time": level.get("available_time"),
                 "end_time": candles[last_idx][0],
             }
         )
@@ -1545,7 +1585,9 @@ def build_reentry_lines(candles, sr_params, range_params, target_type, should_ca
         for seg in segments:
             price = seg.get("price")
             kind = seg.get("kind")
+            origin_time = seg.get("origin_time") or seg.get("start_time")
             start_time = seg.get("start_time")
+            available_time = seg.get("available_time") or start_time
             end_time = seg.get("end_time")
             if price is None or kind is None or start_time is None or end_time is None:
                 continue
@@ -1553,7 +1595,9 @@ def build_reentry_lines(candles, sr_params, range_params, target_type, should_ca
                 {
                     "price": price,
                     "kind": kind,
+                    "origin_time": origin_time,
                     "start_time": start_time,
+                    "available_time": available_time,
                     "end_time": end_time,
                     "source": "sr",
                 }
@@ -1567,7 +1611,9 @@ def build_reentry_lines(candles, sr_params, range_params, target_type, should_ca
         for seg in range_segments:
             high = seg.get("high")
             low = seg.get("low")
+            origin_time = seg.get("origin_time") or seg.get("start_time")
             start_time = seg.get("start_time")
+            available_time = seg.get("available_time") or start_time
             end_time = seg.get("end_time")
             if (
                 high is None
@@ -1580,7 +1626,9 @@ def build_reentry_lines(candles, sr_params, range_params, target_type, should_ca
                 {
                     "price": high,
                     "kind": "resistance",
+                    "origin_time": origin_time,
                     "start_time": start_time,
+                    "available_time": available_time,
                     "end_time": end_time,
                     "source": "range",
                 }
@@ -1589,7 +1637,9 @@ def build_reentry_lines(candles, sr_params, range_params, target_type, should_ca
                 {
                     "price": low,
                     "kind": "support",
+                    "origin_time": origin_time,
                     "start_time": start_time,
+                    "available_time": available_time,
                     "end_time": end_time,
                     "source": "range",
                 }
@@ -1601,7 +1651,9 @@ def build_reentry_lines(candles, sr_params, range_params, target_type, should_ca
             key = (
                 line["price"],
                 line["kind"],
+                line.get("origin_time"),
                 line["start_time"],
+                line.get("available_time"),
                 line["end_time"],
                 line.get("source"),
             )
@@ -1658,7 +1710,9 @@ def find_sr_reentry_signal(
     if bin_state is None:
         bin_state = {}
     if line_start_times is None:
-        line_start_times = [line["start_time"] for line in lines]
+        line_start_times = [
+            line.get("available_time", line["start_time"]) for line in lines
+        ]
     if disabled_lines is None:
         disabled_lines = set()
 
@@ -2107,7 +2161,7 @@ def find_sr_near_signal(
                         disabled_lines.add(line_idx)
                         continue
                     line = lines[line_idx]
-                    start_time = line.get("start_time")
+                    start_time = line.get("available_time", line.get("start_time"))
                     if start_time is not None and ts < start_time:
                         continue
                     threshold = item["threshold"]
@@ -3154,7 +3208,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 sr_target,
                 should_cancel=should_cancel,
             )
-            line_start_times = [line["start_time"] for line in lines]
+            line_start_times = [
+                line.get("available_time", line["start_time"]) for line in lines
+            ]
             end_limits_base = [
                 line["end_time"] + timedelta(minutes=line_interval) for line in lines
             ]
@@ -3258,7 +3314,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 near_target,
                 should_cancel=should_cancel,
             )
-            line_start_times = [line["start_time"] for line in lines]
+            line_start_times = [
+                line.get("available_time", line["start_time"]) for line in lines
+            ]
             end_limits_base = [
                 line["end_time"] + timedelta(minutes=line_interval) for line in lines
             ]
@@ -3458,7 +3516,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 sr_target,
                 should_cancel=should_cancel,
             )
-            line_start_times = [line["start_time"] for line in lines]
+            line_start_times = [
+                line.get("available_time", line["start_time"]) for line in lines
+            ]
             end_limits_base = [
                 line["end_time"] + timedelta(minutes=line_interval) for line in lines
             ]
@@ -3666,7 +3726,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
                 near_target,
                 should_cancel=should_cancel,
             )
-            line_start_times = [line["start_time"] for line in lines]
+            line_start_times = [
+                line.get("available_time", line["start_time"]) for line in lines
+            ]
             end_limits_base = [
                 line["end_time"] + timedelta(minutes=line_interval) for line in lines
             ]
@@ -12318,10 +12380,47 @@ class Step1App:
                 return None
             return left + (idx - view_start_idx) / (n - 1) * plot_width
 
+        def draw_horizontal_segment(
+            price, color, start_ts, available_ts, end_ts, pending_dash=(2, 2)
+        ):
+            if start_ts is None or end_ts is None or price is None:
+                return
+            if available_ts is None:
+                available_ts = start_ts
+            if available_ts < start_ts:
+                available_ts = start_ts
+            if available_ts > end_ts:
+                available_ts = end_ts
+
+            y = price_to_y(price)
+
+            def draw_part(part_start, part_end, dash_style=None):
+                if part_end < view_start_time or part_start > view_end_time:
+                    return
+                draw_start = (
+                    part_start if part_start > view_start_time else view_start_time
+                )
+                draw_end = part_end if part_end < view_end_time else view_end_time
+                x1 = line_time_to_x(draw_start, as_end=False)
+                x2 = line_time_to_x(draw_end, as_end=True)
+                if x1 is None or x2 is None:
+                    return
+                if x2 < x1:
+                    x1, x2 = x2, x1
+                kwargs = {"fill": color, "width": 1}
+                if dash_style:
+                    kwargs["dash"] = dash_style
+                canvas.create_line(x1, y, x2, y, **kwargs)
+
+            if available_ts > start_ts:
+                draw_part(start_ts, available_ts, pending_dash)
+            draw_part(available_ts, end_ts, None)
+
         range_segments = data.get("range_segments") or []
         if show_range_band and range_segments:
             for seg in range_segments:
-                start_ts = seg.get("start_time")
+                start_ts = seg.get("origin_time", seg.get("start_time"))
+                available_ts = seg.get("available_time", start_ts)
                 end_ts = seg.get("end_time")
                 high = seg.get("high")
                 low = seg.get("low")
@@ -12334,23 +12433,18 @@ class Step1App:
                     continue
                 if end_ts < view_start_time or start_ts > view_end_time:
                     continue
-                draw_start = start_ts if start_ts > view_start_time else view_start_time
-                draw_end = end_ts if end_ts < view_end_time else view_end_time
-                x1 = line_time_to_x(draw_start, as_end=False)
-                x2 = line_time_to_x(draw_end, as_end=True)
-                if x1 is None or x2 is None:
-                    continue
-                if x2 < x1:
-                    x1, x2 = x2, x1
-                y_high = price_to_y(high)
-                y_low = price_to_y(low)
-                canvas.create_line(x1, y_high, x2, y_high, fill="#1f77b4", width=1, dash=(2, 2))
-                canvas.create_line(x1, y_low, x2, y_low, fill="#1f77b4", width=1, dash=(2, 2))
+                draw_horizontal_segment(
+                    high, "#1f77b4", start_ts, available_ts, end_ts, pending_dash=(2, 2)
+                )
+                draw_horizontal_segment(
+                    low, "#1f77b4", start_ts, available_ts, end_ts, pending_dash=(2, 2)
+                )
 
         sr_segments = data.get("sr_segments") or []
         if show_sr_line and sr_segments:
             for seg in sr_segments:
-                start_ts = seg.get("start_time")
+                start_ts = seg.get("origin_time", seg.get("start_time"))
+                available_ts = seg.get("available_time", start_ts)
                 end_ts = seg.get("end_time")
                 price = seg.get("price")
                 kind = seg.get("kind")
@@ -12363,17 +12457,10 @@ class Step1App:
                     continue
                 if end_ts < view_start_time or start_ts > view_end_time:
                     continue
-                draw_start = start_ts if start_ts > view_start_time else view_start_time
-                draw_end = end_ts if end_ts < view_end_time else view_end_time
-                x1 = line_time_to_x(draw_start, as_end=False)
-                x2 = line_time_to_x(draw_end, as_end=True)
-                if x1 is None or x2 is None:
-                    continue
-                if x2 < x1:
-                    x1, x2 = x2, x1
-                y = price_to_y(price)
                 color = "#2ca02c" if kind == "support" else "#d62728"
-                canvas.create_line(x1, y, x2, y, fill=color, width=1, dash=(3, 3))
+                draw_horizontal_segment(
+                    price, color, start_ts, available_ts, end_ts, pending_dash=(3, 3)
+                )
 
         trades = data.get("trades") or []
         data["trade_markers"] = []

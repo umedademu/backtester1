@@ -24,8 +24,8 @@
   "saved_runs_min_pips": "0",
   "dup_period_mode": "overwrite",
   "bookmarked_settings": [
-    "USDJPY|\u79d2\u9006\u5f35\u308a|bc56d58d",
-    "USDJPY|\u79d2\u9006\u5f35\u308a|dd3b442d"
+    "USDJPY|\u79d2\u9006\u5f35\u308a|8af562ad",
+    "USDJPY|\u79d2\u9006\u5f35\u308a|bc56d58d"
   ],
   "ma_filter": true,
   "ma_period": "200",
@@ -261,9 +261,8 @@
   "spike_namping_step3_lot": "8",
   "spike_namping_step4_lot": "16",
   "spike_namping_step5_lot": "32",
-  "sr_zigzag_pips": "10",
+  "sr_zigzag_pips": "30",
   "sr_break_pips": "0.01",
-  "sr_min_bars": "1",
   "sr_reentry_break_pips": "10.0",
   "sr_reentry_tick_limit": "100",
   "sr_reentry_tick_min": "0",

@@ -261,8 +261,39 @@ def build_settings_id_params(params):
         effective["line_interval"] = max(
             1, _coerce_int(params.get("line_interval", 1), 1)
         )
-        effective["sr_params"] = params.get("sr_params") or {}
-        effective["range_params"] = params.get("range_params") or {}
+        sr_params = params.get("sr_params")
+        if not isinstance(sr_params, dict):
+            sr_params = {}
+        sr_params = dict(sr_params)
+        if "zigzag_pips" not in sr_params and params.get("sr_zigzag_pips") is not None:
+            sr_params["zigzag_pips"] = _coerce_float(
+                params.get("sr_zigzag_pips"), 5.0
+            )
+        if "break_pips" not in sr_params and params.get("sr_break_pips") is not None:
+            sr_params["break_pips"] = _coerce_float(params.get("sr_break_pips"), 1.0)
+        sr_params.pop("min_bars", None)
+        if "zigzag_pips" in sr_params:
+            sr_params["zigzag_pips"] = _coerce_float(sr_params.get("zigzag_pips"), 5.0)
+        if "break_pips" in sr_params:
+            sr_params["break_pips"] = _coerce_float(sr_params.get("break_pips"), 1.0)
+
+        range_params = params.get("range_params")
+        if not isinstance(range_params, dict):
+            range_params = {}
+        range_params = dict(range_params)
+        if (
+            "lookback_bars" not in range_params
+            and params.get("range_band_bars") is not None
+        ):
+            range_params["lookback_bars"] = _coerce_int(
+                params.get("range_band_bars"), 30
+            )
+        if "lookback_bars" in range_params:
+            range_params["lookback_bars"] = max(
+                1, _coerce_int(range_params.get("lookback_bars"), 30)
+            )
+        effective["sr_params"] = sr_params
+        effective["range_params"] = range_params
 
     if entry_sr_enabled:
         effective["sr_break_pips"] = _coerce_float(params.get("sr_break_pips", 5.0))
@@ -1019,12 +1050,11 @@ def build_range_band_segments(candles, lookback_bars=30, should_cancel=None):
     return segments
 
 
-def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5, should_cancel=None):
+def build_zigzag_points(candles, zigzag_pips=5.0, should_cancel=None, **_ignored):
     if not candles:
         return []
 
     threshold = zigzag_pips * PIP_SIZE
-    min_bars = max(1, int(min_bars))
 
     points = []
 
@@ -1036,7 +1066,6 @@ def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5, should_cancel=None
     direction = None
     extreme_price = None
     extreme_idx = None
-    last_pivot_idx = None
 
     for idx in range(1, len(candles)):
         if should_cancel and is_cancel_requested(should_cancel):
@@ -1052,70 +1081,53 @@ def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5, should_cancel=None
                 candidate_low_idx = idx
 
             if candidate_high - candidate_low >= threshold:
-                if abs(candidate_high_idx - candidate_low_idx) >= min_bars:
-                    if candidate_high_idx > candidate_low_idx:
-                        points.append((candles[candidate_low_idx][0], candidate_low))
-                        direction = "up"
-                        extreme_price = candidate_high
-                        extreme_idx = candidate_high_idx
-                        last_pivot_idx = candidate_low_idx
-                    else:
-                        points.append((candles[candidate_high_idx][0], candidate_high))
-                        direction = "down"
-                        extreme_price = candidate_low
-                        extreme_idx = candidate_low_idx
-                        last_pivot_idx = candidate_high_idx
+                if candidate_high_idx > candidate_low_idx:
+                    points.append((candles[candidate_low_idx][0], candidate_low))
+                    direction = "up"
+                    extreme_price = candidate_high
+                    extreme_idx = candidate_high_idx
+                else:
+                    points.append((candles[candidate_high_idx][0], candidate_high))
+                    direction = "down"
+                    extreme_price = candidate_low
+                    extreme_idx = candidate_low_idx
         elif direction == "up":
             if high > extreme_price:
                 extreme_price = high
                 extreme_idx = idx
                 continue
             if idx > extreme_idx and extreme_price - low >= threshold:
-                if (
-                    last_pivot_idx is None
-                    or extreme_idx - last_pivot_idx >= min_bars
-                ):
-                    points.append((candles[extreme_idx][0], extreme_price))
-                    direction = "down"
-                    last_pivot_idx = extreme_idx
-                    extreme_price = low
-                    extreme_idx = idx
+                points.append((candles[extreme_idx][0], extreme_price))
+                direction = "down"
+                extreme_price = low
+                extreme_idx = idx
         else:
             if low < extreme_price:
                 extreme_price = low
                 extreme_idx = idx
                 continue
             if idx > extreme_idx and high - extreme_price >= threshold:
-                if (
-                    last_pivot_idx is None
-                    or extreme_idx - last_pivot_idx >= min_bars
-                ):
-                    points.append((candles[extreme_idx][0], extreme_price))
-                    direction = "up"
-                    last_pivot_idx = extreme_idx
-                    extreme_price = high
-                    extreme_idx = idx
+                points.append((candles[extreme_idx][0], extreme_price))
+                direction = "up"
+                extreme_price = high
+                extreme_idx = idx
 
     if extreme_idx is not None:
         last_time = candles[extreme_idx][0]
-        enough_tail = (
-            last_pivot_idx is None or extreme_idx - last_pivot_idx >= min_bars
-        )
-        if enough_tail and (not points or points[-1][0] != last_time):
+        if not points or points[-1][0] != last_time:
             points.append((last_time, extreme_price))
 
     return points
 
 
 def build_zigzag_sr_segments(
-    candles, zigzag_pips=5.0, break_pips=1.0, min_bars=5, should_cancel=None
+    candles, zigzag_pips=5.0, break_pips=1.0, should_cancel=None, **_ignored
 ):
     if not candles:
         return []
 
     threshold = zigzag_pips * PIP_SIZE
     break_threshold = break_pips * PIP_SIZE
-    min_bars = max(1, int(min_bars))
 
     segments = []
     active = []
@@ -1152,7 +1164,6 @@ def build_zigzag_sr_segments(
     direction = None
     extreme_price = None
     extreme_idx = None
-    last_pivot_idx = None
 
     for idx in range(1, len(candles)):
         if should_cancel and is_cancel_requested(should_cancel):
@@ -1168,49 +1179,36 @@ def build_zigzag_sr_segments(
                 candidate_low_idx = idx
 
             if candidate_high - candidate_low >= threshold:
-                if abs(candidate_high_idx - candidate_low_idx) >= min_bars:
-                    if candidate_high_idx > candidate_low_idx:
-                        add_level("support", candidate_low, candidate_low_idx, idx)
-                        direction = "up"
-                        extreme_price = candidate_high
-                        extreme_idx = candidate_high_idx
-                        last_pivot_idx = candidate_low_idx
-                    else:
-                        add_level("resistance", candidate_high, candidate_high_idx, idx)
-                        direction = "down"
-                        extreme_price = candidate_low
-                        extreme_idx = candidate_low_idx
-                        last_pivot_idx = candidate_high_idx
+                if candidate_high_idx > candidate_low_idx:
+                    add_level("support", candidate_low, candidate_low_idx, idx)
+                    direction = "up"
+                    extreme_price = candidate_high
+                    extreme_idx = candidate_high_idx
+                else:
+                    add_level("resistance", candidate_high, candidate_high_idx, idx)
+                    direction = "down"
+                    extreme_price = candidate_low
+                    extreme_idx = candidate_low_idx
         elif direction == "up":
             if high > extreme_price:
                 extreme_price = high
                 extreme_idx = idx
                 continue
             if idx > extreme_idx and extreme_price - low >= threshold:
-                if (
-                    last_pivot_idx is None
-                    or extreme_idx - last_pivot_idx >= min_bars
-                ):
-                    add_level("resistance", extreme_price, extreme_idx, idx)
-                    direction = "down"
-                    last_pivot_idx = extreme_idx
-                    extreme_price = low
-                    extreme_idx = idx
+                add_level("resistance", extreme_price, extreme_idx, idx)
+                direction = "down"
+                extreme_price = low
+                extreme_idx = idx
         else:
             if low < extreme_price:
                 extreme_price = low
                 extreme_idx = idx
                 continue
             if idx > extreme_idx and high - extreme_price >= threshold:
-                if (
-                    last_pivot_idx is None
-                    or extreme_idx - last_pivot_idx >= min_bars
-                ):
-                    add_level("support", extreme_price, extreme_idx, idx)
-                    direction = "up"
-                    last_pivot_idx = extreme_idx
-                    extreme_price = high
-                    extreme_idx = idx
+                add_level("support", extreme_price, extreme_idx, idx)
+                direction = "up"
+                extreme_price = high
+                extreme_idx = idx
 
         if active:
             for li, level in enumerate(active):
@@ -4696,7 +4694,6 @@ class Step1App:
         self.spike_namping_step5_lot_var = tk.StringVar(value="32")
         self.sr_zigzag_pips_var = tk.StringVar(value="10.0")
         self.sr_break_pips_var = tk.StringVar(value="0.01")
-        self.sr_min_bars_var = tk.StringVar(value="10")
         self.sr_reentry_break_pips_var = tk.StringVar(value="10.0")
         self.sr_reentry_tick_limit_var = tk.StringVar(value="100")
         self.sr_reentry_tick_min_var = tk.StringVar(value="0")
@@ -6091,15 +6088,11 @@ class Step1App:
         ttk.Entry(sr_settings, textvariable=self.sr_break_pips_var, width=8).grid(
             row=0, column=3, padx=(4, 0), sticky="w"
         )
-        ttk.Label(sr_settings, text="最小本数").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(sr_settings, textvariable=self.sr_min_bars_var, width=8).grid(
-            row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w"
-        )
-        ttk.Label(sr_settings, text="レンジ本数").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(sr_settings, text="レンジ本数").grid(row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(sr_settings, textvariable=self.range_band_bars_var, width=8).grid(
-            row=2, column=1, padx=(4, 0), pady=(6, 0), sticky="w"
+            row=1, column=1, padx=(4, 0), pady=(6, 0), sticky="w"
         )
-        self._build_line_interval_radios(sr_settings, row_start=3)
+        self._build_line_interval_radios(sr_settings, row_start=2)
 
         sr_reentry_settings = ttk.LabelFrame(sr_tab, text="水平線戻り条件")
         sr_reentry_settings.grid(row=4, column=0, sticky="ew")
@@ -6336,19 +6329,13 @@ class Step1App:
             state="readonly",
         )
         self.near_target_combo.grid(row=0, column=5, padx=(4, 0), sticky="w")
-        ttk.Label(near_line_settings, text="最小本数").grid(
+        ttk.Label(near_line_settings, text="レンジ本数").grid(
             row=1, column=0, sticky="w", pady=(6, 0)
         )
         ttk.Entry(
-            near_line_settings, textvariable=self.sr_min_bars_var, width=8
-        ).grid(row=1, column=1, padx=(4, 12), pady=(6, 0), sticky="w")
-        ttk.Label(near_line_settings, text="レンジ本数").grid(
-            row=2, column=0, sticky="w", pady=(6, 0)
-        )
-        ttk.Entry(
             near_line_settings, textvariable=self.range_band_bars_var, width=8
-        ).grid(row=2, column=1, padx=(4, 0), pady=(6, 0), sticky="w")
-        self._build_line_interval_radios(near_line_settings, row_start=3)
+        ).grid(row=1, column=1, padx=(4, 0), pady=(6, 0), sticky="w")
+        self._build_line_interval_radios(near_line_settings, row_start=2)
 
         self.entry_spike_check = ttk.Checkbutton(
             spike_tab,
@@ -7581,7 +7568,6 @@ class Step1App:
         try:
             zigzag_pips = self._parse_number(self.sr_zigzag_pips_var.get())
             break_pips = self._parse_number(self.sr_break_pips_var.get())
-            min_bars = int(self._parse_number(self.sr_min_bars_var.get()))
         except ValueError:
             messagebox.showerror("エラー", "水平線の数値入力が正しくありません。")
             return None
@@ -7592,14 +7578,10 @@ class Step1App:
         if break_pips < 0:
             messagebox.showerror("エラー", "ブレイク幅は0以上にしてください。")
             return None
-        if min_bars < 1:
-            messagebox.showerror("エラー", "最小本数は1以上にしてください。")
-            return None
 
         return {
             "zigzag_pips": zigzag_pips,
             "break_pips": break_pips,
-            "min_bars": min_bars,
         }
 
     def _get_range_params(self):
@@ -8523,7 +8505,6 @@ class Step1App:
 
         set_var(self.sr_zigzag_pips_var, data.get("sr_zigzag_pips"))
         set_var(self.sr_break_pips_var, data.get("sr_break_pips"))
-        set_var(self.sr_min_bars_var, data.get("sr_min_bars"))
         set_var(self.sr_reentry_break_pips_var, data.get("sr_reentry_break_pips"))
         set_var(self.sr_reentry_tick_limit_var, data.get("sr_reentry_tick_limit"))
         set_var(self.sr_reentry_tick_min_var, data.get("sr_reentry_tick_min"))
@@ -8906,7 +8887,6 @@ class Step1App:
             "spike_namping_step5_lot": self.spike_namping_step5_lot_var.get(),
             "sr_zigzag_pips": self.sr_zigzag_pips_var.get(),
             "sr_break_pips": self.sr_break_pips_var.get(),
-            "sr_min_bars": self.sr_min_bars_var.get(),
             "sr_reentry_break_pips": self.sr_reentry_break_pips_var.get(),
             "sr_reentry_tick_limit": self.sr_reentry_tick_limit_var.get(),
             "sr_reentry_tick_min": self.sr_reentry_tick_min_var.get(),
@@ -10026,12 +10006,12 @@ class Step1App:
             trade_bars = max(1, int((trade_seconds + unit_seconds - 1) // unit_seconds))
             padding_bars = max(20, int(trade_bars * 0.5))
             desired_bars = trade_bars + padding_bars
-            min_bars = 60
+            min_view_bars = 60
             max_bars = 400
             if trade_bars > max_bars:
                 target_bars = trade_bars
             else:
-                target_bars = max(min_bars, min(max_bars, desired_bars))
+                target_bars = max(min_view_bars, min(max_bars, desired_bars))
             span = timedelta(minutes=target_bars * candle_interval)
 
             anchor_time = trade_start_time + (trade_end_time - trade_start_time) / 2
@@ -11347,10 +11327,7 @@ class Step1App:
             )
         if "break_pips" not in sr_params and params.get("sr_break_pips") is not None:
             sr_params["break_pips"] = _coerce_float(params.get("sr_break_pips"), 1.0)
-        if "min_bars" not in sr_params and params.get("sr_min_bars") is not None:
-            sr_params["min_bars"] = _coerce_int(params.get("sr_min_bars"), 5)
-        if "min_bars" in sr_params:
-            sr_params["min_bars"] = max(1, _coerce_int(sr_params.get("min_bars"), 5))
+        sr_params.pop("min_bars", None)
 
         range_params = params.get("range_params")
         if not isinstance(range_params, dict):
@@ -12201,16 +12178,15 @@ class Step1App:
                     sr_params = {
                         "zigzag_pips": 5.0,
                         "break_pips": 1.0,
-                        "min_bars": 5,
                     }
                     sr_params.update(data.get("sr_params") or {})
+                    sr_params.pop("min_bars", None)
                     range_params = {"lookback_bars": 30}
                     range_params.update(data.get("range_params") or {})
 
                     zigzag_points = build_zigzag_points(
                         full_candles,
                         zigzag_pips=sr_params.get("zigzag_pips", 5.0),
-                        min_bars=sr_params.get("min_bars", 5),
                     )
                     range_segments = build_range_band_segments(
                         full_candles,

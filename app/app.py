@@ -337,6 +337,11 @@ def build_settings_id_params(params):
         effective["near_target"] = params.get(
             "near_target", params.get("sr_target", "both")
         )
+        near_speed_mode = params.get("near_speed_mode")
+        if isinstance(near_speed_mode, str):
+            mode = near_speed_mode.strip().lower()
+            if mode:
+                effective["near_speed_mode"] = mode
         effective["near_entry_offset_pips"] = _coerce_float(
             params.get("near_entry_offset_pips", 3.0)
         )
@@ -2143,10 +2148,16 @@ def find_sr_near_signal(
                         lookback_time = ts - speed_window
                         look_idx = bisect_left(times, lookback_time, 0, j + 1)
                         if look_idx >= j:
+                            disabled_lines.add(line_idx)
                             continue
                         base_bid = points[look_idx][1]
-                        move = base_bid - bid if side == "long" else bid - base_bid
+                        move = (
+                            base_bid - threshold
+                            if side == "long"
+                            else threshold - base_bid
+                        )
                         if move < near_speed_move:
+                            disabled_lines.add(line_idx)
                             continue
                     return {
                         "entry_idx": j,
@@ -2980,6 +2991,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
     def signal_passes_filters(signal):
         entry_idx = signal["entry_idx"]
         entry_time, entry_bid = points_sorted[entry_idx]
+        entry_level = signal.get("entry_level")
+        if isinstance(entry_level, (int, float)):
+            entry_bid = float(entry_level)
         side = signal["side"]
         entry_price = entry_bid + spread if side == "long" else entry_bid
         if exclude_enabled and entry_time.hour in exclude_hours:
@@ -3778,6 +3792,9 @@ def run_backtest(points, params, runtime_cache=None, should_cancel=None):
             chain_signals = chain_map.get(gate_key, []) if signal_chain_enabled else []
             side = signal["side"]
             entry_time, entry_bid = points_sorted[entry_idx]
+            entry_level = signal.get("entry_level")
+            if isinstance(entry_level, (int, float)):
+                entry_bid = float(entry_level)
             entry_price = entry_bid + spread if side == "long" else entry_bid
 
             if exclude_enabled and entry_time.hour in exclude_hours:
@@ -9268,6 +9285,8 @@ class Step1App:
         params["line_interval"] = max(1, line_interval)
         if entry_sr_enabled or entry_near_enabled:
             params["sr_line_mode"] = "zigzag_only"
+        if entry_near_enabled:
+            params["near_speed_mode"] = "entry_level_strict"
         params["sr_params"] = sr_params
         params["range_params"] = range_params
         params.update(sr_reentry_params)

@@ -261,6 +261,13 @@ def build_settings_id_params(params):
         effective["line_interval"] = max(
             1, _coerce_int(params.get("line_interval", 1), 1)
         )
+        line_mode = params.get("sr_line_mode", "legacy_rebase")
+        if not isinstance(line_mode, str):
+            line_mode = "legacy_rebase"
+        line_mode = line_mode.strip().lower()
+        if line_mode not in ("legacy_rebase", "zigzag_only"):
+            line_mode = "legacy_rebase"
+        effective["sr_line_mode"] = line_mode
         sr_params = params.get("sr_params")
         if not isinstance(sr_params, dict):
             sr_params = {}
@@ -1211,29 +1218,20 @@ def build_zigzag_sr_segments(
                 extreme_idx = idx
 
         if active:
+            expired_indices = []
             for li, level in enumerate(active):
                 if idx <= level["start_index"]:
                     continue
                 if level["kind"] == "support":
                     if low < level["price"] - break_threshold:
                         add_segment(level, idx)
-                        level["price"] = low
-                        level["origin_time"] = candles[idx][0]
-                        level["start_time"] = candles[idx][0]
-                        level["start_index"] = idx
-                        level["available_time"] = resolve_line_available_time(
-                            candles, idx
-                        )
+                        expired_indices.append(li)
                 else:
                     if high > level["price"] + break_threshold:
                         add_segment(level, idx)
-                        level["price"] = high
-                        level["origin_time"] = candles[idx][0]
-                        level["start_time"] = candles[idx][0]
-                        level["start_index"] = idx
-                        level["available_time"] = resolve_line_available_time(
-                            candles, idx
-                        )
+                        expired_indices.append(li)
+            for li in reversed(expired_indices):
+                active.pop(li)
 
     last_idx = len(candles) - 1
     for level in active:
@@ -9268,6 +9266,8 @@ class Step1App:
         params["entry_momentum_enabled"] = entry_momentum_enabled
         params["entry_reverse_enabled"] = entry_reverse_enabled
         params["line_interval"] = max(1, line_interval)
+        if entry_sr_enabled or entry_near_enabled:
+            params["sr_line_mode"] = "zigzag_only"
         params["sr_params"] = sr_params
         params["range_params"] = range_params
         params.update(sr_reentry_params)

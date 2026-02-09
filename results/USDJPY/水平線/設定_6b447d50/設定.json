@@ -1,8 +1,8 @@
 {
   "通貨": "USDJPY",
   "戦略": "水平線",
-  "設定ID": "fe5f8565",
-  "保存日時": "2026-02-08 07:17:29.701401",
+  "設定ID": "6b447d50",
+  "保存日時": "2026-02-08 08:10:31.523273",
   "パラメータ": {
     "allow_opposite_direction": true,
     "allow_same_direction": true,
@@ -24,19 +24,19 @@
     "common_namping_step3_enabled": true,
     "common_namping_step3_lot": 1.0,
     "common_namping_step3_pips": 5.0,
-    "common_namping_step4_enabled": true,
+    "common_namping_step4_enabled": false,
     "common_namping_step4_lot": 1.0,
-    "common_namping_step4_pips": 5.0,
-    "common_namping_step5_enabled": true,
+    "common_namping_step4_pips": 10.0,
+    "common_namping_step5_enabled": false,
     "common_namping_step5_lot": 1.0,
-    "common_namping_step5_pips": 5.0,
+    "common_namping_step5_pips": 10.0,
     "common_stop_enabled": true,
     "common_stop_override": true,
     "common_stop_pips": 10.0,
     "common_take_enabled": true,
     "common_take_override": true,
     "common_take_pips": 30.0,
-    "common_time_close_anchor": "first",
+    "common_time_close_anchor": "last",
     "common_time_close_seconds": 14400.0,
     "common_time_enabled": true,
     "common_time_override": true,
@@ -225,7 +225,7 @@
     "sr_wait_bars": 3,
     "stop_pips": 10.0,
     "take_pips": 30.0,
-    "time_close_anchor": "first",
+    "time_close_anchor": "last",
     "time_close_seconds": 14400.0,
     "window_ms": 500.0,
     "entry_near_enabled": false,
@@ -263,7 +263,8 @@
     "near_namping_step5_lot": 32.0,
     "signal_chain_ignore_near": false,
     "signal_chain_count_near": true,
-    "signal_chain_trigger_near": true
+    "signal_chain_trigger_near": true,
+    "sr_line_mode": "legacy_rebase"
   },
   "判定用パラメータ": {
     "allow_opposite_direction": true,
@@ -317,22 +318,22 @@
           "pips": 5.0
         },
         {
-          "enabled": true,
+          "enabled": false,
           "lot": 1.0,
-          "pips": 5.0
+          "pips": 10.0
         },
         {
-          "enabled": true,
+          "enabled": false,
           "lot": 1.0,
-          "pips": 5.0
+          "pips": 10.0
         }
       ],
       "stop_pips": 10.0,
       "take_pips": 30.0,
-      "time_close_anchor": "first",
       "time_close_seconds": 14400.0
     },
     "sr_favored_tick_min_pips": 0.0,
+    "sr_line_mode": "legacy_rebase",
     "sr_max_seconds": 1800.0,
     "sr_midpoint_pct": 50.0,
     "sr_min_seconds": 30.0,
@@ -381,7 +382,7 @@
       false
     ],
     "batch_end_month": "2025-12",
-    "batch_start_month": "2025-01",
+    "batch_start_month": "2024-01",
     "candle_interval": 1,
     "chart_type": "tick",
     "common_fast_take_enabled": false,
@@ -458,12 +459,12 @@
     "namping_step3_enabled": true,
     "namping_step3_lot": "1",
     "namping_step3_pips": "5",
-    "namping_step4_enabled": true,
+    "namping_step4_enabled": false,
     "namping_step4_lot": "1",
-    "namping_step4_pips": "5",
-    "namping_step5_enabled": true,
+    "namping_step4_pips": "10",
+    "namping_step5_enabled": false,
     "namping_step5_lot": "1",
-    "namping_step5_pips": "5",
+    "namping_step5_pips": "10",
     "pnl_log_enabled": true,
     "pnl_log_path": "C:\\Users\\USER\\Desktop\\backtester1\\results",
     "range_band_bars": "30",
@@ -605,7 +606,7 @@
     "sr_zigzag_pips": "10",
     "stop_pips": "10",
     "take_pips": "30",
-    "time_close_anchor": "first",
+    "time_close_anchor": "last",
     "time_close_seconds": "14400",
     "view_range_months": "1",
     "x_axis_mode": "time",

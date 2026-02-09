@@ -1,8 +1,8 @@
 {
   "通貨": "USDJPY",
   "戦略": "水平線手前",
-  "設定ID": "79257478",
-  "保存日時": "2026-02-09 12:43:04.828265",
+  "設定ID": "c72594dd",
+  "保存日時": "2026-02-09 10:11:35.298903",
   "パラメータ": {
     "allow_opposite_direction": true,
     "allow_same_direction": true,
@@ -114,7 +114,7 @@
     "near_namping_step5_enabled": false,
     "near_namping_step5_lot": 32.0,
     "near_namping_step5_pips": 5.0,
-    "near_speed_filter_enabled": false,
+    "near_speed_filter_enabled": true,
     "near_speed_pips": 10.0,
     "near_speed_seconds": 10.0,
     "near_stop_enabled": true,
@@ -249,7 +249,8 @@
     "take_pips": 15.0,
     "time_close_anchor": "last",
     "time_close_seconds": 30.0,
-    "window_ms": 500.0
+    "window_ms": 500.0,
+    "sr_line_mode": "legacy_rebase"
   },
   "判定用パラメータ": {
     "allow_opposite_direction": true,
@@ -311,13 +312,16 @@
       "take_pips": 15.0,
       "time_close_seconds": 0.0
     },
-    "near_speed_filter_enabled": false,
+    "near_speed_filter_enabled": true,
+    "near_speed_pips": 10.0,
+    "near_speed_seconds": 10.0,
     "near_target": "sr",
     "range_params": {
       "lookback_bars": 30
     },
     "signal_chain_enabled": false,
     "spread_pips": 1.0,
+    "sr_line_mode": "legacy_rebase",
     "sr_params": {
       "break_pips": 0.01,
       "zigzag_pips": 10.0
@@ -354,7 +358,7 @@
       false
     ],
     "batch_end_month": "2025-12",
-    "batch_start_month": "2025-12",
+    "batch_start_month": "2025-01",
     "candle_interval": 60,
     "chart_type": "candle",
     "common_fast_take_enabled": false,
@@ -461,7 +465,7 @@
     "near_namping_step5_enabled": false,
     "near_namping_step5_lot": "32",
     "near_namping_step5_pips": "5",
-    "near_speed_filter_enabled": false,
+    "near_speed_filter_enabled": true,
     "near_speed_pips": "10",
     "near_speed_seconds": "10",
     "near_stop_enabled": true,

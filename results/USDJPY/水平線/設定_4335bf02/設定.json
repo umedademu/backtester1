@@ -1,7 +1,7 @@
 {
   "通貨": "USDJPY",
   "戦略": "水平線",
-  "設定ID": "c41c5461",
+  "設定ID": "4335bf02",
   "保存日時": "2026-02-08 06:26:29.292776",
   "パラメータ": {
     "allow_opposite_direction": true,
@@ -263,7 +263,8 @@
     "near_namping_step5_lot": 32.0,
     "signal_chain_ignore_near": false,
     "signal_chain_count_near": true,
-    "signal_chain_trigger_near": true
+    "signal_chain_trigger_near": true,
+    "sr_line_mode": "legacy_rebase"
   },
   "判定用パラメータ": {
     "allow_opposite_direction": true,
@@ -332,6 +333,7 @@
       "time_close_seconds": 14400.0
     },
     "sr_favored_tick_min_pips": 0.0,
+    "sr_line_mode": "legacy_rebase",
     "sr_max_seconds": 1800.0,
     "sr_midpoint_pct": 50.0,
     "sr_min_seconds": 30.0,

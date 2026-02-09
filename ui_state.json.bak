@@ -81,7 +81,7 @@
   "momentum_hold_seconds": "2",
   "momentum_max_pips": "3",
   "near_entry_offset_pips": "3",
-  "near_speed_filter_enabled": false,
+  "near_speed_filter_enabled": true,
   "near_speed_seconds": "10",
   "near_speed_pips": "10",
   "spread": "1.0",

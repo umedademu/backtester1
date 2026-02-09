@@ -9659,6 +9659,7 @@ class Step1App:
             "zigzag_points": [],
             "range_segments": [],
         }
+        self._apply_sr_entry_visibility()
         self.trade_focus_index = None
         if reset_trade_jump:
             self.trade_jump_var.set("1")
@@ -10058,11 +10059,15 @@ class Step1App:
         if self.chart_data:
             self._draw_chart()
 
-    def _apply_sr_entry_visibility(self, enabled: bool):
-        if not enabled:
-            self.zigzag_show_var.set(False)
-            self.sr_line_show_var.set(False)
-            self.range_band_show_var.set(False)
+    def _apply_sr_entry_visibility(self):
+        sr_enabled = bool(self.entry_sr_var.get()) if hasattr(self, "entry_sr_var") else False
+        near_enabled = bool(self.entry_near_var.get()) if hasattr(self, "entry_near_var") else False
+        chart_overlay_enabled = False
+        if self.chart_data:
+            forced = self.chart_data.get("overlay_sr_enabled")
+            if forced is not None:
+                chart_overlay_enabled = bool(forced)
+        enabled = sr_enabled or near_enabled or chart_overlay_enabled
         state = "normal" if enabled else "disabled"
         if hasattr(self, "zigzag_check"):
             self.zigzag_check.config(state=state)
@@ -10070,8 +10075,6 @@ class Step1App:
             self.sr_line_check.config(state=state)
         if hasattr(self, "range_band_check"):
             self.range_band_check.config(state=state)
-        if self.chart_data:
-            self._draw_chart()
 
     def _on_sr_reentry_filter_toggle(self):
         if hasattr(self, "sr_reentry_tick_limit_entry"):
@@ -10169,8 +10172,8 @@ class Step1App:
             return
         enabled = bool(info["var"].get())
         self._apply_state_recursive(info["frame"], enabled, skip=info["toggle"])
-        if key == "sr":
-            self._apply_sr_entry_visibility(enabled)
+        if key in ("sr", "near"):
+            self._apply_sr_entry_visibility()
         if enabled:
             self._on_namping_toggle_group(key)
             if key == "reverse":
@@ -10178,6 +10181,8 @@ class Step1App:
             if key == "near":
                 self._on_near_speed_filter_toggle()
             self._apply_close_states_for_key(key)
+        if key in ("sr", "near") and self.chart_data:
+            self._draw_chart()
 
     def _on_namping_toggle_group(self, key: str):
         group = self.namping_widget_groups.get(key)
@@ -12012,7 +12017,7 @@ class Step1App:
         candles = None
         saved_sr_enabled = data.get("overlay_sr_enabled")
         if saved_sr_enabled is None:
-            sr_entry_enabled = self.entry_sr_var.get()
+            sr_entry_enabled = self.entry_sr_var.get() or self.entry_near_var.get()
         else:
             sr_entry_enabled = bool(saved_sr_enabled)
         saved_zigzag_show = data.get("overlay_zigzag_show")

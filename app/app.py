@@ -11161,9 +11161,9 @@ class Step1App:
             "sr_params": {},
             "range_params": {},
             "overlay_enabled": False,
-            "zigzag_show": False,
-            "sr_line_show": True,
-            "range_band_show": False,
+            "zigzag_show": None,
+            "sr_line_show": None,
+            "range_band_show": None,
         }
         if not settings_path or not Path(settings_path).exists():
             return defaults
@@ -11176,10 +11176,6 @@ class Step1App:
         params = payload.get("パラメータ")
         if not isinstance(params, dict):
             return defaults
-        ui_state = payload.get("画面設定")
-        if not isinstance(ui_state, dict):
-            ui_state = {}
-
         saved = dict(defaults)
         saved["ma_use_saved"] = True
 
@@ -11236,15 +11232,6 @@ class Step1App:
             or entry_near_enabled
             or bool(sr_params)
             or bool(range_params)
-        )
-        saved["zigzag_show"] = _coerce_bool(
-            ui_state.get("zigzag_show"), defaults["zigzag_show"]
-        )
-        saved["sr_line_show"] = _coerce_bool(
-            ui_state.get("sr_line_show"), defaults["sr_line_show"]
-        )
-        saved["range_band_show"] = _coerce_bool(
-            ui_state.get("range_band_show"), defaults["range_band_show"]
         )
         return saved
 
@@ -11339,15 +11326,21 @@ class Step1App:
             overlay_sr_enabled = _coerce_bool(
                 saved_chart_settings.get("overlay_enabled"), False
             )
-            overlay_zigzag_show = _coerce_bool(
-                saved_chart_settings.get("zigzag_show"), False
-            )
-            overlay_sr_line_show = _coerce_bool(
-                saved_chart_settings.get("sr_line_show"), True
-            )
-            overlay_range_band_show = _coerce_bool(
-                saved_chart_settings.get("range_band_show"), False
-            )
+            zigzag_show = saved_chart_settings.get("zigzag_show")
+            if zigzag_show is None:
+                overlay_zigzag_show = None
+            else:
+                overlay_zigzag_show = _coerce_bool(zigzag_show, False)
+            sr_line_show = saved_chart_settings.get("sr_line_show")
+            if sr_line_show is None:
+                overlay_sr_line_show = None
+            else:
+                overlay_sr_line_show = _coerce_bool(sr_line_show, True)
+            range_band_show = saved_chart_settings.get("range_band_show")
+            if range_band_show is None:
+                overlay_range_band_show = None
+            else:
+                overlay_range_band_show = _coerce_bool(range_band_show, False)
         if ma_enabled and ma_period > 0:
             try:
                 if ma_unit == "sec":

@@ -6,7 +6,7 @@
   "view_range_months": "1",
   "download_start_month": "2026-02",
   "download_end_month": "2026-02",
-  "batch_start_month": "2025-01",
+  "batch_start_month": "2025-12",
   "batch_end_month": "2025-12",
   "exclude_weekends": true,
   "x_axis_mode": "time",
@@ -22,7 +22,7 @@
   "pnl_log_enabled": true,
   "pnl_log_path": "C:\\Users\\USER\\Desktop\\backtester1\\results",
   "saved_runs_min_pips": "0",
-  "dup_period_mode": "skip",
+  "dup_period_mode": "overwrite",
   "bookmarked_settings": [
     "USDJPY|\u79d2\u9006\u5f35\u308a|bc56d58d",
     "USDJPY|\u79d2\u9006\u5f35\u308a|dd3b442d"
@@ -263,7 +263,7 @@
   "spike_namping_step5_lot": "32",
   "sr_zigzag_pips": "10",
   "sr_break_pips": "0.01",
-  "sr_min_bars": "10",
+  "sr_min_bars": "1",
   "sr_reentry_break_pips": "10.0",
   "sr_reentry_tick_limit": "100",
   "sr_reentry_tick_min": "0",

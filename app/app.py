@@ -1028,14 +1028,6 @@ def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5, should_cancel=None
 
     points = []
 
-    def has_long_wick(candle, kind):
-        _ts, open_p, high, low, close = candle
-        upper = high - max(open_p, close)
-        lower = min(open_p, close) - low
-        if kind == "resistance":
-            return upper >= threshold
-        return lower >= threshold
-
     candidate_high = candles[0][2]
     candidate_low = candles[0][3]
     candidate_high_idx = 0
@@ -1044,7 +1036,7 @@ def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5, should_cancel=None
     direction = None
     extreme_price = None
     extreme_idx = None
-    last_confirm_idx = None
+    last_pivot_idx = None
 
     for idx in range(1, len(candles)):
         if should_cancel and is_cancel_requested(should_cancel):
@@ -1060,64 +1052,56 @@ def build_zigzag_points(candles, zigzag_pips=5.0, min_bars=5, should_cancel=None
                 candidate_low_idx = idx
 
             if candidate_high - candidate_low >= threshold:
-                if (
-                    abs(candidate_high_idx - candidate_low_idx) >= min_bars
-                    or has_long_wick(
-                        candles[candidate_low_idx]
-                        if candidate_high_idx > candidate_low_idx
-                        else candles[candidate_high_idx],
-                        "support" if candidate_high_idx > candidate_low_idx else "resistance",
-                    )
-                ):
+                if abs(candidate_high_idx - candidate_low_idx) >= min_bars:
                     if candidate_high_idx > candidate_low_idx:
                         points.append((candles[candidate_low_idx][0], candidate_low))
                         direction = "up"
                         extreme_price = candidate_high
                         extreme_idx = candidate_high_idx
+                        last_pivot_idx = candidate_low_idx
                     else:
                         points.append((candles[candidate_high_idx][0], candidate_high))
                         direction = "down"
                         extreme_price = candidate_low
                         extreme_idx = candidate_low_idx
-                    last_confirm_idx = idx
+                        last_pivot_idx = candidate_high_idx
         elif direction == "up":
             if high > extreme_price:
                 extreme_price = high
                 extreme_idx = idx
-            if extreme_price - low >= threshold:
+                continue
+            if idx > extreme_idx and extreme_price - low >= threshold:
                 if (
-                    last_confirm_idx is None
-                    or idx - last_confirm_idx >= min_bars
-                    or has_long_wick(candles[extreme_idx], "resistance")
+                    last_pivot_idx is None
+                    or extreme_idx - last_pivot_idx >= min_bars
                 ):
                     points.append((candles[extreme_idx][0], extreme_price))
                     direction = "down"
+                    last_pivot_idx = extreme_idx
                     extreme_price = low
                     extreme_idx = idx
-                    last_confirm_idx = idx
         else:
             if low < extreme_price:
                 extreme_price = low
                 extreme_idx = idx
-            if high - extreme_price >= threshold:
+                continue
+            if idx > extreme_idx and high - extreme_price >= threshold:
                 if (
-                    last_confirm_idx is None
-                    or idx - last_confirm_idx >= min_bars
-                    or has_long_wick(candles[extreme_idx], "support")
+                    last_pivot_idx is None
+                    or extreme_idx - last_pivot_idx >= min_bars
                 ):
                     points.append((candles[extreme_idx][0], extreme_price))
                     direction = "up"
+                    last_pivot_idx = extreme_idx
                     extreme_price = high
                     extreme_idx = idx
-                    last_confirm_idx = idx
 
     if extreme_idx is not None:
         last_time = candles[extreme_idx][0]
-        if (
-            not points
-            or points[-1][0] != last_time
-            or abs(points[-1][1] - extreme_price) > 1e-12
-        ):
+        enough_tail = (
+            last_pivot_idx is None or extreme_idx - last_pivot_idx >= min_bars
+        )
+        if enough_tail and (not points or points[-1][0] != last_time):
             points.append((last_time, extreme_price))
 
     return points
@@ -1135,14 +1119,6 @@ def build_zigzag_sr_segments(
 
     segments = []
     active = []
-
-    def has_long_wick(candle, kind):
-        _ts, open_p, high, low, close = candle
-        upper = high - max(open_p, close)
-        lower = min(open_p, close) - low
-        if kind == "resistance":
-            return upper >= threshold
-        return lower >= threshold
 
     def add_segment(level, end_idx):
         segments.append(
@@ -1176,7 +1152,7 @@ def build_zigzag_sr_segments(
     direction = None
     extreme_price = None
     extreme_idx = None
-    last_confirm_idx = None
+    last_pivot_idx = None
 
     for idx in range(1, len(candles)):
         if should_cancel and is_cancel_requested(should_cancel):
@@ -1192,56 +1168,49 @@ def build_zigzag_sr_segments(
                 candidate_low_idx = idx
 
             if candidate_high - candidate_low >= threshold:
-                if (
-                    abs(candidate_high_idx - candidate_low_idx) >= min_bars
-                    or has_long_wick(
-                        candles[candidate_low_idx]
-                        if candidate_high_idx > candidate_low_idx
-                        else candles[candidate_high_idx],
-                        "support" if candidate_high_idx > candidate_low_idx else "resistance",
-                    )
-                ):
+                if abs(candidate_high_idx - candidate_low_idx) >= min_bars:
                     if candidate_high_idx > candidate_low_idx:
                         add_level("support", candidate_low, candidate_low_idx, idx)
                         direction = "up"
                         extreme_price = candidate_high
                         extreme_idx = candidate_high_idx
+                        last_pivot_idx = candidate_low_idx
                     else:
                         add_level("resistance", candidate_high, candidate_high_idx, idx)
                         direction = "down"
                         extreme_price = candidate_low
                         extreme_idx = candidate_low_idx
-                    last_confirm_idx = idx
+                        last_pivot_idx = candidate_high_idx
         elif direction == "up":
             if high > extreme_price:
                 extreme_price = high
                 extreme_idx = idx
-            if extreme_price - low >= threshold:
+                continue
+            if idx > extreme_idx and extreme_price - low >= threshold:
                 if (
-                    last_confirm_idx is None
-                    or idx - last_confirm_idx >= min_bars
-                    or has_long_wick(candles[extreme_idx], "resistance")
+                    last_pivot_idx is None
+                    or extreme_idx - last_pivot_idx >= min_bars
                 ):
                     add_level("resistance", extreme_price, extreme_idx, idx)
                     direction = "down"
+                    last_pivot_idx = extreme_idx
                     extreme_price = low
                     extreme_idx = idx
-                    last_confirm_idx = idx
         else:
             if low < extreme_price:
                 extreme_price = low
                 extreme_idx = idx
-            if high - extreme_price >= threshold:
+                continue
+            if idx > extreme_idx and high - extreme_price >= threshold:
                 if (
-                    last_confirm_idx is None
-                    or idx - last_confirm_idx >= min_bars
-                    or has_long_wick(candles[extreme_idx], "support")
+                    last_pivot_idx is None
+                    or extreme_idx - last_pivot_idx >= min_bars
                 ):
                     add_level("support", extreme_price, extreme_idx, idx)
                     direction = "up"
+                    last_pivot_idx = extreme_idx
                     extreme_price = high
                     extreme_idx = idx
-                    last_confirm_idx = idx
 
         if active:
             for li, level in enumerate(active):

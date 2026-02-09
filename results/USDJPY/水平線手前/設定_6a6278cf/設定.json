@@ -1,8 +1,8 @@
 {
   "通貨": "USDJPY",
   "戦略": "水平線手前",
-  "設定ID": "340b374a",
-  "保存日時": "2026-02-09 12:39:48.126699",
+  "設定ID": "6a6278cf",
+  "保存日時": "2026-02-09 12:45:31.593443",
   "パラメータ": {
     "allow_opposite_direction": true,
     "allow_same_direction": true,
@@ -236,8 +236,8 @@
     "sr_namping_step5_pips": 5.0,
     "sr_params": {
       "break_pips": 0.01,
-      "min_bars": 10,
-      "zigzag_pips": 10.0
+      "min_bars": 1,
+      "zigzag_pips": 30.0
     },
     "sr_stop_enabled": true,
     "sr_stop_pips": 10.0,
@@ -321,8 +321,8 @@
     "spread_pips": 1.0,
     "sr_params": {
       "break_pips": 0.01,
-      "min_bars": 10,
-      "zigzag_pips": 10.0
+      "min_bars": 1,
+      "zigzag_pips": 30.0
     }
   },
   "画面設定": {
@@ -572,7 +572,7 @@
     "sr_fast_take_window_ms": "2000",
     "sr_fixed_exit_price": true,
     "sr_line_show": true,
-    "sr_min_bars": "10",
+    "sr_min_bars": "1",
     "sr_namping_first_enabled": true,
     "sr_namping_step1_enabled": false,
     "sr_namping_step1_lot": "2",
@@ -616,7 +616,7 @@
     "sr_time_close_anchor": "last",
     "sr_time_close_seconds": "0",
     "sr_time_enabled": false,
-    "sr_zigzag_pips": "10",
+    "sr_zigzag_pips": "30",
     "stop_pips": "5",
     "take_pips": "15",
     "time_close_anchor": "last",

@@ -1,8 +1,8 @@
 {
   "通貨": "USDJPY",
   "戦略": "水平線手前",
-  "設定ID": "340b374a",
-  "保存日時": "2026-02-09 12:39:48.126699",
+  "設定ID": "7b0de07f",
+  "保存日時": "2026-02-09 12:43:04.828265",
   "パラメータ": {
     "allow_opposite_direction": true,
     "allow_same_direction": true,
@@ -236,7 +236,7 @@
     "sr_namping_step5_pips": 5.0,
     "sr_params": {
       "break_pips": 0.01,
-      "min_bars": 10,
+      "min_bars": 1,
       "zigzag_pips": 10.0
     },
     "sr_stop_enabled": true,
@@ -321,7 +321,7 @@
     "spread_pips": 1.0,
     "sr_params": {
       "break_pips": 0.01,
-      "min_bars": 10,
+      "min_bars": 1,
       "zigzag_pips": 10.0
     }
   },
@@ -572,7 +572,7 @@
     "sr_fast_take_window_ms": "2000",
     "sr_fixed_exit_price": true,
     "sr_line_show": true,
-    "sr_min_bars": "10",
+    "sr_min_bars": "1",
     "sr_namping_first_enabled": true,
     "sr_namping_step1_enabled": false,
     "sr_namping_step1_lot": "2",
